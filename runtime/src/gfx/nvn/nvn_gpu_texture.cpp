@@ -56,9 +56,16 @@ static std::mutex g_live_mu;
 static std::set<struct TexGpu*> g_live_set;
 
 // [gfx] residency: milliseconds since the start (wraps after 49 days; only differences are used)
-uint32_t resid_ms() {
+// It is read for every texture a draw binds (1 % of the render thread in a profile as a clock read each time), and the ages it is compared
+// with are seconds long: the render thread reads the clock once at the start of a submission (resid_tick) and every reader takes that.
+std::atomic<uint32_t> g_resid_now{0};
+uint32_t resid_clock() {
     static const auto t0 = std::chrono::steady_clock::now();
     return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()) + 1;
+}
+uint32_t resid_ms() {
+    const uint32_t v = g_resid_now.load(std::memory_order_relaxed);
+    return v ? v : resid_clock();      // before the first submission
 }
 
 struct TexGpu {
@@ -2064,6 +2071,8 @@ void tex_residency_restore(Frame& f) {
         st_last = now;
     }
 }
+
+void resid_tick() { g_resid_now.store(resid_clock(), std::memory_order_relaxed); }   // the [gfx] residency clock, once per submission
 
 void tex_poll_cpu_writes() {
     if (!g_tex_ww) return;
