@@ -276,6 +276,8 @@ void gpu_wrote(uint64_t addr, uint64_t size, int use) {
     }
 }
 const ProgLayout* g_pl = nullptr;
+const ProgLayout* g_last_draw_pl = nullptr;
+bool g_alpha_draw = false;       // this draw uses the alpha-test layout: build_key sets the key's alpha_func
 VkPipeline g_pipe = VK_NULL_HANDLE;
 VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
 VkPrimitiveTopology g_pipe_topo = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
@@ -3037,8 +3039,6 @@ const ProgLayout* layout_cached(const ShaderInfo* const stages[6]) {
 // The game's fixed-function alpha test for this draw: the fragment shader runs as a variant that kills the invocation when the alpha of
 // colour output 0 fails the test, and the reference value reaches it as a push constant (alpha_layout, spirv_alpha_test). [nvn] alpha_test =
 // false: off (A/B). Not for tessellation, stream-out, a pass without a colour target or a dual-source blend.
-const ProgLayout* g_last_draw_pl = nullptr;
-bool g_alpha_draw = false;       // this draw uses the alpha-test layout: build_key sets the key's alpha_func
 bool alpha_test_wanted() {
     static const bool on = nxrt::config_get_bool("nvn", "alpha_test", true);
     if (!on || S.color.alpha_test < NVN_ALPHA_FUNC_NEVER || S.color.alpha_test > NVN_ALPHA_FUNC_GEQUAL) return false;
