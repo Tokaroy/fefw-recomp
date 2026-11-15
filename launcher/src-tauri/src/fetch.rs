@@ -86,9 +86,23 @@ pub struct Shared {
     pub cancel: AtomicBool,
 }
 
+/// What a cancelled run returns as its error, so the caller can tell it from a failure.
+pub const CANCELLED: &str = "Download cancelled.";
+
 impl Shared {
+    /// The status, even if a thread panicked while holding it (the status is plain data, so it is still usable).
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Status> {
+        self.status.lock().unwrap_or_else(|e| e.into_inner())
+    }
     fn set(&self, f: impl FnOnce(&mut Status)) {
-        f(&mut self.status.lock().unwrap());
+        f(&mut self.lock());
+    }
+    fn check_cancel(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            Err(CANCELLED.into())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -103,16 +117,32 @@ fn plan(kind: &str) -> Result<(&'static str, Vec<&'static File>), String> {
     })
 }
 
-pub fn run(shared: &Shared, base: &Path, kind: &str) -> Result<String, String> {
+/// `custom` is the folder set in Settings for this upscaler (a file in it counts, as for the game), or empty for upscalers/<sub> next to the launcher.
+pub fn run(shared: &Shared, base: &Path, kind: &str, custom: &str) -> Result<String, String> {
     let (sub, files) = plan(kind)?;
-    let dest = base.join("upscalers").join(sub);
+    let custom = custom.trim();
+    let dest = if custom.is_empty() {
+        base.join("upscalers").join(sub)
+    } else {
+        let p = Path::new(custom);
+        if p.is_file() { p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.to_path_buf()) } else { p.to_path_buf() }
+    };
+    shared.set(|s| s.folder = dest.display().to_string());
     fs::create_dir_all(&dest).map_err(|e| format!("cannot create {}: {e}", dest.display()))?;
-    let todo: Vec<&File> = files.into_iter().filter(|f| !has(&dest, f)).collect();
+    shared.set(|s| s.message = "Checking the files already there".into());
+    let mut todo: Vec<&File> = Vec::new();
+    for f in files {
+        shared.check_cancel()?;
+        if !has(&dest, f) {
+            todo.push(f);
+        }
+    }
     if todo.is_empty() {
         return Ok(format!("The files are already in {}.", dest.display()));
     }
     let mut zip: Option<Zip> = None;
     for (i, f) in todo.iter().enumerate() {
+        shared.check_cancel()?;
         let label = format!("{} ({} of {})", f.name, i + 1, todo.len());
         let part = dest.join(format!("{}.part", f.name));
         let _ = fs::remove_file(&part);
@@ -127,7 +157,14 @@ pub fn run(shared: &Shared, base: &Path, kind: &str) -> Result<String, String> {
             zip.as_ref().unwrap().extract(shared, f, &part, &label)?;
         }
         shared.set(|s| s.message = format!("Checking {}", f.name));
-        let got = sha256_file(&part)?;
+        let got = sha256_file(&part);
+        let got = match got {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = fs::remove_file(&part);
+                return Err(e);
+            }
+        };
         if got != f.sha256 {
             let _ = fs::remove_file(&part);
             return Err(format!("{} does not match the expected file (SHA-256 {got}). It was not installed. Try again, and report it if it keeps happening.", f.name));
@@ -149,9 +186,11 @@ fn get(shared: &Shared, url: &str, range: Option<(u64, u64)>, out: &Path, label:
     let mut c = curl();
     c.args(["--retry", "3", "--speed-limit", "1024", "--speed-time", "60"]);
     if let Some((a, b)) = range {
-        c.arg("--range").arg(format!("{a}-{b}"));
+        // a server that ignores Range would send the whole 276 MB file: refuse it up front when it says how big the body is
+        c.arg("--range").arg(format!("{a}-{b}")).arg("--max-filesize").arg((b - a + 1).to_string());
     }
-    let mut child = c.arg("--output").arg(out).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run curl: {e}"))?;
+    c.args(["--write-out", "%{http_code}"]);
+    let mut child = c.arg("--output").arg(out).arg(url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run curl: {e}"))?;
     let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
     let status = loop {
         if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
@@ -161,13 +200,13 @@ fn get(shared: &Shared, url: &str, range: Option<(u64, u64)>, out: &Path, label:
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(out);
-            return Err("Download cancelled.".into());
+            return Err(CANCELLED.into());
         }
         let got = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
         shared.set(|s| {
             s.done = got;
             s.total = expect;
-            s.message = format!("Downloading {label}: {:.0} of {:.0} MiB", mb(got), mb(expect));
+            s.message = if expect == 0 { format!("Downloading {label}") } else { format!("Downloading {label}: {:.0} of {:.0} MiB", mb(got), mb(expect)) };
         });
         std::thread::sleep(Duration::from_millis(250));
     };
@@ -179,14 +218,30 @@ fn get(shared: &Shared, url: &str, range: Option<(u64, u64)>, out: &Path, label:
         let _ = fs::remove_file(out);
         return Err(format!("The download failed: {}", err.trim()));
     }
+    if let Some((a, b)) = range {
+        let mut code = String::new();
+        if let Some(mut o) = child.stdout.take() {
+            let _ = o.read_to_string(&mut code);
+        }
+        let len = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+        if code.trim() != "206" || len != b - a + 1 {
+            let _ = fs::remove_file(out);
+            return Err(format!("The server did not return the requested part of the file (HTTP {}, {len} bytes).", code.trim()));
+        }
+    }
     Ok(())
 }
 
+const LAYOUT: &str = "NVIDIA's release zip has an unexpected layout.";
+
 fn le16(b: &[u8], at: usize) -> Result<u16, String> {
-    b.get(at..at + 2).map(|x| u16::from_le_bytes([x[0], x[1]])).ok_or_else(|| "NVIDIA's release zip has an unexpected layout.".to_string())
+    b.get(at..at + 2).map(|x| u16::from_le_bytes([x[0], x[1]])).ok_or_else(|| LAYOUT.to_string())
 }
 fn le32(b: &[u8], at: usize) -> Result<u32, String> {
-    b.get(at..at + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])).ok_or_else(|| "NVIDIA's release zip has an unexpected layout.".to_string())
+    b.get(at..at + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])).ok_or_else(|| LAYOUT.to_string())
+}
+fn le64(b: &[u8], at: usize) -> Result<u64, String> {
+    b.get(at..at + 8).map(|x| u64::from_le_bytes(x.try_into().unwrap())).ok_or_else(|| LAYOUT.to_string())
 }
 
 struct Entry {
@@ -212,20 +267,61 @@ impl Zip {
         };
         // the end-of-central-directory record is in the last 22 bytes plus a comment of up to 64 KiB
         let tail = read(SL_ZIP_SIZE - 65_600, SL_ZIP_SIZE - 1)?;
-        let at = tail.windows(4).rposition(|w| w == b"PK\x05\x06").ok_or("NVIDIA's release zip has an unexpected layout.")?;
-        let (size, off) = (le32(&tail, at + 12)? as u64, le32(&tail, at + 16)? as u64);
-        if off == 0xFFFF_FFFF || size == 0 || off + size > SL_ZIP_SIZE {
-            return Err("NVIDIA's release zip has an unexpected layout.".into());
+        let at = tail.windows(4).rposition(|w| w == b"PK\x05\x06").ok_or(LAYOUT)?;
+        let (mut size, mut off) = (le32(&tail, at + 12)? as u64, le32(&tail, at + 16)? as u64);
+        if size == 0xFFFF_FFFF || off == 0xFFFF_FFFF {
+            // Zip64: the locator just before the record points at the Zip64 end record, which holds the real size and offset
+            let loc = at.checked_sub(20).filter(|l| &tail[*l..*l + 4] == b"PK\x06\x07").ok_or(LAYOUT)?;
+            let rec = le64(&tail, loc + 8)?;
+            if rec + 56 > SL_ZIP_SIZE {
+                return Err(LAYOUT.into());
+            }
+            let z = read(rec, rec + 55)?;
+            if z.get(0..4) != Some(b"PK\x06\x06") {
+                return Err(LAYOUT.into());
+            }
+            (size, off) = (le64(&z, 40)?, le64(&z, 48)?);
+        }
+        if size == 0 || off.checked_add(size).map_or(true, |e| e > SL_ZIP_SIZE) {
+            return Err(LAYOUT.into());
         }
         let cd = read(off, off + size - 1)?;
         let mut entries = Vec::new();
         let mut p = 0;
         while p + 46 <= cd.len() && &cd[p..p + 4] == b"PK\x01\x02" {
-            let (method, comp) = (le16(&cd, p + 10)?, le32(&cd, p + 20)? as u64);
+            let method = le16(&cd, p + 10)?;
+            let (mut comp, usize_, mut local) = (le32(&cd, p + 20)? as u64, le32(&cd, p + 24)?, le32(&cd, p + 42)? as u64);
             let (n, e, c) = (le16(&cd, p + 28)? as usize, le16(&cd, p + 30)? as usize, le16(&cd, p + 32)? as usize);
-            let local = le32(&cd, p + 42)? as u64;
-            let name = String::from_utf8_lossy(cd.get(p + 46..p + 46 + n).ok_or("NVIDIA's release zip has an unexpected layout.")?).to_string();
+            let name = String::from_utf8_lossy(cd.get(p + 46..p + 46 + n).ok_or(LAYOUT)?).to_string();
             if name.starts_with(SL_DIR) && name.matches('/').count() == 2 {
+                // Zip64 extra field (id 1): the 64-bit values of the fields that are 0xFFFFFFFF, in this order
+                if comp == 0xFFFF_FFFF || local == 0xFFFF_FFFF {
+                    let extra = cd.get(p + 46 + n..p + 46 + n + e).ok_or(LAYOUT)?;
+                    let mut q = 0;
+                    let mut found = false;
+                    while q + 4 <= extra.len() {
+                        let (id, len) = (le16(extra, q)?, le16(extra, q + 2)? as usize);
+                        if id == 1 {
+                            let mut v = q + 4;
+                            if usize_ == 0xFFFF_FFFF {
+                                v += 8;
+                            }
+                            if comp == 0xFFFF_FFFF {
+                                comp = le64(extra, v)?;
+                                v += 8;
+                            }
+                            if local == 0xFFFF_FFFF {
+                                local = le64(extra, v)?;
+                            }
+                            found = true;
+                            break;
+                        }
+                        q += 4 + len;
+                    }
+                    if !found {
+                        return Err(LAYOUT.into());
+                    }
+                }
                 entries.push(Entry { name, method, compressed: comp, local });
             }
             p += 46 + n + e + c;
@@ -237,14 +333,17 @@ impl Zip {
     fn extract(&self, shared: &Shared, f: &File, out: &Path, label: &str) -> Result<(), String> {
         let want = format!("{SL_DIR}{}", f.name);
         let e = self.entries.iter().find(|e| e.name == want).ok_or_else(|| format!("{} is not in NVIDIA's release any more.", f.name))?;
+        if e.compressed == 0 || e.local.checked_add(e.compressed).map_or(true, |x| x > SL_ZIP_SIZE) {
+            return Err(LAYOUT.into());
+        }
         let scratch = out.with_extension("zpart");
-        // the local header says how long the name and extra field are before the data starts
-        get(shared, SL_ZIP, Some((e.local, e.local + 29)), &scratch, label, 0)?;
-        let head = fs::read(&scratch).map_err(|e| e.to_string())?;
-        let data = e.local + 30 + le16(&head, 26)? as u64 + le16(&head, 28)? as u64;
-        get(shared, SL_ZIP, Some((data, data + e.compressed - 1)), &scratch, label, e.compressed)?;
-        shared.set(|s| s.message = format!("Unpacking {}", f.name));
         let res = (|| -> Result<(), String> {
+            // the local header says how long the name and extra field are before the data starts
+            get(shared, SL_ZIP, Some((e.local, e.local + 29)), &scratch, label, 0)?;
+            let head = fs::read(&scratch).map_err(|e| e.to_string())?;
+            let data = e.local + 30 + le16(&head, 26)? as u64 + le16(&head, 28)? as u64;
+            get(shared, SL_ZIP, Some((data, data + e.compressed - 1)), &scratch, label, e.compressed)?;
+            shared.set(|s| s.message = format!("Unpacking {}", f.name));
             let src = fs::File::open(&scratch).map_err(|e| e.to_string())?;
             let mut dst = fs::File::create(out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
             match e.method {
@@ -277,9 +376,9 @@ mod tests {
         let base = std::path::PathBuf::from(std::env::var("FEFW_FETCH_TEST_DIR").expect("FEFW_FETCH_TEST_DIR"));
         let shared = Shared::default();
         for kind in ["dlss_framegen", "fsr", "xess"] {
-            println!("{kind}: {}", run(&shared, &base, kind).unwrap());
+            println!("{kind}: {}", run(&shared, &base, kind, "").unwrap());
         }
         // a second run finds everything in place
-        assert!(run(&shared, &base, "dlss_framegen").unwrap().starts_with("The files are already"));
+        assert!(run(&shared, &base, "dlss_framegen", "").unwrap().starts_with("The files are already"));
     }
 }

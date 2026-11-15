@@ -371,7 +371,9 @@ export async function render(el, ctx) {
   async function startFetch(kind) {
     fetchAsk = null;
     try {
-      await api('fetch_upscaler', { kind });
+      // into the folder set for this upscaler, as the file check above looks there first
+      const dir = kind === 'fsr' ? model.fsr_dll : kind === 'xess' ? model.xess_dll : model.dlss_dll;
+      await api('fetch_upscaler', { kind, dir: fwd(dir || '') });
     } catch (e) {
       toast(errText(e), 'error');
       return;
@@ -391,8 +393,8 @@ export async function render(el, ctx) {
     drawFetch();
     if (fetchSt.state === 'running') {
       fetchTimer = setTimeout(pollFetch, 400);
-    } else if (fetchSt.state === 'done' || fetchSt.state === 'error') {
-      toast(fetchSt.message, fetchSt.state === 'done' ? 'ok' : 'error');
+    } else if (fetchSt.state === 'done' || fetchSt.state === 'error' || fetchSt.state === 'cancelled') {
+      if (fetchSt.state !== 'cancelled') toast(fetchSt.message, fetchSt.state === 'done' ? 'ok' : 'error');
       fetchSt = { state: 'idle', kind: '' };
       drawFetch();
       checkFiles();
@@ -476,5 +478,5 @@ export async function render(el, ctx) {
   }
 
   draw();
-  api('fetch_status').then((st) => { if (st.state === 'running') { fetchSt = st; pollFetch(); } }).catch(() => {});
+  pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }

@@ -350,25 +350,29 @@ fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: O
     })
 }
 
-/// Downloads the files of one upscaler (fsr, xess, dlss, dlss_framegen) from the vendor into upscalers/<name> next to the launcher.
-/// The page asks the player first (the licence and the source are shown there); see fetch.rs.
+/// Downloads the files of one upscaler (fsr, xess, dlss, dlss_framegen) from the vendor into the folder set in Settings for it
+/// (`dir`), else upscalers/<name> next to the launcher. The page asks the player first (the licence and the source are shown there); see fetch.rs.
 #[tauri::command]
-fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String) -> Result<(), String> {
+fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String, dir: Option<String>) -> Result<(), String> {
     {
-        let mut s = state.status.lock().unwrap();
+        let mut s = state.lock();
         if s.state == "running" {
             return Err("A download is already running.".into());
         }
+        // cleared under the lock that marks the run as started, so a Stop can neither be lost to it nor leak into this run from before
+        state.cancel.store(false, Ordering::SeqCst);
         *s = fetch::Status { state: "running".into(), kind: kind.clone(), message: "Starting".into(), ..Default::default() };
     }
     let shared = state.inner().clone();
-    shared.cancel.store(false, Ordering::SeqCst);
     let base = exe_dir();
+    let dir = dir.unwrap_or_default();
     std::thread::spawn(move || {
-        let res = fetch::run(&shared, &base, &kind);
-        let mut s = shared.status.lock().unwrap();
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch::run(&shared, &base, &kind, &dir)))
+            .unwrap_or_else(|_| Err("The download stopped unexpectedly.".into()));
+        let mut s = shared.lock();
         match res {
             Ok(m) => (s.state, s.message) = ("done".into(), m),
+            Err(e) if e == fetch::CANCELLED => (s.state, s.message) = ("cancelled".into(), e),
             Err(e) => (s.state, s.message) = ("error".into(), e),
         }
         let _ = app.emit("fetch-status", s.clone());
@@ -376,18 +380,27 @@ fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String
     Ok(())
 }
 
+/// The state of the download. A finished one (done, error, cancelled) is reported once and then the state is idle again,
+/// so the page that is open when it ends, or the next one opened, tells the player how it went.
 #[tauri::command]
 fn fetch_status(state: State<Arc<fetch::Shared>>) -> fetch::Status {
-    let mut s = state.status.lock().unwrap().clone();
+    let mut st = state.lock();
+    let mut s = st.clone();
     if s.state.is_empty() {
         s.state = "idle".into();
+    }
+    if matches!(s.state.as_str(), "done" | "error" | "cancelled") {
+        *st = fetch::Status::default();
     }
     s
 }
 
 #[tauri::command]
 fn cancel_fetch(state: State<Arc<fetch::Shared>>) {
-    state.cancel.store(true, Ordering::SeqCst);
+    let s = state.lock();
+    if s.state == "running" {
+        state.cancel.store(true, Ordering::SeqCst);
+    }
 }
 
 #[derive(Serialize)]
