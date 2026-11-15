@@ -1294,6 +1294,10 @@ NXTEST(texprep_background_upload) {
 // block row from their distinct rows); the image must hold exactly the whole stand-in. Its job's result then replaces it; an upload asked for while
 // the job is not done keeps the stand-in (standin_keep) instead of preparing the texture on the render thread.
 NXTEST(compact_standin_upload_and_replacement) {
+    // the CPU texture path ([gfx] astc_gpu = off): with the GPU ASTC transcode (upstream 0.2.0, on by default on a discrete GPU) the
+    // render thread transcodes on the GPU instead of uploading a stand-in, and its BC7 differs from bc7e's (test_nvn_astc_gpu covers it)
+    config_set("gfx", "astc_gpu", "off");
+    struct Restore { ~Restore() { config_set("gfx", "astc_gpu", "auto"); } } restore;
     Rig r;
     if (!bring_up(r)) {
         CHECK(false);

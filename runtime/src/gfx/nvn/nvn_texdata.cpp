@@ -324,7 +324,7 @@ std::vector<LevelGeom> level_geometry(const TextureBuilderInfo& b, const TexLayo
     return g;
 }
 
-enum class Mode { Passthrough, Bc7, Rgba8, Bc5 };
+enum class Mode { Passthrough, Bc7, Rgba8, Bc5, Bc1 };
 
 // The output level table of a mode (offsets and sizes in PreparedTexture::data; all layers of a level together).
 void build_level_table(Mode mode, const std::vector<LevelGeom>& geo, uint32_t layers, PreparedTexture& out) {
@@ -344,8 +344,9 @@ void build_level_table(Mode mode, const std::vector<LevelGeom>& geo, uint32_t la
                 break;
             case Mode::Bc7:
             case Mode::Bc5:
+            case Mode::Bc1:
                 pl.row_blocks = static_cast<uint32_t>(div_up(g.w, 4));
-                layer_bytes = static_cast<uint64_t>(pl.row_blocks) * div_up(g.h, 4) * 16 * g.d;
+                layer_bytes = static_cast<uint64_t>(pl.row_blocks) * div_up(g.h, 4) * (mode == Mode::Bc1 ? 8 : 16) * g.d;
                 pl.offset = out.level.empty() ? 0 : out.level.back().offset + out.level.back().size;
                 break;
             case Mode::Rgba8:
@@ -553,6 +554,36 @@ void note_uncompressed_image(const Texture& t) {
                 static_cast<unsigned long long>(cnt), static_cast<double>(r) / 1048576.0, static_cast<double>(b7) / 1048576.0, static_cast<double>(as) / 1048576.0);
 }
 
+// ---- [gfx] astc_bc = bc1 -------------------------------------------------------------------------------------------------
+namespace {
+// The BC1 entries' key is seeded with this in place of a BC7 preset (0..6), so they never meet the BC7 entries of the same texture.
+constexpr int kBc1KeySeed = 0x100 + kBc1Level;
+std::atomic<uint64_t> g_bc1_scans{0}, g_bc1_opaque{0}, g_bc1_scan_ns{0}, g_bc1_scan_bytes{0}, g_bc1_alpha_misses{0};
+
+void bc1_log_stats_maybe() {
+    const uint64_t n = g_bc1_scans.load(std::memory_order_relaxed);
+    if (n == 1 || (n & 255) == 0)
+        NXLOG_I(kTag, "[gfx] astc_bc = bc1: %llu alpha scans, %llu textures opaque (BC1), %.0f MB scanned in %.0f ms", static_cast<unsigned long long>(n),
+                static_cast<unsigned long long>(g_bc1_opaque.load()), static_cast<double>(g_bc1_scan_bytes.load()) / 1048576.0,
+                static_cast<double>(g_bc1_scan_ns.load()) * 1e-6);
+}
+}  // namespace
+
+bool astc_bc1_candidate(const Texture& t, const uint8_t* src) {
+    if (!src || t.vpool || !t.fmt || !t.fmt->astc || t.b.samples > 1 || t.b.target == NVN_TEXTURE_TARGET_3D || !bc1_encoder_available()) return false;
+    const TexLayout L = compute_texture_layout(t.b);
+    if (!L.valid || !L.fmt || t.storage_size < L.storage_size) return false;
+    if (tex_edit_active() && tex_edit_match(t, src).id) return false;   // edited data is made in BC7 / RGBA8 (nxrt/tex_edit.h)
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool alpha = astc_storage_alpha_possible(src, L.storage_size, L.fmt->block_w, L.fmt->block_h);
+    g_bc1_scan_ns.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count()));
+    g_bc1_scan_bytes.fetch_add(L.storage_size);
+    if (!alpha) g_bc1_opaque.fetch_add(1);
+    g_bc1_scans.fetch_add(1);
+    bc1_log_stats_maybe();
+    return !alpha;
+}
+
 std::string bc7_cache_path(const Texture& t, uint64_t hash) {
     (void)t;
     return cache_path_in(cache_dir(), hash);
@@ -577,27 +608,38 @@ void set_entry_format_hook(EntryFormatHook fn, void* ctx) {
     t_entry_hook_ctx = ctx;
 }
 
-VkFormat cache_entry_format(const Texture& t, bool no_disk) {
+VkFormat cache_entry_format(const Texture& t, bool bc1, bool no_disk) {
     if (!t.mem) return VK_FORMAT_UNDEFINED;
     // no_disk: what this process learned only. No non-BC7 entry seen yet (the usual case): BC7, without hashing the storage.
-    if (no_disk && astc_quality() != AstcQuality::Uncompressed && g_learned_non_bc7.load(std::memory_order_relaxed) == 0) return VK_FORMAT_UNDEFINED;
+    // (With bc1 the alpha scan below still decides between BC1 and BC7.)
+    if (no_disk && !bc1 && astc_quality() != AstcQuality::Uncompressed && g_learned_non_bc7.load(std::memory_order_relaxed) == 0) return VK_FORMAT_UNDEFINED;
     const TexLayout L = compute_texture_layout(t.b);
     if (!L.valid || !L.fmt || !L.fmt->astc || t.b.samples > 1 || t.storage_size < L.storage_size) return VK_FORMAT_UNDEFINED;
     const VkFormat rgba = L.fmt->srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    const VkFormat bc1f = L.fmt->srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
     const AstcQuality am = astc_quality();
     if (am == AstcQuality::Uncompressed) return rgba;   // every ASTC texture is RGBA8; the cache is not used
-    if (cache_dir().empty()) return VK_FORMAT_UNDEFINED;
     const std::vector<LevelGeom> geo = level_geometry(t.b, L);
     if (geo.size() != L.levels) return VK_FORMAT_UNDEFINED;
-    int q[2];
-    const int n = entry_qualities(am, q);
-    for (int i = 0; i < n; ++i) {
-        const uint64_t key = cache_key_of(t.storage_size, t.mem, L, geo, *L.fmt, q[i]);
-        const VkFormat f = no_disk ? learned_entry_format(key) : cache_peek_format(bc7_cache_path(t, key), key);
-        if (f == VK_FORMAT_UNDEFINED) continue;
-        return (f == rgba || (f == VK_FORMAT_BC5_UNORM_BLOCK && !L.fmt->srgb)) ? f : VK_FORMAT_UNDEFINED;   // the first valid entry decides
+    if (!cache_dir().empty()) {
+        int q[2];
+        const int n = entry_qualities(am, q);
+        for (int i = 0; i < n; ++i) {
+            const uint64_t key = cache_key_of(t.storage_size, t.mem, L, geo, *L.fmt, q[i]);
+            const VkFormat f = no_disk ? learned_entry_format(key) : cache_peek_format(bc7_cache_path(t, key), key);
+            if (f == VK_FORMAT_UNDEFINED) continue;
+            if (f == rgba || (f == VK_FORMAT_BC5_UNORM_BLOCK && !L.fmt->srgb)) return f;   // the first valid entry decides
+            break;
+        }
     }
-    return VK_FORMAT_UNDEFINED;
+    if (!bc1 || t.vpool || (tex_edit_active() && tex_edit_match(t, t.mem).id)) return VK_FORMAT_UNDEFINED;
+    // BC1: an entry of its own key needs no scan (prepare_texture makes the same choice: the entry, else the scan). no_disk: the scan only
+    // (a BC1 entry is only ever made for a texture the scan proves opaque, so the answer is the same)
+    if (!no_disk && !cache_dir().empty()) {
+        const uint64_t key = cache_key_of(t.storage_size, t.mem, L, geo, *L.fmt, kBc1KeySeed);
+        if (cache_peek_format(bc7_cache_path(t, key), key) == bc1f) return bc1f;
+    }
+    return astc_bc1_candidate(t, t.mem) ? bc1f : VK_FORMAT_UNDEFINED;
 }
 
 bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out) {
@@ -672,7 +714,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                 const VkFormat ef = cand[i].ef;
                 if (ef == rgba8_format && (want == VK_FORMAT_UNDEFINED || want == rgba8_format)) { mode = Mode::Rgba8; chosen = i; }
                 else if (ef == bc5_format && !fmt.srgb && (want == VK_FORMAT_UNDEFINED || want == bc5_format)) { mode = Mode::Bc5; chosen = i; }
-                else if (ef == bc7_format && (want == VK_FORMAT_UNDEFINED || want == bc7_format)) { mode = Mode::Bc7; chosen = i; }
+                else if (ef == bc7_format && !caps.skip_entries && (want == VK_FORMAT_UNDEFINED || want == bc7_format)) { mode = Mode::Bc7; chosen = i; }
             }
             entry_applies = chosen >= 0;
             if (t_entry_hook) t_entry_hook(t_entry_hook_ctx, entry_applies && (mode == Mode::Rgba8 || mode == Mode::Bc5) ? (mode == Mode::Bc5 ? bc5_format : rgba8_format)
@@ -692,6 +734,24 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                 upgrade_possible = true;
                 upgrade_key = cand[0].key;
                 upgrade_quality = q[0];
+            }
+        }
+        // [gfx] astc_bc = bc1 (nvn_texdata.h): BC1 for an image made as BC1, or (no image yet: a background job) the choice cache_entry_format
+        // makes for the image: an RGBA8 / BC5 entry wins (mode is then not Bc7), then a BC1 entry, then the alpha scan.
+        const VkFormat bc1_format = fmt.srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+        const VkFormat want = caps.image_format;
+        if (!caps.astc && !uncompressed && mode == Mode::Bc7 && (want == bc1_format || (want == VK_FORMAT_UNDEFINED && caps.bc1 && !t.vpool &&
+                                                                                        !(tex_edit_active() && tex_edit_match(t, src_mem).id)))) {
+            const uint64_t bkey = cache_dir().empty() ? 0 : cache_key_of(t.storage_size, src_mem, L, geo, fmt, kBc1KeySeed);
+            const std::string bpath = cache_dir().empty() ? std::string() : bc7_cache_path(t, bkey);
+            const VkFormat bef = bpath.empty() ? VK_FORMAT_UNDEFINED : cache_peek_format(bpath, bkey);
+            if (want == bc1_format || bef == bc1_format || astc_bc1_candidate(t, src_mem)) {
+                mode = Mode::Bc1;
+                key = bkey;
+                cache_file = bpath;
+                entry_format = bef;
+                entry_applies = bef == bc1_format && !caps.skip_entries;
+                upgrade_possible = false;
             }
         }
     } else if (fmt.bc) {
@@ -720,6 +780,12 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
             out.block_w = 4;
             out.block_h = 4;
             out.block_bytes = 16;
+            break;
+        case Mode::Bc1:
+            out.format = fmt.srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK;
+            out.block_w = 4;
+            out.block_h = 4;
+            out.block_bytes = 8;
             break;
         case Mode::Rgba8:
             out.format = fmt.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
@@ -763,7 +829,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
     // ---- host pixel edit (nxrt/tex_edit.h): the kept edited data, or this call makes it ------------------------------------
     TexEditKey edit;
     bool edit_make = false;
-    if (fmt.astc && (mode == Mode::Bc7 || mode == Mode::Rgba8) && L.layers == 1 && geo[0].d == 1 && t.b.target == NVN_TEXTURE_TARGET_2D &&
+    if (fmt.astc && (mode == Mode::Bc7 || mode == Mode::Rgba8 || mode == Mode::Bc1) && L.layers == 1 && geo[0].d == 1 && t.b.target == NVN_TEXTURE_TARGET_2D &&
         tex_edit_active()) {
         edit = tex_edit_match(t, src_mem);
         if (edit.id) {
@@ -791,8 +857,8 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
 
     // ---- disk cache ---------------------------------------------------------------------------------------------------------
     const bool bc7 = mode == Mode::Bc7;
+    const bool bc1 = mode == Mode::Bc1;
     const int quality = bc7 ? bc7_quality() : 0;
-    (void)quality;
     if (entry_applies && !edit_make) {
         const bool rt = nxrt::hitch_on_render_thread();
         const auto tr0 = std::chrono::steady_clock::now();
@@ -803,22 +869,56 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
         }
         if (hit) {
             out.from_cache = true;
-            NXLOG_I(kTag, "texture %u: %s data from cache %s", t.id, mode == Mode::Bc5 ? "BC5" : mode == Mode::Rgba8 ? "RGBA8" : "BC7", cache_file.c_str());
+            NXLOG_I(kTag, "texture %u: %s data from cache %s", t.id, mode == Mode::Bc5 ? "BC5" : mode == Mode::Rgba8 ? "RGBA8" : bc1 ? "BC1" : "BC7", cache_file.c_str());
             if (upgrade_possible && !edit_make) schedule_upgrade(t, src_mem, upgrade_key, upgrade_quality, cache_dir());   // a fast entry served now; the high one is made behind
             return true;
         }
         if (mode == Mode::Bc5) return fail("the BC5 cache entry could not be read");
+    }
+    // ---- [gfx] astc_gpu (nvn_astc_gpu.h) ------------------------------------------------------------------------------------
+    // An entry the GPU encoders stored (their own key) serves like any other, also with the GPU path off. Without one, and with caps.gpu_astc,
+    // the texture leaves here as its untiled ASTC blocks: the GPU layer decodes and encodes them and may store the result under that key.
+    // Not for sparse or 3D textures or textures a host pixel edit matches (as [gfx] astc_bc), nor BC5 images (the setup tool's entries).
+    const bool gpu_kind = fmt.astc && !caps.astc && !edit_make && !t.vpool && geo[0].d == 1 && t.b.target != NVN_TEXTURE_TARGET_3D &&
+                          (bc7 || bc1 || mode == Mode::Rgba8);
+    uint64_t gpu_key = 0;
+    std::string gpu_file;
+    if (gpu_kind && (bc7 || bc1) && !cache_dir().empty() && (entry_format == VK_FORMAT_UNDEFINED || entry_format == out.format)) {
+        gpu_key = cache_key_of(t.storage_size, src_mem, L, geo, fmt, (bc1 ? 0x300 : 0x200) + kGpuEncoderVersion);
+        gpu_file = bc7_cache_path(t, gpu_key);
+        // (standin_now: no file is opened on the render thread; the GPU transcodes, or the background job reads the entry behind a stand-in)
+        if (!caps.skip_entries && !standin_now && cache_peek_format(gpu_file, gpu_key) == out.format && cache_read(gpu_file, gpu_key, out)) {
+            out.from_cache = true;
+            NXLOG_I(kTag, "texture %u: %s data (GPU encoded) from cache %s", t.id, bc1 ? "BC1" : "BC7", gpu_file.c_str());
+            if (upgrade_possible) schedule_upgrade(t, src_mem, upgrade_key, upgrade_quality, cache_dir());
+            return true;
+        }
+    }
+    if (gpu_kind && caps.gpu_astc) {
+        std::vector<uint8_t> blocks;
+        if (!make_linear(L, geo, fmt, src_mem, blocks)) return fail("untile failed");
+        build_level_table(Mode::Passthrough, geo, L.layers, out);   // the levels of the ASTC source
+        out.data = std::move(blocks);
+        out.gpu_astc = true;
+        out.src_block_w = fmt.block_w;
+        out.src_block_h = fmt.block_h;
+        out.src_srgb = fmt.srgb;
+        out.gpu_cache_key = gpu_key;
+        out.gpu_cache_file = gpu_file;
+        if (upgrade_possible) schedule_upgrade(t, src_mem, upgrade_key, upgrade_quality, cache_dir());   // only when the GPU layer asks for it (caps.upgrade)
+        return true;
     }
     // (uncompressed mode: the decode to RGBA8 is short and needs no cache, so a background job does it too)
     if (caps.cache_only && mode != Mode::Passthrough && !edit_make && !uncompressed) {   // background job: a transcode is a long CPU job on data that may not be final; the render thread does it if it is needed
         out.error = "no cache entry";
         return false;
     }
-    // only BC7 results are written to the cache, and never over a valid entry of another format (RGBA8 / BC5 entries come from the setup tool)
-    if (!bc7 || (entry_format != VK_FORMAT_UNDEFINED && entry_format != out.format)) cache_file.clear();
+    // only BC7 and BC1 results are written to the cache, and never over a valid entry of another format (RGBA8 / BC5 entries come from the setup tool)
+    if (!(bc7 || bc1) || (entry_format != VK_FORMAT_UNDEFINED && entry_format != out.format)) cache_file.clear();
     if (edit_make) cache_file.clear();   // edited data stays out of the shared cache
     // needed this frame and no entry: the quickest preset now (not cached, no upgrade); the background job makes the entry and the real data
-    const bool provisional = caps.provisional && bc7 && !edit_make && (quality > 0 || standin_now);
+    // (standin_now: a stand-in at any preset, as the background job makes the real data; standin_now only applies to BC7 images)
+    const bool provisional = caps.provisional && ((bc7 && (quality > 0 || standin_now)) || bc1) && !edit_make;
     if (provisional) {
         cache_file.clear();
         out.provisional = true;
@@ -930,7 +1030,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
             in.height = g.h;
             uint8_t* dst = out.data.data() + pl.offset;
             uint8_t* px = dst;
-            if (bc7) {
+            if (bc7 || bc1) {
                 rgba.resize(static_cast<size_t>(g.w) * g.h * 4);
                 px = rgba.data();
             }
@@ -940,6 +1040,8 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
             if (bc7) {
                 st = a2b_encode_bc7(g.w, g.h, px, &eopt, dst, static_cast<size_t>(pl.size), nullptr);
                 if (st != A2B_OK) return fail(std::string("BC7 encode of the edit failed: ") + a2b_status_string(st));
+            } else if (bc1 && !encode_bc1_image(g.w, g.h, px, kBc1Level, dst, static_cast<size_t>(pl.size), opt.threads)) {
+                return fail("BC1 encode of the edit failed");
             }
             diag_progress();
         }
@@ -948,7 +1050,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
         edit_guard.k = nullptr;
         tex_edit_note(t);
         NXLOG_I(kTag, "texture %u: edited by the host (id %016llx), %s %ux%u, %u levels: %.1f ms", t.id, static_cast<unsigned long long>(edit.id),
-                bc7 ? "BC7" : "RGBA8", geo[0].w, geo[0].h, L.levels, ms);
+                bc7 ? "BC7" : bc1 ? "BC1" : "RGBA8", geo[0].w, geo[0].h, L.levels, ms);
         return true;
     }
     std::vector<uint8_t> solid_rgba, solid_enc;
@@ -956,8 +1058,12 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
     uint32_t solid_layer = ~0u;
     // [nvn] standin_copy (default on): the solid blocks of the source level are encoded once per layer and copied into the big levels, a row of
     // blocks that maps to the same source row as the one before is copied whole (a 4096x4096 stand-in wrote a million blocks one by one, with
-    // two 64-bit divisions each). Byte for byte the old result. false: each block computed as before (A/B).
+    // two 64-bit divisions each). Byte for byte the old result. false: each block computed as before (A/B). BC7 (16-byte) or BC1 (8-byte) blocks.
     const bool solid_copy = solid_src < geo.size() && config_get_bool("nvn", "standin_copy", true);
+    const size_t sbb = bc1 ? 8 : 16;   // bytes of a stand-in's solid block (the compact layout is BC7 only)
+    std::vector<uint8_t> bc1_rgba;
+    const bool bc1_alpha_checked = !bc1;   // a BC1 texture's decoded alpha is checked (cheap next to the encode)
+    bool bc1_alpha_seen = false;
     for (size_t i = 0; i < geo.size(); ++i) {
         const LevelGeom& g = geo[i];
         const PreparedLevel& pl = out.level[i];
@@ -965,7 +1071,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
             const LevelGeom& sg = geo[solid_src];
             const uint64_t out_slice = pl.size / L.layers;
             const uint32_t bw = (g.w + 3) / 4, bh = (g.h + 3) / 4;
-            if (!out.compact && out_slice != static_cast<uint64_t>(bw) * bh * 16) return fail("internal: BC7 stand-in size mismatch");
+            if (!out.compact && out_slice != static_cast<uint64_t>(bw) * bh * sbb) return fail("internal: stand-in size mismatch");
             for (uint32_t layer = 0; layer < L.layers; ++layer) {
                 if (solid_layer != layer) {
                     a2b_input sin = in;
@@ -977,8 +1083,11 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                     if (st != A2B_OK) return fail(std::string("ASTC decode for the stand-in failed: ") + a2b_status_string(st));
                     solid_layer = layer;
                     if (solid_copy) {   // every source texel's block, once
-                        solid_enc.resize(static_cast<size_t>(sg.w) * sg.h * 16);
-                        for (size_t px = 0; px < static_cast<size_t>(sg.w) * sg.h; ++px) bc7_solid_block(solid_rgba.data() + px * 4, solid_enc.data() + px * 16);
+                        solid_enc.resize(static_cast<size_t>(sg.w) * sg.h * sbb);
+                        for (size_t px = 0; px < static_cast<size_t>(sg.w) * sg.h; ++px) {
+                            if (bc1) bc1_solid_block(solid_rgba.data() + px * 4, solid_enc.data() + px * sbb);
+                            else bc7_solid_block(solid_rgba.data() + px * 4, solid_enc.data() + px * sbb);
+                        }
                     }
                 }
                 uint8_t* dst = out.data.data() + pl.offset + static_cast<uint64_t>(layer) * out_slice;
@@ -1008,7 +1117,7 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                     solid_xs.resize(bw);
                     for (uint32_t bx = 0; bx < bw; ++bx)
                         solid_xs[bx] = std::min(sg.w - 1, static_cast<uint32_t>((static_cast<uint64_t>(bx) * 4 + 2) * sg.w / g.w));
-                    const size_t row_bytes = static_cast<size_t>(bw) * 16;
+                    const size_t row_bytes = static_cast<size_t>(bw) * sbb;
                     uint32_t prev_sy = ~0u;
                     for (uint32_t by = 0; by < bh; ++by) {
                         const uint32_t sy = std::min(sg.h - 1, static_cast<uint32_t>((static_cast<uint64_t>(by) * 4 + 2) * sg.h / g.h));
@@ -1018,8 +1127,8 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                             continue;
                         }
                         prev_sy = sy;
-                        const uint8_t* src = solid_enc.data() + static_cast<size_t>(sy) * sg.w * 16;
-                        for (uint32_t bx = 0; bx < bw; ++bx) std::memcpy(row + static_cast<size_t>(bx) * 16, src + static_cast<size_t>(solid_xs[bx]) * 16, 16);
+                        const uint8_t* src = solid_enc.data() + static_cast<size_t>(sy) * sg.w * sbb;
+                        for (uint32_t bx = 0; bx < bw; ++bx) std::memcpy(row + static_cast<size_t>(bx) * sbb, src + static_cast<size_t>(solid_xs[bx]) * sbb, sbb);
                     }
                     continue;
                 }
@@ -1027,7 +1136,9 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                     const uint32_t sy = std::min(sg.h - 1, static_cast<uint32_t>((static_cast<uint64_t>(by) * 4 + 2) * sg.h / g.h));
                     for (uint32_t bx = 0; bx < bw; ++bx) {
                         const uint32_t sx = std::min(sg.w - 1, static_cast<uint32_t>((static_cast<uint64_t>(bx) * 4 + 2) * sg.w / g.w));
-                        bc7_solid_block(solid_rgba.data() + (static_cast<size_t>(sy) * sg.w + sx) * 4, dst + (static_cast<size_t>(by) * bw + bx) * 16);
+                        const uint8_t* c = solid_rgba.data() + (static_cast<size_t>(sy) * sg.w + sx) * 4;
+                        if (bc1) bc1_solid_block(c, dst + (static_cast<size_t>(by) * bw + bx) * 8);
+                        else bc7_solid_block(c, dst + (static_cast<size_t>(by) * bw + bx) * 16);
                     }
                 }
             }
@@ -1038,12 +1149,25 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
         const uint64_t out_slice = pl.size / L.layers / g.d;   // bytes of one z slice of the output
         const uint64_t in_slice = g.slice / g.d;               // bytes of one z slice of the ASTC data (tight rows)
         if (bc7 && a2b_output_size(&in) != out_slice) return fail("internal: BC7 slice size mismatch");
+        if (bc1 && div_up(g.w, 4) * div_up(g.h, 4) * 8 != out_slice) return fail("internal: BC1 slice size mismatch");
         for (uint32_t layer = 0; layer < L.layers; ++layer)
             for (uint32_t z = 0; z < g.d; ++z) {
                 const uint8_t* src = lin.data() + g.lin_off - lin_base + static_cast<uint64_t>(layer) * g.slice + z * in_slice;
                 uint8_t* dst = out.data.data() + pl.offset + (static_cast<uint64_t>(layer) * g.d + z) * out_slice;
                 a2b_status st;
-                if (bc7) {
+                if (bc1) {
+                    // ASTC -> RGBA8 -> BC1. The decode also checks the scan's verdict: a texel with alpha under 255 would be drawn opaque.
+                    bc1_rgba.resize(static_cast<size_t>(g.w) * g.h * 4);
+                    st = a2b_decode_astc_rgba8(&in, src, static_cast<size_t>(in_slice), opt.threads, bc1_rgba.data(), nullptr);
+                    if (st == A2B_OK) {
+                        if (!bc1_alpha_checked) {
+                            for (size_t p = 3; p < bc1_rgba.size(); p += 4)
+                                if (bc1_rgba[p] != 255) { bc1_alpha_seen = true; break; }
+                        }
+                        if (!encode_bc1_image(g.w, g.h, bc1_rgba.data(), provisional ? 0 : kBc1Level, dst, static_cast<size_t>(out_slice), opt.threads))
+                            return fail("BC1 encode failed");
+                    }
+                } else if (bc7) {
                     a2b_format of;
                     st = a2b_transcode(&in, src, static_cast<size_t>(in_slice), &opt, &of, dst, static_cast<size_t>(out_slice),
                                        nullptr);
@@ -1051,17 +1175,40 @@ bool prepare_texture(const Texture& t, const TexCaps& caps, PreparedTexture& out
                     st = a2b_decode_astc_rgba8(&in, src, static_cast<size_t>(in_slice), 0, dst, nullptr);
                 }
                 if (st != A2B_OK)
-                    return fail(std::string("ASTC ") + (bc7 ? "transcode" : "decode") + " failed: " + a2b_status_string(st));
+                    return fail(std::string("ASTC ") + (bc7 || bc1 ? "transcode" : "decode") + " failed: " + a2b_status_string(st));
                 diag_progress();   // a cold cache transcodes on the render thread for minutes: slow, not frozen (debug note 421)
             }
     }
-    NXLOG_I(kTag, "texture %u: %s %ux%u, %u levels, %u layers%s: %.1f ms", t.id, bc7 ? "ASTC -> BC7" : "ASTC -> RGBA8",
+    NXLOG_I(kTag, "texture %u: %s %ux%u, %u levels, %u layers%s: %.1f ms", t.id, bc7 ? "ASTC -> BC7" : bc1 ? "ASTC -> BC1" : "ASTC -> RGBA8",
             geo[0].w, geo[0].h, L.levels, L.layers, provisional ? " (quick stand-in, preset 0)" : "", ms_since(t0));
+    if (bc1_alpha_seen && g_bc1_alpha_misses.fetch_add(1) < 16)
+        NXLOG_W(kTag, "texture %u: stored as BC1 but its ASTC decodes with alpha under 255 (alpha scan wrong?): drawn opaque", t.id);
 
     if (!cache_file.empty() && !cache_write(cache_file, key, out))
         NXLOG_W(kTag, "texture %u: could not write cache file %s", t.id, cache_file.c_str());
     if (upgrade_possible && !edit_make && !provisional) schedule_upgrade(t, src_mem, upgrade_key, upgrade_quality, cache_dir());   // the fast transcode serves now; the high preset is made behind
     return true;
+}
+
+bool cache_store_encoded(const PreparedTexture& src, std::vector<uint8_t>&& blocks) {
+    if (!src.gpu_astc || src.gpu_cache_file.empty() || src.level.empty() || !src.layers || (src.block_bytes != 16 && src.block_bytes != 8)) return false;
+    PreparedTexture out;
+    out.format = src.format;
+    out.levels = src.levels;
+    out.layers = src.layers;
+    for (const PreparedLevel& s : src.level) {   // the level table of Mode::Bc7 / Mode::Bc1 (build_level_table)
+        PreparedLevel pl{};
+        pl.width = s.width;
+        pl.height = s.height;
+        pl.depth = s.depth;
+        pl.row_blocks = static_cast<uint32_t>(div_up(s.width, 4));
+        pl.offset = out.level.empty() ? 0 : out.level.back().offset + out.level.back().size;
+        pl.size = static_cast<uint64_t>(pl.row_blocks) * div_up(s.height, 4) * src.block_bytes * s.depth * src.layers;
+        out.level.push_back(pl);
+    }
+    if (out.level.back().offset + out.level.back().size != blocks.size()) return false;
+    out.data = std::move(blocks);
+    return cache_write(src.gpu_cache_file, src.gpu_cache_key, out);
 }
 
 }  // namespace nxrt::nvn::be

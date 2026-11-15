@@ -666,3 +666,211 @@ waits unchanged (3.6-4.0), frame median ~16.8 ms in both.
   dependent load within L2/L3, +65 ns beyond); the codegen track found ~48 % of main's lifted-code samples on guest loads. Without a
   miss rate the gain stays a range (a few % to ~15 % of main's CPU), and it needs the heap rework + "Lock pages in memory" (see the
   waits track's notes). Measuring it first (uProf, one street run) is the right next step if anyone picks it up.
+## Render track (branch `perf/render`)
+
+Goal: the render thread (NVN command replay to Vulkan) at 2600 draws/frame in the dense street: work p50 <= ~11 ms, p99 <= ~15 ms (was
+p50 16.6-17.4, p99 22-24 ms, ~6.5 us a draw; COORD 21:30). Test requests go to `tmp/fefw-perf/queue/render-<n>/`.
+
+### Where a draw's time goes (w8-cg2-prof, bdd8f2f, resolved to source lines)
+
+Tools (`tmp/fefw-perf/render/`): `tree.py` (busy-sample call tree of one thread), `drv.py`/`drv2.py` (driver share, by calling
+function), `lines.py` / `incl.py` (self / inclusive samples per source line: the profiled DLL's offsets moved onto a byte-identical
+function of a build linked with a PDB, `linkpdb.cmd`, then `llvm-symbolizer`). Shares of the render thread's busy samples:
+
+| what | share | notes |
+|---|---:|---|
+| NVIDIA driver (nvoglv64) | 28 % | vkCmd* ~22 % (bind pipeline 5.1, push descriptors + bind sets 3.4, dynamic state 1.8, begin/end rendering 2.3, barriers 2.3, dispatch 1.3, draws), vkUpdateDescriptorSets 2.4, vkAllocateDescriptorSets 1.5, submits 1.9 |
+| build_set (descriptor sets, inclusive) | 23.7 % | UBO resolve_read 3.3, tex_sampled_view 2.4, vkUpdateDescriptorSets 2.4, shadow_of 1.7, alloc_set 1.6, sampler_for 1.6, make_request 1.0, set cache 0.8, the rest spread thin |
+| out_draw_bindings | 11-12 % | the full walk over ~84 buffer slots (16 vertex + 2 stages x 32 + 4 xfb), taken after every program bind; the dirty-only path is 0.1 % |
+| prepare_textures | 4.5 % | |
+| samples_depth_target | 3.5 % | first resolve of each texture binding of the draw + tex_or_null cache misses |
+| vertex buffers (resolve_read) | 3.4 % | |
+| ensure_pass | 2.8 % | |
+| prog_layout | 2.0 % | its mutex and map, ~1100 program switches a frame |
+| graphics_pipeline + build_key | 2.0 % | |
+| do_dispatch (inclusive) | 10.7 % | 179 dispatches a frame |
+
+### Changes
+
+| commit | what | toggle (default) |
+|---|---|---|
+| 916068c | deferred Vulkan recording (`nvn_cmdq.cpp`): the vkCmd* / vkUpdateDescriptorSets calls the render thread makes while it records a submission go into a ring (arguments and the arrays they point to copied) and a worker thread `nvn-rec` makes them, in order, on the same command buffers. Begin/End/submit/reset/allocate/free wait for the worker first; DLSS / FSR / Streamline / frame-generation recorders run after a sync (`cmdq::Direct`). The volk entry points are wrapped once at bring-up; outside a recording scope every call goes straight through. | `[nvn] replay_threads = 1` (2 = on) |
+| 916068c | out_draw_bindings walks only bound slots (masks kept by BindBuffers), same order and result | `[nvn] out_masks = true` |
+| 916068c | 256-entry direct-mapped program layout cache for draws and dispatches | `[nvn] layout_cache = true` |
+
+### Test log
+
+| request | what | result |
+|---|---|---|
+| render-1 | out_masks + layout_cache (defaults), replay_threads = 2 A/B, battle, profile | queued |
+
+## Pipeline-stall track (branch `perf/pipe`)
+
+Goal: no first-use stall over ~50 ms (new areas, spells, effects, cutscenes) even with cold pipeline caches. Test requests go to
+`tmp/fefw-perf/queue/pipe-<n>/`; cold-cache runs through `tmp/fefw-perf/pipe/cold_batch.py`.
+
+### Diagnosis: the r1-tbat battle stall (3 frames of 319 / 326 / 453 ms in `dungeon_after`, t = 100-102 s)
+
+It was not a pipeline compile on any frame's critical path:
+- render thread idle 300-433 ms of each frame (replay 5.6-8.1 ms, pipeline creation 0.1-0.3 ms): it had nothing to replay.
+- the game thread was off the CPU: gap 327-459 ms, but on the CPU only 18-37 ms and in guest system calls only 3-4 ms. GPU sync waits 0,
+  present back pressure 0. So it was blocked in host code that is not a guest system call.
+- in those 2 s the game set 45 programs (35 new) and the battle's 32 new pipelines appeared. The GPL side did its job: 116 new shader parts
+  compiled on the background threads (4090 ms of worker time, ~35 ms each, so a cold driver cache), 43 draws deferred for 11 parts, 0 parts
+  built or waited for at the draw, 0 whole pipelines at the draw. Those deferred draws are skipped (pop-in), not stalls.
+- the 32 new keys use 52 distinct shaders; **38 of them were not in `spirv.preload.pack` and not in the order file** (`pipe/keys_vs_pack.py`).
+  `nvnProgramSetShaders` -> `ShaderCache::find` -> `load` -> `read_spv` reads such a shader as a separate `.spv` file **on the game thread**,
+  from `E:/.../shader_cache/spirv` (the slow, 99 % full HDD; the test install points there too). Not in the Windows file cache, each is a
+  directory/MFT/data seek or three: 38 x ~30 ms = ~1.1 s, the length of the three frames. Repeat runs did not stall because the files were then
+  in the file cache (and the keys in the key file), which is also why the user sees it again after a reboot or once the cache is evicted.
+- why the pack lacked them: the pack only holds the order file's shaders (12,088 records, ~3,600 packed), and the order file's new lines were
+  held until 77 had come or until a shutdown, which a closed window never runs. The test install's `shader_order.txt` had not grown since
+  13 Nov 09:45 (1560 lines) through dozens of runs.
+
+Other first-use paths found by reading the code (not seen in the warm logs, but hit with cold caches):
+- compute pipelines: no key file, no parts, built synchronously by the render thread at the first dispatch (`compute_pipeline`).
+- a draw whose key-file pipeline the prewarm is still building, and whose parts are not ready, **waits** for the whole build on the render
+  thread (`prewarm_take`, "prewarm.wait"): after a driver update every recorded key compiles cold at boot.
+- the draw's fast link and its vertex-input / fragment-output parts are made with the pipeline cache, whose lock the saver thread holds while
+  it serialises the whole cache (`vkGetPipelineCacheData`, every 2 s while new pipelines appear, 300+ MB here).
+- "Prepare shaders" (`gpl_prepare`) cannot run for Fortune's Weave: it needs `shader_cache/programs.bin` (vertex/fragment pairs), which the
+  FE setup does not write. Shader parts depend on the pair (shared layout, producer outputs), so a full-corpus parts prepass needs that list
+  first (follow-up: write programs.bin from the BNSH variations at setup).
+
+### Changes
+
+| commit | what | toggle (default) |
+|---|---|---|
+| 8c10ac3 | the pack holds every shader of `results.tsv` with SPIR-V (order file's first); the first start that finds it incomplete writes the full `.new` pack in the background (30 s after boot, background I/O priority); used from the next start | `[nvn] shader_pack_all = true` |
+| 8c10ac3 | the pack's frames stay in memory after the boot read (~170 MB for the full pack): a shader load never touches the disk | `[nvn] shader_pack_resident = true` |
+| 8c10ac3 | order file appended every 2 s by its own thread (`nvn-order-write`), never on the game thread | always |
+| 8c10ac3 | instrumentation: `shader loads by the game: ...` line every 10 s (by source), a warning per load over 20 ms, hitch counters `shader_loads`, `shader_file_reads`, `shader_load_ms` | always |
+| 8c10ac3 | compute pipelines built on the pipeline-library threads when the game sets a compute program; the dispatch takes it, waits for one under way, or builds one still queued; `compute pipelines ahead: ...` line | `[nvn] compute_async = prebuild` (`off`, `skip`) |
+| 8c10ac3 | a draw whose prewarm build is under way (not linkable) is skipped while frames flow instead of waiting | `[nvn] prewarm_wait = false` |
+| 8c10ac3 | 2 extra pipeline-library threads that only take urgent jobs (parts a deferred draw needs, compute, bound programs) | `[nvn] gpl_burst_threads = 2` |
+| 8c10ac3 | fast links and vertex-input / fragment-output parts without the pipeline cache (no lock shared with the saver) | `[nvn] gpl_link_cache = false` |
+
+### Cold-cache test (no live files touched)
+
+`pipe/cold_batch.py <plan>` wraps `harness/batch.py`. A plan entry with `"cold": {...}` gets its own empty pipeline cache, key file and order
+file (`C:/Games/fefw-test/cold/<label>/`, via `NXRT_NVN_PIPELINE_CACHE` / `_KEYS` / `NXRT_NVN_SHADER_ORDER`), a fresh `NXRT_NVN_SPIRV_SALT`
+(the NVIDIA disk cache misses too), and, with `"spirv": "fresh"`, a copy of the live shader cache written with unbuffered I/O to
+`E:/BigData/games/fefw-pipe-cold` (its files are not in the Windows file cache, as after a reboot). Equivalent by hand: rename
+`pipeline_cache.bin` / `pipeline_keys.bin` / `shader_order.txt` in the TEST install and restore them afterwards.
+
+### Test log
+
+| request | what | result |
+|---|---|---|
+| pipe-1 | cold A/B (base 9635cb3 vs 5f195a3, DLL md5 0708780b), window 21: battle + hub with empty pipeline cache/keys/order, new spirv_salt, uncached HDD copy of the shader cache; + warm check | **battle: worst gameplay frame 142 ms -> 44 ms** (A: 142 / 99 / 92 / 80 ms frames = compute pipelines compiled at the dispatch on the render thread 98 / 86 / 27 ms, and main blocked in ShaderCache::pack_read on the HDD; B: battle_open..dungeon_after <= 19 ms, the 40-44 ms frames are texture uploads at the dungeon load-in). Max render-thread "pipeline creation" in any hitch line 815 -> 52 ms (battle), 750 -> 23 ms (hub). Hub cold: no pipeline/shader frames over 50 ms in either (A loaded these shaders from the pack at loading time); remaining >50 ms = fast-travel arrivals (game code, ~300 ms) and texture frames after the load-in. B shader loads: 1155 / 1155 from the pack in memory, 0 .spv reads, worst 7.7 ms. Compute: 69 prebuilt, 0 built at the dispatch, 2 waits (380-450 ms) only at boot (title, t=6-9 s). Full pack written in 134 s (12,009 shaders, 681 MiB in 175 MiB). Warm check (p1-B-warm): within noise / slightly better than w17-base (street_cold 58.1 / 44.0, 239 frames >20 ms vs 57.6-57.8 / 42.1-42.9, 297-318). |
+
+#### What is left (cold caches)
+- The menu_to_world load-in frame is 1.3-1.5 s cold in both (warm ~260 ms): the render thread waits for shader parts at the draw (25 parts,
+  1.6 s in all) because frames are not "flowing" during loading, so gpl_async builds instead of skipping. Only on a first-ever visit with a cold
+  driver cache; a loading-screen-adjacent frame.
+- Compute builds still in progress at the first dispatch are waited for (2 waits of 380-450 ms, at the title screen in these runs).
+  `compute_async = skip` would skip them; not default (a skipped dispatch may leave results later frames use).
+- In the first cold minute the background compiles (gpl 4 + burst 2 threads, ~70 s of CPU) slightly lower hub 1% lows (B-hub hub_cold 44.4
+  vs A 50.4 in one run; B-build 50.7): noise-level, no frame over 33 ms.
+- "Prepare shaders" cannot run for Fortune's Weave without `shader_cache/programs.bin` (setup does not write one); with the key file and the
+  full pack, first-use is covered at runtime anyway.
+
+
+## Upstream 0.2.0 port (branch `perf-0.2.0`, 14 Nov)
+
+`Goldoire/fefw-recomp` is deleted (404). Its last releases live on in `metrist38/fefw-recomp` (master), whose v0.2.0 release (14 Nov) is
+"the final update of the original project"; the 0.2.0 launcher's updater follows that repository. Remote `metrist` in the main clone.
+
+### Base check and how it was merged
+- metrist's "Release 0.1.7" (0cf1712) and ours (0a8adfe) have the **same tree** (`git diff 0a8adfe 0cf1712` is empty; the hashes differ,
+  merge-base cbaeed9). So the upstream delta is exactly `git diff 0cf1712 metrist/master` (95 files, +14k lines).
+- `perf-0.2.0` = perf-stutter e0eba73 + a merge of metrist/master 26145e2, taken against the right base: for that one merge 0cf1712 was
+  grafted onto 0a8adfe (`git replace --graft`, removed right after), so git merged only 0cf1712..26145e2 and not the 0.1.7 changes a
+  second time. Upstream's commits keep their authors (they are the original objects); only the merge commit (484abea) is ours.
+  Later upstream pulls: a plain `git merge metrist/master` now finds the right base by itself.
+- Ported (original project, on top of 0.1.7): 6daca4b set up rejects ':' in the game path; 4ae2408 ultrawide stat radar charts;
+  e448390 lighter textures under a small budget or pressure; 8b40b0f GPU ASTC transcode + compact BC1; e9db313 Intel XeSS; 5ee4e23
+  uniform-only rebinds keep the other sets + import counters; 69865d7 Release 0.1.8; 66b3bf6 GPU ASTC stays on the CPU on iGPUs;
+  0defe66 launcher and build tools (clearer start-up failures, updates, Linux package); 26a1a16 audio volume to 200 % + cheaper DSP
+  rounding; 10a4ecc frame generation decided by player-supplied files on older GPUs; 02ed84a stability (texture use-after-free, crash
+  reports, texture residency, leaner draws); d353968 Overwolf Vulkan layers disabled; 3bb9cf1 read-only graphics storage from the
+  device-local pool copy; 3d33ec3 Release 0.2.0; 368488b, 52c2fae. metrist's own: bcca624 / 975aaab / 06caac8 / 4665954 release CI
+  (manual dispatch only), 0d8b601 / f5aed93 / ae02f97 README and launcher repo.
+
+### Conflicts and judgment calls
+| file | both sides | kept |
+|---|---|---|
+| `core/nxmodule.cpp` | both striped the import counter (cpu/stutter: per-thread `TlCounts`; upstream: 32 cache-line slots, `fetch_add`) | ours: no atomic read-modify-write at all per import |
+| `nvn_gpu.cpp` | `[prof] gpu_stats` (ours) and upstream's `nvn.cnt.gpu_us` gauge both read the per-slot timestamps | both; the timestamp pool is made for the trace, gpu_stats or a soak (`[diag] soak_csv`) |
+| `nvn_pipeline.cpp` | our `create_compute` (compute_async prebuild) vs upstream's inline compute build with `pipeline_cache_lock` | ours, with upstream's shared cache lock moved into `create_compute` (graphics already go through `create_graphics_pipeline_tracked`) |
+| `nvn_replay.cpp` | bound-slot masks: ours `out_masks` (+ `out_memo_dirty`) vs upstream `lean_draws` `g_bm_*`; colour-feedback test: ours `feedback_fast` vs upstream `lean_draws` | ours for both (same answers; ours also feed the memo-dirty fast path); upstream's now-unused `g_bm_*` removed. Upstream's other `lean_draws` parts (resolve in place, delta push of set 0, sampled-format memo), `ubo_only_rebind` and `astc_gpu_pump` are in as upstream wrote them. CONFIG.md notes that `lean_draws = 0` no longer covers the two parts |
+| `nvn_gpu_texture.cpp` | sampled-format memo: both added one | upstream's (`lean_draws`, `VK_FORMAT_MAX_ENUM` sentinel); same code otherwise |
+| `nvn_gpu_texture.cpp` | our reused `PreparedTexture` (tl_prep, no page faults per upload) vs upstream's fresh one + new GPU-transcode fields | ours, now reset by `reset_prep()`: every field fresh, only the data buffer's capacity kept (also at upstream's two resets), so a GPU transcode's fields or a compact stand-in's rows never reach the next upload |
+| `nvn_texdata.h/.cpp` | `cache_entry_format(t, no_disk)` (ours) vs `cache_entry_format(t, bc1)` | `cache_entry_format(t, bc1, no_disk)`. With no_disk the BC1 answer comes from the alpha scan only (a BC1 entry is only ever made for a texture the scan proves opaque) |
+| `nvn_texdata.cpp` | stand-ins: ours (solid_copy, compact rows, standin_encode_px, tex_async=standin) vs upstream's BC1 stand-ins (8-byte solid blocks) | ours, generalised: solid_copy works on 8-byte BC1 blocks too; compact rows stay BC7 only; `provisional = caps.provisional && ((bc7 && (quality > 0 \|\| standin_now)) \|\| bc1)` |
+| `nvn_texdata.cpp` | upstream's GPU-encoder cache entry is peeked/read in prepare_texture | not under `standin_now`: tex_async = standin still opens no cache file on the render thread (the GPU transcodes it, or the background job reads it) |
+| README / `update.rs` | metrist's "mirror" README and default update repo `aidankinzett/fefw-recomp` | the original author's final note (52c2fae); the default update repo is `stephenjayakar/fefw-recomp` (no releases: the check finds nothing, nothing is replaced). CI sets `FEFW_UPDATE_REPO` itself |
+| `.github/workflows/linux-release.yml` | metrist's release workflow | kept (manual dispatch only; on this fork it would publish to this fork) |
+
+Not a conflict, but behaviour to know (all upstream defaults, all toggles):
+- `[gfx] astc_gpu = auto` is **on** on the RTX 3080: a texture without a usable cache entry is transcoded by compute shaders in the frame
+  that uses it (budget `astc_gpu_ms`), and `astc_gpu_cache_read = auto` does **not read** the BC7 cache on a fast GPU (it transcodes
+  again). With our `tex_async = standin`, the render thread goes: background result if ready, else the ASTC blocks to the GPU, else (GPU
+  budget used) our stand-in. `astc_gpu = off` gives back exactly our CPU path (stand-ins + background jobs + NVMe BC7 cache).
+- `[gfx] residency = auto` is **on**: ~1,060 pool-indexing shaders get a store per texture index (SPIR-V changed at load), so **the first
+  start with this DLL misses the pipeline cache for those pipelines** (one cold session; the pack and the key file still help the
+  background builds). Over 80 % of the budget (we run at 87-97 %), textures unused for 60 s are demoted to 256 px and restored when seen
+  again. `residency = 0` turns all of it off (shaders unchanged).
+- `[nvn] pool_mirror_pressure_percent = 85`: no new device-local pool copy chunks above 85 % of the budget (draws read host memory over
+  PCIe, ReBAR is off here). `0` = off.
+- `[nvn] storage_read_copy = 2`, `mirror_hot_copy`, `gfx_ssbo_readonly`: more draws read the device-local copy. `[nvn] ubo_only_rebind`.
+- `[gfx] disable_overwolf_layers`, XeSS (`[upscale]`), `[audio] volume`, `dsp_fast_round`: no effect on our native-4K setup.
+- `texture_detail` / `budget_detail` / `pressure_detail` / `astc_bc`: unchanged on this card (all `auto` keep full BC7 on a 10 GB NVIDIA).
+
+### Exe side
+`perf/codegen2-0.2.0` = perf/codegen2 953b418 + a merge of perf-0.2.0 (only PERF_NOTES conflicted). It carries upstream's
+`fefw_build.py` (jobs started by free memory, ':' refused), `fefw_main.cpp` (clear error when the RomFS cannot be read, `[fs]
+romfs_files`), the ultrawide stat-chart site in `recomp/games/fefw/main.sites` and the launcher, merged cleanly with codegen2's PGO
+options. Not built: the next fefw.exe build (needs a window) should come from it. The DLL works with the current codegen2-3 exe; only the
+ultrawide stat-chart hook needs the new exe.
+
+### Launcher and updates (the live install runs the 0.1.7 launcher)
+- The live `fefw-launcher.exe` follows `Goldoire/fefw-recomp` (the string is in the exe). Its check asks
+  `api.github.com/repos/Goldoire/fefw-recomp/releases/latest`, which now answers 404: the check fails quietly (the About page shows
+  "Could not reach GitHub: ... 404"), no newer release is offered, and Update has nothing to install. Nothing on disk changes.
+  Residual risk: if the name `Goldoire/fefw-recomp` were ever re-registered by someone else, this launcher would offer and install their
+  release (the SHA-256 it checks comes from the same GitHub answer). Turn off "Check for updates at start" on the About page.
+- A 0.2.0 launcher (metrist38's release) follows `metrist38/fefw-recomp`. Its Update downloads `fefw-recomp-<v>-win64.zip` and moves
+  every file of the package over the install: `fefw_rt.dll` (our perf DLL replaced by stock), the launcher, `tools/build`, the locales.
+  `fefw.exe`, the inis, `save/` and `shader_cache/` are not in the zip and stay; but the new `fefw_build.py --check` then asks for a
+  rebuild (main.sites changed), and Set up rebuilds a stock fefw.exe over the codegen2-3 one. (The replaced files are moved to `update/old` first, and back only if the install fails.)
+- So: do not install the 0.2.0 launcher into the live install and do not press Update. Updates come from this fork: upstream changes
+  merged here (`git merge metrist/master`), DLLs and exes deployed by the tester as before. A launcher built from this fork follows
+  `stephenjayakar/fefw-recomp`, which has no releases.
+## Movie track (branch `perf/movie-asm`, 14 Nov): choppy cutscenes were a C-only dav1d
+
+User report (14 Nov evening, live e0eba73 + cg2-3 exe): pre-rendered cutscenes play at a low frame rate and some sound cuts out.
+**Cause: every fork DLL (7d72d56 .. e0eba73) was built without NASM, so dav1d (the AV1 movie decoder, movie_vdec.cpp) had no x86-64
+assembly.** `third_party/dav1d/CMakeLists.txt` turns `NXRT_DAV1D_ASM` on only when nasm is found; on this machine it never was
+(`NXRT_NASM-NOTFOUND` in every rtdll/rtsym cache). The upstream 0.1.7 release DLL has it (113 `vpmaddubsw ymm` + 187 EVEX sequences in
+its image, 0 in every fork DLL). Not the perf knobs: the movie code is unchanged since 0.1.7, the game held 60 fps through the movies,
+the machine was 13-22 % busy and the audio sink had 0 underruns in them (the movies are video only; their sound is the game's own).
+- User log, 2560x1440 30 fps movies: upstream 0.1.7 DLL (10 Nov): decode 10-21 ms per packet, slowest 38-79, exactly 150 pictures per 5 s.
+  e0eba73 (14 Nov): 25-52 ms, slowest 126-259, 97-154 pictures per 5 s (19-30 fps; the later short movies ~20-25).
+- Offline bench (`tmp/fefw-perf/movie/benchsrc/bench.cpp`: the runtime's decode loop, 4 threads, max_frame_delay 1, NV12 copy;
+  MV00_00 first 600 packets, nothing else running): C-only 15.8 / 26.1 fps, mean 63 / 38 ms, p99 381 / 165 ms, 41-44 % of packets
+  over 33 ms; with the assembly 69.7 / 87.4 fps, mean 14.3 / 11.4 ms, p99 70 / 50 ms.
+Fix: build with NASM (portable 2.16.03 at `C:/Users/aj12a/tools/nasm-2.16.03/nasm.exe`; an existing build folder needs
+`-DNXRT_NASM=<that> -DNXRT_DAV1D_ASM=ON` once, its cache keeps ASM OFF). The branch adds a configure WARNING when nasm is missing,
+looks in NASM's installer / winget folders, and the runtime logs `with x86-64 assembly` or a W line `C only` at start, so a slow
+build shows in the first lines of fefw.log. Deployed live 14 Nov (DLL = e0eba73 + this).
+
+### Build, tests, queue
+- perf-0.2.0 also merges `perf/movie-asm` 7c832b0 (dav1d with its x86-64 assembly). DLL built from 4c43fc3 with NASM 2.16.03
+  (`-DNXRT_NASM=C:/Users/aj12a/tools/nasm-2.16.03/nasm.exe -DNXRT_DAV1D_ASM=ON`), md5 1bf81c5e; the map lists 1,665 `dav1d_*_avx2` symbols.
+  It compiled without changes beyond the conflict resolutions.
+- nxrt_tests: 914 passed, 1 failed (watchdog.fires_once_on_freeze, timing: passes alone). nxrt_gfx_tests --all: 487 / 106 failed / 106
+  skipped, the same 106 failures (and failing checks) as the e0eba73 baseline binary (validation layer, display/UI); the 9 new upstream
+  tests pass. compact_standin_upload_and_replacement had to pin `astc_gpu = off` (1909d24): with the GPU transcode on, no stand-in is shown.
+- Test request: `tmp/fefw-perf/queue/upstream-1` (A/B against e0eba73 with the codegen2-3 exe: hub x2 pairs, astc_gpu off, residency and
+  mirror pressure off, battle, cold caches, cache_read on, tour, a cutscene).

@@ -12,6 +12,7 @@
 #include <fstream>
 #include <map>
 #include <tuple>
+#include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -27,6 +28,7 @@
 #include "nvn_format.h"
 #include "nvn_gpu_internal.h"
 #include "nvn_spirv_patch.h"
+#include "nvn_residency.h"
 #include "nvn_subgroup.h"
 #include "vk_gauges.h"
 #include "extras/hdr_nvn.h"
@@ -143,9 +145,15 @@ void save_cache() {
     g_cache_dirty.store(false);
     g_new_since_save.store(0);
     size_t n = 0;
-    if (vkGetPipelineCacheData(vkdev(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return;
-    std::vector<char> data(n);
-    if (vkGetPipelineCacheData(vkdev(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    std::vector<char> data;
+    {
+        // no compile into the cache while the driver reads it out (Intel only by default: pipeline_cache_locked, #124)
+        std::unique_lock<std::shared_mutex> lk;
+        if (pipeline_cache_locked()) lk = std::unique_lock<std::shared_mutex>(pipeline_cache_mutex());
+        if (vkGetPipelineCacheData(vkdev(), g_cache, &n, nullptr) != VK_SUCCESS || !n) return;
+        data.resize(n);
+        if (vkGetPipelineCacheData(vkdev(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    }
     // written to a temporary file and renamed, so a process that ends in the middle of it leaves the old cache intact
     const std::string tmp = g_cache_path + ".tmp";
     {
@@ -163,6 +171,21 @@ void save_cache() {
 }
 
 }  // namespace
+
+std::shared_mutex& pipeline_cache_mutex() {
+    static std::shared_mutex m;
+    return m;
+}
+// [nvn] pipeline_cache_lock = auto (Intel GPUs) | true | false: see nvn_pipeline.h
+bool pipeline_cache_locked() {
+    static const bool on = [] {
+        const std::string v = config_get_str("nvn", "pipeline_cache_lock", "auto");
+        const bool r = v == "auto" ? gfx::gpu_quirks().intel : config_get_bool("nvn", "pipeline_cache_lock", false);
+        NXLOG_I(kTag, "pipeline cache: compiles and the cache save %s ([nvn] pipeline_cache_lock = %s)", r ? "take turns" : "run together", v.c_str());
+        return r;
+    }();
+    return on;
+}
 
 // A cache of hundreds of MB (the shader preparation's) is rewritten only after thousands of new pipelines: the new ones are few next to it and
 // the write takes seconds. The ordinary small cache is written whenever something new appeared, as before.
@@ -488,6 +511,16 @@ const ProgLayout* prog_layout(const ShaderInfo* const stages[6]) {
                         lbs[0].size(), push_descriptor_max());
         }
         if (ok) sig.append("push0", 5);
+        // a uniform buffer rebind changes nothing outside set 0 unless another set reads a uniform block (a texture handle in one)
+        bool ubo_only = ok;
+        for (const BindingDesc& d : pl.bindings) {
+            if (d.set == 0) continue;
+            const NvnSource src = d.shader->refl.bindings[d.index].nvn.source;
+            if (src == NvnSource::HandleInUniform || src == NvnSource::UniformBlock || src == NvnSource::UniformAsStorage ||
+                src == NvnSource::PushConstants)
+                ubo_only = false;
+        }
+        pl.ubo_only = ubo_only;
     }
     // the pool arrays: the shared layout of kPoolSet (pool_set_layout), whatever arrays the program's stages use
     for (const BindingDesc& d : pl.bindings) pl.has_set[kPoolSet] |= d.set == kPoolSet;
@@ -794,13 +827,18 @@ VkPipeline graphics_pipeline(const GraphicsKey& key, const ProgLayout& layout) {
     prewarm_init();
     VkPipeline pipe = VK_NULL_HANDLE;
     std::shared_ptr<PipeUpgrade> later;          // the key file's whole pipeline, still being built: it replaces the linked one
-    // compiled ahead on a worker; one being compiled is linked from its parts meanwhile when they are built (else waited for)
-    if (prewarm_take(key, &pipe, [&] { return gpl_ready(key, layout); }, &later)) {
+    // compiled ahead on a worker; one being compiled is linked from its parts meanwhile when they are built, else waited for, or, with
+    // [nvn] prewarm_wait = false (default) while frames are flowing, the draw is skipped until it is done (a cold driver cache, e.g. after a
+    // driver update, makes each of those builds tens to hundreds of ms on the render thread)
+    static const bool prewarm_wait = nxrt::config_get_bool("nvn", "prewarm_wait", false);
+    bool busy = false;
+    if (prewarm_take(key, &pipe, [&] { return gpl_ready(key, layout); }, &later, (!prewarm_wait && gpl_frames_flowing()) ? &busy : nullptr)) {
         ++g_pipeline_count;
         g_gfx_keys.add(1);
         bucket.push_back({key, pipe, VK_NULL_HANDLE, nullptr});
         return pipe;
     }
+    if (busy) return VK_NULL_HANDLE;             // nothing recorded: the next draw with this key asks again
     std::shared_ptr<PipeUpgrade> up;
     bool pending = false;
     pipe = gpl_link(key, layout, later ? nullptr : &up, &pending); // linked from shader parts compiled ahead (null: not eligible or a part failed)
@@ -847,6 +885,114 @@ static VkShaderModule int_sampler_module(const ShaderInfo* cs, const std::vector
     return m;
 }
 
+// One compute pipeline (any thread: the render thread at a dispatch, or a pipeline-library thread for compute_prebuild).
+static VkPipeline create_compute(const ShaderInfo* cs, VkPipelineLayout layout, VkShaderModule m) {
+    ensure_cache();
+    VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, ubo_robustness()};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, ubo_robustness()};
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = m;
+    ci.stage.pName = "main";
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size{};
+    configure_guest_subgroup(ci.stage, subgroup_size);
+    ci.layout = layout;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    compiles_in_flight().fetch_add(1, std::memory_order_relaxed);
+    const uint64_t tp0 = nxrt::hitch_ticks();
+    std::shared_lock<std::shared_mutex> cache_lk;   // pipeline_cache_locked (#124)
+    if (g_cache && pipeline_cache_locked()) cache_lk = std::shared_lock<std::shared_mutex>(pipeline_cache_mutex());
+    const VkResult cr = vkCreateComputePipelines(vkdev(), g_cache, 1, &ci, nullptr, &pipe);
+    if (cache_lk.owns_lock()) cache_lk.unlock();
+    if (nxrt::hitch_on_render_thread()) nxrt::hitch_phase_add(nxrt::kHpRenderPipeline, nxrt::hitch_ticks() - tp0);
+    compiles_in_flight().fetch_sub(1, std::memory_order_relaxed);
+    if (cr != VK_SUCCESS) {
+        NXLOG_E(kTag, "compute pipeline failed for %s", cs->hash.c_str());
+        return VK_NULL_HANDLE;
+    }
+    counters().pipelines_created.fetch_add(1);
+    g_pipes_created.add(1);
+    g_cache_dirty.store(true, std::memory_order_relaxed);
+    g_new_since_save.fetch_add(1, std::memory_order_relaxed);
+    return pipe;
+}
+
+// ---- compute pipelines built ahead ([nvn] compute_async, nvn_pipeline.h compute_prebuild) ----------------------------------------
+// The key file and the shader parts cover graphics pipelines only: a compute shader the driver has not seen was compiled by the render thread at
+// its first dispatch. Now the game's nvnProgramSetShaders queues it for the pipeline-library threads; the dispatch takes the finished pipeline.
+namespace {
+struct CompJob {
+    int state = 0;                               // 0 queued, 1 building, 2 done, 3 taken over by the dispatch (g_comp_mu)
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+};
+std::mutex g_comp_mu;
+std::condition_variable g_comp_cv;
+std::unordered_map<const ShaderInfo*, std::shared_ptr<CompJob>> g_comp_jobs;
+struct CompStats {
+    uint64_t queued = 0, built = 0, taken = 0, waited = 0, claimed = 0, skipped = 0;
+    double wait_ms = 0, build_ms = 0;
+};
+CompStats g_comp_stats;
+int compute_async_mode() {                       // 0 off, 1 prebuild (wait for a build under way), 2 skip the dispatch while it builds
+    static const int m = [] {
+        const std::string v = nxrt::config_get_str("nvn", "compute_async", "prebuild");
+        return (v == "off" || v == "false" || v == "0") ? 0 : v == "skip" ? 2 : 1;
+    }();
+    return m;
+}
+}  // namespace
+
+void compute_prebuild(const ShaderInfo* cs) {
+    if (!cs || !compute_async_mode()) return;
+    auto job = std::make_shared<CompJob>();
+    {
+        std::lock_guard<std::mutex> lk(g_comp_mu);
+        if (!g_comp_jobs.emplace(cs, job).second) return;
+        ++g_comp_stats.queued;
+    }
+    const bool queued = gpl_queue_task([cs, job] {
+        {
+            std::lock_guard<std::mutex> lk(g_comp_mu);
+            if (job->state != 0) return;         // the dispatch came first and builds it itself
+            job->state = 1;
+        }
+        NXFT("pipe.compute.ahead");
+        const auto t0 = std::chrono::steady_clock::now();
+        const ShaderInfo* st[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, cs};
+        const ProgLayout* pl = prog_layout(st);
+        const VkShaderModule m = pl ? shader_module(cs) : VK_NULL_HANDLE;
+        const VkPipeline p = m ? create_compute(cs, pl->layout, m) : VK_NULL_HANDLE;
+        {
+            std::lock_guard<std::mutex> lk(g_comp_mu);
+            job->pipe = p;
+            job->layout = pl ? pl->layout : VK_NULL_HANDLE;
+            job->state = 2;
+            ++g_comp_stats.built;
+            g_comp_stats.build_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        g_comp_cv.notify_all();
+    });
+    if (!queued) {                               // no pipeline-library threads: built at the dispatch as before
+        std::lock_guard<std::mutex> lk(g_comp_mu);
+        g_comp_jobs.erase(cs);
+        --g_comp_stats.queued;
+    }
+}
+
+// One line when something changed since the last call (the prewarm's saver thread calls it every 2 s).
+void compute_progress_log() {
+    std::lock_guard<std::mutex> lk(g_comp_mu);
+    static uint64_t last = 0;
+    const CompStats& c = g_comp_stats;
+    const uint64_t sig = c.queued + c.built * 3 + c.taken * 5 + c.waited * 7 + c.claimed * 11 + c.skipped * 13;
+    if (sig == last) return;
+    last = sig;
+    NXLOG_I(kTag, "compute pipelines ahead: %llu queued, %llu built (%.0f ms on workers), %llu taken by dispatches (%llu waited %.1f ms), %llu built by "
+                  "the dispatch itself, %llu dispatches skipped while building",
+            static_cast<unsigned long long>(c.queued), static_cast<unsigned long long>(c.built), c.build_ms, static_cast<unsigned long long>(c.taken),
+            static_cast<unsigned long long>(c.waited), c.wait_ms, static_cast<unsigned long long>(c.claimed), static_cast<unsigned long long>(c.skipped));
+}
+
 VkPipeline compute_pipeline(const ShaderInfo* cs, const ProgLayout& layout, const std::vector<SpvIntSampler>& ints) {
     ensure_cache();
     std::vector<uint32_t> ikey;
@@ -854,31 +1000,48 @@ VkPipeline compute_pipeline(const ShaderInfo* cs, const ProgLayout& layout, cons
     const auto k = std::make_tuple(cs, layout.layout, ikey);
     auto it = g_compute.find(k);
     if (it != g_compute.end()) return it->second;
-    VkShaderModule m = ints.empty() ? shader_module(cs) : int_sampler_module(cs, ints, ikey);
-    VkPipeline pipe = VK_NULL_HANDLE;
-    if (m) {
-        VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, ubo_robustness()};
-        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, ubo_robustness()};
-        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        ci.stage.module = m;
-        ci.stage.pName = "main";
-        VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup_size{};
-        configure_guest_subgroup(ci.stage, subgroup_size);
-        ci.layout = layout.layout;
-        const uint64_t tp0 = nxrt::hitch_ticks();
-        const VkResult cr = vkCreateComputePipelines(vkdev(), g_cache, 1, &ci, nullptr, &pipe);
-        if (nxrt::hitch_on_render_thread()) nxrt::hitch_phase_add(nxrt::kHpRenderPipeline, nxrt::hitch_ticks() - tp0);
-        if (cr != VK_SUCCESS) {
-            NXLOG_E(kTag, "compute pipeline failed for %s", cs->hash.c_str());
-            pipe = VK_NULL_HANDLE;
-        } else {
-            counters().pipelines_created.fetch_add(1);
-            ++g_pipeline_count;
-            g_pipes_created.add(1);
-            g_cache_dirty.store(true, std::memory_order_relaxed);
-    g_new_since_save.fetch_add(1, std::memory_order_relaxed);
+    if (ints.empty() && compute_async_mode()) {  // built ahead (compute_prebuild)?
+        std::unique_lock<std::mutex> lk(g_comp_mu);
+        auto jt = g_comp_jobs.find(cs);
+        if (jt != g_comp_jobs.end()) {
+            std::shared_ptr<CompJob> j = jt->second;
+            if (j->state == 0) {                 // still queued: build it here, now
+                j->state = 3;
+                g_comp_jobs.erase(jt);
+                ++g_comp_stats.claimed;
+            } else {
+                if (j->state == 1) {
+                    if (compute_async_mode() == 2 && gpl_frames_flowing()) {
+                        ++g_comp_stats.skipped;
+                        return VK_NULL_HANDLE;   // nothing recorded: the next dispatch asks again
+                    }
+                    const auto t0 = std::chrono::steady_clock::now();
+                    {
+                        NXFT("pipe.compute.wait");
+                        g_comp_cv.wait(lk, [&] { return j->state == 2; });
+                    }
+                    ++g_comp_stats.waited;
+                    g_comp_stats.wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                }
+                g_comp_jobs.erase(cs);
+                const VkPipeline built = j->pipe;
+                j->pipe = VK_NULL_HANDLE;
+                const bool same = j->state == 2 && j->layout == layout.layout;
+                if (same) ++g_comp_stats.taken;
+                lk.unlock();
+                if (same) {
+                    if (built) ++g_pipeline_count;
+                    g_compute[k] = built;
+                    g_compute_keys.add(1);
+                    return built;
+                }
+                if (built) vkDestroyPipeline(vkdev(), built, nullptr);   // another layout (not expected): built here below
+            }
         }
     }
+    VkShaderModule m = ints.empty() ? shader_module(cs) : int_sampler_module(cs, ints, ikey);
+    VkPipeline pipe = m ? create_compute(cs, layout.layout, m) : VK_NULL_HANDLE;
+    if (pipe) ++g_pipeline_count;
     g_compute[k] = pipe;                         // new key: the lookup above missed
     g_compute_keys.add(1);
     return pipe;
@@ -948,6 +1111,7 @@ struct PoolPair {
     std::vector<PoolCopy> copies;
     int cur = -1;
     uint64_t last_use = 0;
+    PoolFeedback* fb = nullptr;                 // [gfx] residency: the marks of this pair's texture ids (binding kPoolFeedback)
 };
 // What pool_textures_to_prepare knows of a texture pool.
 struct PoolRes {
@@ -1048,7 +1212,10 @@ VkDescriptorImageInfo pool_image(const TexturePool::Entry& e, VkImageViewType ty
             NXLOG_I(kTag, "pool arrays: integer textures (texture %u, %s, first) stay the dummy in the float arrays", t->id, t->fmt->name);
         return ii;
     }
-    if (VkImageView v = tex_sampled_view(t, q)) {
+    g_resid_pool_view = true;   // writing the descriptor is not a use ([gfx] residency: the shaders' marks are)
+    const VkImageView pv = tex_sampled_view(t, q);
+    g_resid_pool_view = false;
+    if (VkImageView v = pv) {
         ii.imageView = v;
         ii.imageLayout = tex_sampled_layout(t);
     }
@@ -1250,12 +1417,13 @@ PoolPair* pool_pair(TexturePool* tp, SamplerPool* sp) {
     auto p = std::make_unique<PoolPair>();
     p->tp = Ref<TexturePool>::share(tp);
     p->sp = Ref<SamplerPool>::share(sp);
-    const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLER, g_pool_copies * kPoolSamplerCount},
-                                           {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, g_pool_copies * 2 * kPoolTextureCount}};
+    const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_SAMPLER, g_pool_copies * kPoolSamplerCount},
+                                           {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, g_pool_copies * 2 * kPoolTextureCount},
+                                           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_pool_copies}};
     VkDescriptorPoolCreateInfo ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     ci.maxSets = g_pool_copies;
-    ci.poolSizeCount = 2;
+    ci.poolSizeCount = residency_on() ? 3 : 2;
     ci.pPoolSizes = sizes;
     const VkResult r = vkCreateDescriptorPool(vkdev(), &ci, nullptr, &p->dpool);
     if (r != VK_SUCCESS) {
@@ -1263,6 +1431,7 @@ PoolPair* pool_pair(TexturePool* tp, SamplerPool* sp) {
         return nullptr;
     }
     vk_gauge_descriptor_pools().add(1);
+    if (residency_on()) p->fb = feedback_create();
     g_pool_pairs.push_back(std::move(p));
     return g_pool_pairs.back().get();
 }
@@ -1284,8 +1453,9 @@ void pool_prune(uint64_t serial) {
     for (auto it = g_pool_pairs.begin(); it != g_pool_pairs.end();) {
         if (serial - (*it)->last_use < kPoolIdle) { ++it; continue; }
         const VkDescriptorPool dp = (*it)->dpool;
+        PoolFeedback* fb = (*it)->fb;
         g_pool_sets.sub(static_cast<int64_t>((*it)->copies.size()));
-        defer_destroy([dp] { vkDestroyDescriptorPool(vkdev(), dp, nullptr); vk_gauge_descriptor_pools().sub(1); });
+        defer_destroy([dp, fb] { vkDestroyDescriptorPool(vkdev(), dp, nullptr); vk_gauge_descriptor_pools().sub(1); feedback_destroy(fb); });
         it = g_pool_pairs.erase(it);
     }
     g_pool_res.erase(std::remove_if(g_pool_res.begin(), g_pool_res.end(), [&](const std::unique_ptr<PoolRes>& r) { return serial - r->last_use >= kPoolIdle; }),
@@ -1293,6 +1463,24 @@ void pool_prune(uint64_t serial) {
 }
 
 }  // namespace
+
+// [gfx] residency (nvn_residency.h): the finished readbacks stamp the textures their ids hold now, then every pair's marks are copied
+// and cleared again.
+void pool_feedback_tick(Frame& f) {
+    const uint64_t done = poll_completed();
+    for (auto& pp : g_pool_pairs) {
+        if (!pp->fb) continue;
+        if (const uint32_t* m = feedback_take(pp->fb, done)) {
+            if (TexturePool* tp = pp->tp.get()) {
+                std::shared_lock<std::shared_mutex> lk(tp->lock);
+                const size_t n = std::min<size_t>(tp->entries.size(), kPoolTextureCount);
+                for (size_t id = 0; id < n; ++id)
+                    if (m[id] && tp->entries[id].used && tp->entries[id].tex) tex_mark_seen(tp->entries[id].tex.get());
+            }
+        }
+        feedback_record(pp->fb, f);
+    }
+}
 
 VkDescriptorSetLayout pool_set_layout() {
     std::lock_guard<std::mutex> lk(g_pool_layout_mu);
@@ -1319,18 +1507,21 @@ VkDescriptorSetLayout pool_set_layout() {
             p12.maxPerStageDescriptorUpdateAfterBindSamplers, p12.maxPerStageUpdateAfterBindResources, p12.maxUpdateAfterBindDescriptorsInAllPools,
             feats && limits ? "usable" : "NOT usable: programs that sample through the pools are not drawn");
     if (!feats || !limits) return VK_NULL_HANDLE;
-    const VkDescriptorSetLayoutBinding b[kPoolBindingCount] = {
+    // [gfx] residency: binding kPoolFeedback, the marks' storage buffer, written once when a set is made (not update-after-bind)
+    const VkDescriptorSetLayoutBinding b[kPoolBindingCount + 1] = {
         {kPoolSamplers, VK_DESCRIPTOR_TYPE_SAMPLER, kPoolSamplerCount, kPoolStages, nullptr},
         {kPoolTex2D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPoolTextureCount, kPoolStages, nullptr},
-        {kPoolTexCube, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPoolTextureCount, kPoolStages, nullptr}};
+        {kPoolTexCube, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPoolTextureCount, kPoolStages, nullptr},
+        {kPoolFeedback, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, kPoolStages, nullptr}};
     const VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    const VkDescriptorBindingFlags fl[kPoolBindingCount] = {flags, flags, flags};
+    const VkDescriptorBindingFlags fl[kPoolBindingCount + 1] = {flags, flags, flags, 0};
+    const uint32_t nb = residency_on() ? kPoolBindingCount + 1 : kPoolBindingCount;
     VkDescriptorSetLayoutBindingFlagsCreateInfo bf = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
-    bf.bindingCount = kPoolBindingCount;
+    bf.bindingCount = nb;
     bf.pBindingFlags = fl;
     VkDescriptorSetLayoutCreateInfo ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, &bf};
     ci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    ci.bindingCount = kPoolBindingCount;
+    ci.bindingCount = nb;
     ci.pBindings = b;
     if (vkCreateDescriptorSetLayout(vkdev(), &ci, nullptr, &g_pool_layout) != VK_SUCCESS) {
         NXLOG_E(kTag, "pool arrays: descriptor set layout failed");
@@ -1370,6 +1561,20 @@ VkDescriptorSet pool_set(TexturePool* tp, SamplerPool* sp, Frame& f) {
         ai.pSetLayouts = &g_pool_layout;
         if (vkAllocateDescriptorSets(vkdev(), &ai, &c.set) == VK_SUCCESS) {
             device().set_name(VK_OBJECT_TYPE_DESCRIPTOR_SET, reinterpret_cast<uint64_t>(c.set), "nvn pool arrays");
+            if (residency_on()) {   // the marks' buffer (a pair without one borrows another's: its marks then stay unread)
+                VkBuffer fbuf = feedback_buffer(pp->fb);
+                for (size_t i = 0; !fbuf && i < g_pool_pairs.size(); ++i) fbuf = feedback_buffer(g_pool_pairs[i]->fb);
+                if (fbuf) {
+                    VkDescriptorBufferInfo bi = {fbuf, 0, VK_WHOLE_SIZE};
+                    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                    w.dstSet = c.set;
+                    w.dstBinding = kPoolFeedback;
+                    w.descriptorCount = 1;
+                    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    w.pBufferInfo = &bi;
+                    vkUpdateDescriptorSets(vkdev(), 1, &w, 0, nullptr);
+                }
+            }
             pp->copies.push_back(std::move(c));
             g_pool_sets.add(1);
             pick = static_cast<int>(pp->copies.size() - 1);
@@ -1421,6 +1626,16 @@ void pool_note_cpu_write(Texture* t) {
 void pool_scan_counts(uint64_t* full_scans, uint64_t* looks) {
     if (full_scans) *full_scans = g_pool_full_scans;
     if (looks) *looks = g_pool_looks;
+}
+
+void pool_registered_textures(std::unordered_set<const Texture*>& out) {
+    for (auto& pp : g_pool_pairs) {
+        TexturePool* tp = pp->tp.get();
+        if (!tp) continue;
+        std::shared_lock<std::shared_mutex> lk(tp->lock);
+        for (const TexturePool::Entry& e : tp->entries)
+            if (e.used && e.tex) out.insert(e.tex.get());
+    }
 }
 
 void pool_texture_remade(Texture* t) {
@@ -1573,9 +1788,23 @@ void pool_textures_to_prepare(TexturePool* tp, std::vector<Texture*>& out) {
     // two minutes, back at once when the picture changed).
     std::sort(out.begin() + static_cast<std::ptrdiff_t>(first), out.end());
     out.erase(std::unique(out.begin() + static_cast<std::ptrdiff_t>(first), out.end()), out.end());
-    // not ready now: looked at again next time
-    r.watch.clear();
-    for (size_t i = first; i < out.size(); ++i) r.watch.push_back(Ref<Texture>::share(out[i]));
+    // not ready now: looked at again next time. The new list takes its references before the old one lets go: a texture in out may be held
+    // by the old watch list alone (finalized and unregistered, drawn through the live texture now on its storage), and clearing first freed
+    // it under the share below and under the caller, which prepares what out names (#132: heap corruption on the render thread, a double
+    // delete of the Texture the next time round).
+    std::vector<Ref<Texture>> next;
+    next.reserve(out.size() - first);
+    for (size_t i = first; i < out.size(); ++i) {
+        Texture* t = out[i];
+        if (t->refs.load(std::memory_order_relaxed) == 1 && !r.reg.count(t)) {   // the old watch list is its last holder
+            static uint64_t kept = 0;
+            if (++kept <= 5 || kept % 1000 == 0)
+                NXLOG_I(kTag, "pool arrays: texture %u (finalized %d) is kept by the watch list alone (%llu times so far)", t->id,
+                        t->destroyed.load(std::memory_order_relaxed) ? 1 : 0, static_cast<unsigned long long>(kept));
+        }
+        next.push_back(Ref<Texture>::share(t));
+    }
+    r.watch.swap(next);
 }
 
 bool pool_state_moved(TexturePool* tp, SamplerPool* sp) {
@@ -1606,6 +1835,7 @@ void pool_sets_shutdown() {
     VkDevice d = vkdev();
     for (auto& p : g_pool_pairs) {
         if (p->dpool) { vkDestroyDescriptorPool(d, p->dpool, nullptr); vk_gauge_descriptor_pools().sub(1); }
+        feedback_destroy(p->fb);
         g_pool_sets.sub(static_cast<int64_t>(p->copies.size()));
     }
     g_pool_pairs.clear();
@@ -1654,6 +1884,13 @@ void pipeline_shutdown() {
     VkDevice d = vkdev();
     prewarm_shutdown();
     gpl_stop();
+    {
+        std::lock_guard<std::mutex> lk(g_comp_mu);
+        for (auto& [cs, j] : g_comp_jobs)
+            if (j->pipe) vkDestroyPipeline(d, j->pipe, nullptr);     // built ahead, never dispatched
+        g_comp_jobs.clear();
+        g_comp_stats = CompStats{};
+    }
     if (!g_cache_big || g_new_since_save.load() >= 300) save_cache();
     for (auto& [h, bucket] : g_gfx)
         for (auto& e : bucket) {
