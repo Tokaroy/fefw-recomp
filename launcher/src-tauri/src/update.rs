@@ -93,7 +93,7 @@ fn system_tool(name: &str) -> PathBuf {
     if p.is_file() { p } else { PathBuf::from(name) }
 }
 
-fn curl() -> Command {
+pub(crate) fn curl() -> Command {
     let mut c = Command::new(system_tool(CURL));
     c.args(["--fail", "--location", "--silent", "--show-error", "--user-agent", AGENT]);
     crate::setup::quiet(&mut c);
@@ -140,7 +140,7 @@ pub fn check(current: &str, package: bool) -> Result<Check, String> {
     Ok(Check { current: current.to_string(), latest: Some(rel), newer, package })
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut f = fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut h = Sha256::new();

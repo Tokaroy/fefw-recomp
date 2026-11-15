@@ -5,6 +5,7 @@
 
 mod cpu;
 mod dump;
+mod fetch;
 mod ini;
 mod locale;
 mod nup;
@@ -349,6 +350,46 @@ fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: O
     })
 }
 
+/// Downloads the files of one upscaler (fsr, xess, dlss, dlss_framegen) from the vendor into upscalers/<name> next to the launcher.
+/// The page asks the player first (the licence and the source are shown there); see fetch.rs.
+#[tauri::command]
+fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String) -> Result<(), String> {
+    {
+        let mut s = state.status.lock().unwrap();
+        if s.state == "running" {
+            return Err("A download is already running.".into());
+        }
+        *s = fetch::Status { state: "running".into(), kind: kind.clone(), message: "Starting".into(), ..Default::default() };
+    }
+    let shared = state.inner().clone();
+    shared.cancel.store(false, Ordering::SeqCst);
+    let base = exe_dir();
+    std::thread::spawn(move || {
+        let res = fetch::run(&shared, &base, &kind);
+        let mut s = shared.status.lock().unwrap();
+        match res {
+            Ok(m) => (s.state, s.message) = ("done".into(), m),
+            Err(e) => (s.state, s.message) = ("error".into(), e),
+        }
+        let _ = app.emit("fetch-status", s.clone());
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn fetch_status(state: State<Arc<fetch::Shared>>) -> fetch::Status {
+    let mut s = state.status.lock().unwrap().clone();
+    if s.state.is_empty() {
+        s.state = "idle".into();
+    }
+    s
+}
+
+#[tauri::command]
+fn cancel_fetch(state: State<Arc<fetch::Shared>>) {
+    state.cancel.store(true, Ordering::SeqCst);
+}
+
 #[derive(Serialize)]
 struct SetupStatus {
     progress: setup::Progress,
@@ -626,6 +667,7 @@ fn main() {
         .manage(play::PlayState::default())
         .manage(Arc::new(setup::Shared::default()))
         .manage(Arc::new(update::Shared::default()))
+        .manage(Arc::new(fetch::Shared::default()))
         .on_window_event(|window, event| {
             // closing the window pauses a running setup rather than leaving its compilers behind
             if let tauri::WindowEvent::Destroyed = event {
@@ -646,6 +688,9 @@ fn main() {
             read_settings,
             write_settings,
             upscaler_files,
+            fetch_upscaler,
+            fetch_status,
+            cancel_fetch,
             setup_status,
             start_setup,
             cancel_setup,
