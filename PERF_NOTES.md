@@ -711,3 +711,13 @@ Fix: build with NASM (portable 2.16.03 at `C:/Users/aj12a/tools/nasm-2.16.03/nas
 `-DNXRT_NASM=<that> -DNXRT_DAV1D_ASM=ON` once, its cache keeps ASM OFF). The branch adds a configure WARNING when nasm is missing,
 looks in NASM's installer / winget folders, and the runtime logs `with x86-64 assembly` or a W line `C only` at start, so a slow
 build shows in the first lines of fefw.log. Deployed live 14 Nov (DLL = e0eba73 + this).
+
+### Build, tests, queue
+- perf-0.2.0 also merges `perf/movie-asm` 7c832b0 (dav1d with its x86-64 assembly). DLL built from 4c43fc3 with NASM 2.16.03
+  (`-DNXRT_NASM=C:/Users/aj12a/tools/nasm-2.16.03/nasm.exe -DNXRT_DAV1D_ASM=ON`), md5 1bf81c5e; the map lists 1,665 `dav1d_*_avx2` symbols.
+  It compiled without changes beyond the conflict resolutions.
+- nxrt_tests: 914 passed, 1 failed (watchdog.fires_once_on_freeze, timing: passes alone). nxrt_gfx_tests --all: 487 / 106 failed / 106
+  skipped, the same 106 failures (and failing checks) as the e0eba73 baseline binary (validation layer, display/UI); the 9 new upstream
+  tests pass. compact_standin_upload_and_replacement had to pin `astc_gpu = off` (1909d24): with the GPU transcode on, no stand-in is shown.
+- Test request: `tmp/fefw-perf/queue/upstream-1` (A/B against e0eba73 with the codegen2-3 exe: hub x2 pairs, astc_gpu off, residency and
+  mirror pressure off, battle, cold caches, cache_read on, tour, a cutscene).
