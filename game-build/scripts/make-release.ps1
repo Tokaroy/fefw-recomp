@@ -123,7 +123,8 @@ Put "$root\locales\README.md" 'locales\README.md'
 
 # --- the shader translator, self-contained (no .NET install needed on the player's PC)
 $harness = Join-Path $Out 'harness'
-if ($ReuseHarness -and (Test-Path (Join-Path $harness 'spirv_harness.exe'))) {
+if ($ReuseHarness) {
+    if (-not (Test-Path (Join-Path $harness 'spirv_harness.exe'))) { throw "-ReuseHarness: no published shader translator in $harness" }
     Write-Host "reusing the shader translator in $harness"
 } else {
     # Rebuilt unless asked otherwise: reusing Out/harness can silently ship an older translator after
