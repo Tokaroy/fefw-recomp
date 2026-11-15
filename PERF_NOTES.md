@@ -622,3 +622,75 @@ file (`C:/Games/fefw-test/cold/<label>/`, via `NXRT_NVN_PIPELINE_CACHE` / `_KEYS
 - "Prepare shaders" cannot run for Fortune's Weave without `shader_cache/programs.bin` (setup does not write one); with the key file and the
   full pack, first-use is covered at runtime anyway.
 
+
+## Upstream 0.2.0 port (branch `perf-0.2.0`, 14 Nov)
+
+`Goldoire/fefw-recomp` is deleted (404). Its last releases live on in `metrist38/fefw-recomp` (master), whose v0.2.0 release (14 Nov) is
+"the final update of the original project"; the 0.2.0 launcher's updater follows that repository. Remote `metrist` in the main clone.
+
+### Base check and how it was merged
+- metrist's "Release 0.1.7" (0cf1712) and ours (0a8adfe) have the **same tree** (`git diff 0a8adfe 0cf1712` is empty; the hashes differ,
+  merge-base cbaeed9). So the upstream delta is exactly `git diff 0cf1712 metrist/master` (95 files, +14k lines).
+- `perf-0.2.0` = perf-stutter e0eba73 + a merge of metrist/master 26145e2, taken against the right base: for that one merge 0cf1712 was
+  grafted onto 0a8adfe (`git replace --graft`, removed right after), so git merged only 0cf1712..26145e2 and not the 0.1.7 changes a
+  second time. Upstream's commits keep their authors (they are the original objects); only the merge commit (484abea) is ours.
+  Later upstream pulls: a plain `git merge metrist/master` now finds the right base by itself.
+- Ported (original project, on top of 0.1.7): 6daca4b set up rejects ':' in the game path; 4ae2408 ultrawide stat radar charts;
+  e448390 lighter textures under a small budget or pressure; 8b40b0f GPU ASTC transcode + compact BC1; e9db313 Intel XeSS; 5ee4e23
+  uniform-only rebinds keep the other sets + import counters; 69865d7 Release 0.1.8; 66b3bf6 GPU ASTC stays on the CPU on iGPUs;
+  0defe66 launcher and build tools (clearer start-up failures, updates, Linux package); 26a1a16 audio volume to 200 % + cheaper DSP
+  rounding; 10a4ecc frame generation decided by player-supplied files on older GPUs; 02ed84a stability (texture use-after-free, crash
+  reports, texture residency, leaner draws); d353968 Overwolf Vulkan layers disabled; 3bb9cf1 read-only graphics storage from the
+  device-local pool copy; 3d33ec3 Release 0.2.0; 368488b, 52c2fae. metrist's own: bcca624 / 975aaab / 06caac8 / 4665954 release CI
+  (manual dispatch only), 0d8b601 / f5aed93 / ae02f97 README and launcher repo.
+
+### Conflicts and judgment calls
+| file | both sides | kept |
+|---|---|---|
+| `core/nxmodule.cpp` | both striped the import counter (cpu/stutter: per-thread `TlCounts`; upstream: 32 cache-line slots, `fetch_add`) | ours: no atomic read-modify-write at all per import |
+| `nvn_gpu.cpp` | `[prof] gpu_stats` (ours) and upstream's `nvn.cnt.gpu_us` gauge both read the per-slot timestamps | both; the timestamp pool is made for the trace, gpu_stats or a soak (`[diag] soak_csv`) |
+| `nvn_pipeline.cpp` | our `create_compute` (compute_async prebuild) vs upstream's inline compute build with `pipeline_cache_lock` | ours, with upstream's shared cache lock moved into `create_compute` (graphics already go through `create_graphics_pipeline_tracked`) |
+| `nvn_replay.cpp` | bound-slot masks: ours `out_masks` (+ `out_memo_dirty`) vs upstream `lean_draws` `g_bm_*`; colour-feedback test: ours `feedback_fast` vs upstream `lean_draws` | ours for both (same answers; ours also feed the memo-dirty fast path); upstream's now-unused `g_bm_*` removed. Upstream's other `lean_draws` parts (resolve in place, delta push of set 0, sampled-format memo), `ubo_only_rebind` and `astc_gpu_pump` are in as upstream wrote them. CONFIG.md notes that `lean_draws = 0` no longer covers the two parts |
+| `nvn_gpu_texture.cpp` | sampled-format memo: both added one | upstream's (`lean_draws`, `VK_FORMAT_MAX_ENUM` sentinel); same code otherwise |
+| `nvn_gpu_texture.cpp` | our reused `PreparedTexture` (tl_prep, no page faults per upload) vs upstream's fresh one + new GPU-transcode fields | ours, now reset by `reset_prep()`: every field fresh, only the data buffer's capacity kept (also at upstream's two resets), so a GPU transcode's fields or a compact stand-in's rows never reach the next upload |
+| `nvn_texdata.h/.cpp` | `cache_entry_format(t, no_disk)` (ours) vs `cache_entry_format(t, bc1)` | `cache_entry_format(t, bc1, no_disk)`. With no_disk the BC1 answer comes from the alpha scan only (a BC1 entry is only ever made for a texture the scan proves opaque) |
+| `nvn_texdata.cpp` | stand-ins: ours (solid_copy, compact rows, standin_encode_px, tex_async=standin) vs upstream's BC1 stand-ins (8-byte solid blocks) | ours, generalised: solid_copy works on 8-byte BC1 blocks too; compact rows stay BC7 only; `provisional = caps.provisional && ((bc7 && (quality > 0 \|\| standin_now)) \|\| bc1)` |
+| `nvn_texdata.cpp` | upstream's GPU-encoder cache entry is peeked/read in prepare_texture | not under `standin_now`: tex_async = standin still opens no cache file on the render thread (the GPU transcodes it, or the background job reads it) |
+| README / `update.rs` | metrist's "mirror" README and default update repo `aidankinzett/fefw-recomp` | the original author's final note (52c2fae); the default update repo is `stephenjayakar/fefw-recomp` (no releases: the check finds nothing, nothing is replaced). CI sets `FEFW_UPDATE_REPO` itself |
+| `.github/workflows/linux-release.yml` | metrist's release workflow | kept (manual dispatch only; on this fork it would publish to this fork) |
+
+Not a conflict, but behaviour to know (all upstream defaults, all toggles):
+- `[gfx] astc_gpu = auto` is **on** on the RTX 3080: a texture without a usable cache entry is transcoded by compute shaders in the frame
+  that uses it (budget `astc_gpu_ms`), and `astc_gpu_cache_read = auto` does **not read** the BC7 cache on a fast GPU (it transcodes
+  again). With our `tex_async = standin`, the render thread goes: background result if ready, else the ASTC blocks to the GPU, else (GPU
+  budget used) our stand-in. `astc_gpu = off` gives back exactly our CPU path (stand-ins + background jobs + NVMe BC7 cache).
+- `[gfx] residency = auto` is **on**: ~1,060 pool-indexing shaders get a store per texture index (SPIR-V changed at load), so **the first
+  start with this DLL misses the pipeline cache for those pipelines** (one cold session; the pack and the key file still help the
+  background builds). Over 80 % of the budget (we run at 87-97 %), textures unused for 60 s are demoted to 256 px and restored when seen
+  again. `residency = 0` turns all of it off (shaders unchanged).
+- `[nvn] pool_mirror_pressure_percent = 85`: no new device-local pool copy chunks above 85 % of the budget (draws read host memory over
+  PCIe, ReBAR is off here). `0` = off.
+- `[nvn] storage_read_copy = 2`, `mirror_hot_copy`, `gfx_ssbo_readonly`: more draws read the device-local copy. `[nvn] ubo_only_rebind`.
+- `[gfx] disable_overwolf_layers`, XeSS (`[upscale]`), `[audio] volume`, `dsp_fast_round`: no effect on our native-4K setup.
+- `texture_detail` / `budget_detail` / `pressure_detail` / `astc_bc`: unchanged on this card (all `auto` keep full BC7 on a 10 GB NVIDIA).
+
+### Exe side
+`perf/codegen2-0.2.0` = perf/codegen2 953b418 + a merge of perf-0.2.0 (only PERF_NOTES conflicted). It carries upstream's
+`fefw_build.py` (jobs started by free memory, ':' refused), `fefw_main.cpp` (clear error when the RomFS cannot be read, `[fs]
+romfs_files`), the ultrawide stat-chart site in `recomp/games/fefw/main.sites` and the launcher, merged cleanly with codegen2's PGO
+options. Not built: the next fefw.exe build (needs a window) should come from it. The DLL works with the current codegen2-3 exe; only the
+ultrawide stat-chart hook needs the new exe.
+
+### Launcher and updates (the live install runs the 0.1.7 launcher)
+- The live `fefw-launcher.exe` follows `Goldoire/fefw-recomp` (the string is in the exe). Its check asks
+  `api.github.com/repos/Goldoire/fefw-recomp/releases/latest`, which now answers 404: the check fails quietly (the About page shows
+  "Could not reach GitHub: ... 404"), no newer release is offered, and Update has nothing to install. Nothing on disk changes.
+  Residual risk: if the name `Goldoire/fefw-recomp` were ever re-registered by someone else, this launcher would offer and install their
+  release (the SHA-256 it checks comes from the same GitHub answer). Turn off "Check for updates at start" on the About page.
+- A 0.2.0 launcher (metrist38's release) follows `metrist38/fefw-recomp`. Its Update downloads `fefw-recomp-<v>-win64.zip` and moves
+  every file of the package over the install: `fefw_rt.dll` (our perf DLL replaced by stock), the launcher, `tools/build`, the locales.
+  `fefw.exe`, the inis, `save/` and `shader_cache/` are not in the zip and stay; but the new `fefw_build.py --check` then asks for a
+  rebuild (main.sites changed), and Set up rebuilds a stock fefw.exe over the codegen2-3 one. (The replaced files are moved to `update/old` first, and back only if the install fails.)
+- So: do not install the 0.2.0 launcher into the live install and do not press Update. Updates come from this fork: upstream changes
+  merged here (`git merge metrist/master`), DLLs and exes deployed by the tester as before. A launcher built from this fork follows
+  `stephenjayakar/fefw-recomp`, which has no releases.
