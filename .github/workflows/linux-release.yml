@@ -37,6 +37,8 @@ jobs:
       LLVM_VERSION: 23.1.5
       LLVM_SHA256: b2be33385ddc86e83511417a060de927ae8b09d1f3017cc3cdce5c73cd5029d7
       NX_JOBS: 4
+      # keep with make-release-linux.sh (RYUBING_COMMIT) and launcher/src-tauri/src/setup.rs
+      RYUBING_COMMIT: a82350bb774f70fcbd41c9987bf67a3775409963
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +52,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -86,22 +90,80 @@ jobs:
           & "$bin\clang-cl.exe" --version
           "NX_LLVM_BIN=$bin" >> $env:GITHUB_ENV
 
+      # Each part of the package is cached under a key made of the sources it is built from, so a change that touches only the
+      # launcher (or only the runtime) rebuilds only that part and reuses the rest.
+      #
+      # the runtime: the files make-release.ps1 takes from the build, built from runtime/, game-build/fefw, recomp/include and the
+      # texture transcoder (its third-party sources are fetched by a script that is part of tools/textures, so they are covered)
+      - name: Cache key inputs
+        id: ver
+        run: |
+          # what a cached build also depends on besides the sources: the runner's compilers and SDKs, the .NET SDK, the pinned downloads
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+          "dotnet=$(dotnet --version)" >> $env:GITHUB_OUTPUT
+          $mk = Get-Content -Raw game-build\scripts\make-release.ps1
+          $zig = [regex]::Match($mk, '\$ZigVersion = "([^"]+)"').Groups[1].Value
+          $py = [regex]::Match($mk, '\$PythonVersion = "([^"]+)"').Groups[1].Value
+          if (-not $zig -or -not $py) { throw 'cannot read the Zig and Python versions from make-release.ps1' }
+          "downloads=zig$zig-py$py" >> $env:GITHUB_OUTPUT
+
+      - name: Runtime cache
+        id: rt
+        uses: actions/cache@v4
+        with:
+          path: |
+            game-build/fefw/build/rtdll/fefw_rt.dll
+            game-build/fefw/build/rtdll/fefw_rt.lib
+            game-build/fefw/build/rtdll/fonts
+            game-build/fefw/build/rtdll/astcdec-*-shared.dll
+          key: rt-${{ steps.ver.outputs.image }}-${{ env.LLVM_VERSION }}-${{ hashFiles('runtime/**', 'game-build/fefw/**', 'recomp/include/**', 'tools/textures/**', 'game-build/scripts/build_fefw.ps1') }}
+
       - name: Texture transcoder sources
+        if: steps.rt.outputs.cache-hit != 'true'
         run: pwsh -File tools\textures\scripts\fetch_third_party.ps1
 
+      # sccache keeps the compiled objects between runs, for the runtime changes that do miss the cache above
+      - name: sccache
+        if: steps.rt.outputs.cache-hit != 'true'
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Runtime (fefw_rt.dll)
+        if: steps.rt.outputs.cache-hit != 'true'
+        env:
+          SCCACHE_GHA_ENABLED: "true"
         run: pwsh -File game-build\scripts\build_fefw.ps1 -Target fefw_rt -BuildDir build\rtdll -CMakeArgs "-DFEFW_RT_DLL=ON"
 
-      - name: Shader translator sources (Ryujinx, pinned)
+      - name: Check the runtime files
         run: |
-          # keep the revision with make-release-linux.sh (RYUBING_COMMIT) and launcher/src-tauri/src/setup.rs
+          foreach ($f in 'fefw_rt.dll', 'fefw_rt.lib', 'fonts\DejaVuSans.ttf') {
+            if (-not (Test-Path "game-build\fefw\build\rtdll\$f")) { throw "the runtime build is missing $f" }
+          }
+
+      # the shader translator (dotnet publish of tools/shaders/harness over the pinned Ryujinx sources)
+      - name: Shader translator cache
+        id: harness
+        uses: actions/cache@v4
+        with:
+          path: work/release/harness
+          key: harness-${{ steps.ver.outputs.dotnet }}-${{ env.RYUBING_COMMIT }}-${{ hashFiles('tools/shaders/harness/**', 'tools/shaders/scripts/**') }}
+
+      - name: Shader translator sources (Ryujinx, pinned)
+        if: steps.harness.outputs.cache-hit != 'true'
+        run: |
           git clone -q --filter=blob:none --no-checkout https://git.ryujinx.app/ryubing/ryujinx.git work\refs\ryubing
-          git -C work\refs\ryubing checkout -q a82350bb774f70fcbd41c9987bf67a3775409963
+          git -C work\refs\ryubing checkout -q $env:RYUBING_COMMIT
           if ($LASTEXITCODE) { throw 'cannot check out the Ryujinx revision' }
           pwsh -File tools\shaders\scripts\setup_ryujinx.ps1 -Ryubing work\refs\ryubing
 
+      # Zig, the Python embeddable package and the wheels make-release.ps1 downloads (it only fetches what is missing)
+      - name: Downloads cache
+        uses: actions/cache@v4
+        with:
+          path: work/release/cache
+          key: release-downloads-${{ steps.ver.outputs.downloads }}
+
       - name: Package (game-build/scripts/make-release.ps1)
-        run: pwsh -File game-build\scripts\make-release.ps1 -Version ${{ steps.names.outputs.version }}
+        run: pwsh -File game-build\scripts\make-release.ps1 -Version ${{ steps.names.outputs.version }}${{ steps.harness.outputs.cache-hit == 'true' && ' -ReuseHarness' || '' }}
 
       - uses: actions/upload-artifact@v4
         with:
