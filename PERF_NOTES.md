@@ -622,3 +622,21 @@ file (`C:/Games/fefw-test/cold/<label>/`, via `NXRT_NVN_PIPELINE_CACHE` / `_KEYS
 - "Prepare shaders" cannot run for Fortune's Weave without `shader_cache/programs.bin` (setup does not write one); with the key file and the
   full pack, first-use is covered at runtime anyway.
 
+
+## Movie track (branch `perf/movie-asm`, 14 Nov): choppy cutscenes were a C-only dav1d
+
+User report (14 Nov evening, live e0eba73 + cg2-3 exe): pre-rendered cutscenes play at a low frame rate and some sound cuts out.
+**Cause: every fork DLL (7d72d56 .. e0eba73) was built without NASM, so dav1d (the AV1 movie decoder, movie_vdec.cpp) had no x86-64
+assembly.** `third_party/dav1d/CMakeLists.txt` turns `NXRT_DAV1D_ASM` on only when nasm is found; on this machine it never was
+(`NXRT_NASM-NOTFOUND` in every rtdll/rtsym cache). The upstream 0.1.7 release DLL has it (113 `vpmaddubsw ymm` + 187 EVEX sequences in
+its image, 0 in every fork DLL). Not the perf knobs: the movie code is unchanged since 0.1.7, the game held 60 fps through the movies,
+the machine was 13-22 % busy and the audio sink had 0 underruns in them (the movies are video only; their sound is the game's own).
+- User log, 2560x1440 30 fps movies: upstream 0.1.7 DLL (10 Nov): decode 10-21 ms per packet, slowest 38-79, exactly 150 pictures per 5 s.
+  e0eba73 (14 Nov): 25-52 ms, slowest 126-259, 97-154 pictures per 5 s (19-30 fps; the later short movies ~20-25).
+- Offline bench (`tmp/fefw-perf/movie/benchsrc/bench.cpp`: the runtime's decode loop, 4 threads, max_frame_delay 1, NV12 copy;
+  MV00_00 first 600 packets, nothing else running): C-only 15.8 / 26.1 fps, mean 63 / 38 ms, p99 381 / 165 ms, 41-44 % of packets
+  over 33 ms; with the assembly 69.7 / 87.4 fps, mean 14.3 / 11.4 ms, p99 70 / 50 ms.
+Fix: build with NASM (portable 2.16.03 at `C:/Users/aj12a/tools/nasm-2.16.03/nasm.exe`; an existing build folder needs
+`-DNXRT_NASM=<that> -DNXRT_DAV1D_ASM=ON` once, its cache keeps ASM OFF). The branch adds a configure WARNING when nasm is missing,
+looks in NASM's installer / winget folders, and the runtime logs `with x86-64 assembly` or a W line `C only` at start, so a slow
+build shows in the first lines of fefw.log. Deployed live 14 Nov (DLL = e0eba73 + this).
