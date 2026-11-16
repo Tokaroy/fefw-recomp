@@ -1,0 +1,42 @@
+{
+    "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+    "format": 1,
+    "repo": "metrist38/fefw-recomp",
+    "game": {
+        "kind": "iso_or_folder",
+        "label": "Your decrypted dump of Fire Emblem: Fortune's Weave for Nintendo Switch 2 at update 131072: a folder with exefs/ and romfs/ (or base/ and updates/<version>/), or its .nup package."
+    },
+    "prepare": {
+        "program": [
+            "fefw-launcher.exe",
+            "fefw-launcher.AppImage"
+        ],
+        "args": [
+            "--prepare",
+            "--game",
+            "{game}"
+        ],
+        "label": "Building the game from your dump",
+        "timeout": 7200
+    },
+    "start": {
+        "program": [
+            "fefw.exe"
+        ]
+    },
+    "saves": [
+        "{install}/save"
+    ],
+    "folders": {
+        "saves": [
+            {
+                "path": "{install}/save"
+            }
+        ],
+        "logs": [
+            {
+                "path": "{install}"
+            }
+        ]
+    }
+}

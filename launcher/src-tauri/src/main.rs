@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -52,8 +53,20 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("launcher.json"))
 }
 
-fn load_config(app: &AppHandle) -> Config {
+/// The dump folder passed with --game: used in place of the saved one for this run (what the folder picker would have set).
+static GAME_ARG: OnceLock<String> = OnceLock::new();
+
+/// The saved launcher.json, without the --game override.
+fn load_saved_config(app: &AppHandle) -> Config {
     config_path(app).ok().and_then(|p| fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn load_config(app: &AppHandle) -> Config {
+    let mut cfg = load_saved_config(app);
+    if let Some(g) = GAME_ARG.get() {
+        cfg.dump_dir = g.clone();
+    }
+    cfg
 }
 
 fn exe_dir() -> PathBuf {
@@ -156,7 +169,11 @@ fn get_config(app: AppHandle) -> Config {
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
+fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
+    // the settings page sends back what get_config gave it: keep the --game folder out of launcher.json
+    if GAME_ARG.get().is_some_and(|g| *g == config.dump_dir) {
+        config.dump_dir = load_saved_config(&app).dump_dir;
+    }
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     settings::write_atomic(&config_path(&app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
 }
@@ -671,7 +688,126 @@ fn restart_launcher(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// The value of `--name value` or `--name=value`.
+fn arg_value(args: &[String], name: &str) -> Option<String> {
+    let eq = format!("{name}=");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == name {
+            return it.next().cloned();
+        }
+        if let Some(v) = a.strip_prefix(&eq) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// One line on stdout, for the program that started us. Never panics when there is no console.
+fn out_line(s: &str) {
+    let mut o = std::io::stdout();
+    let _ = writeln!(o, "{s}");
+    let _ = o.flush();
+}
+
+/// One line on stderr, and the exit code for a failed --prepare.
+fn prepare_fail(msg: &str) -> i32 {
+    let line = msg.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("Setup failed.");
+    let _ = writeln!(std::io::stderr(), "{line}");
+    1
+}
+
+/// --prepare --game <dump folder or .nup>: the same setup the Setup page runs (setup::run), without a window.
+/// Prints `progress <0..1> <text>` lines; returns the exit code.
+fn prepare_headless(game: Option<String>) -> i32 {
+    let game = match game.filter(|g| !g.trim().is_empty()) {
+        Some(g) => g,
+        None => return prepare_fail("--prepare needs --game <dump folder or .nup file>."),
+    };
+    if let Some(why) = cpu::check() {
+        return prepare_fail(&why);
+    }
+    let mut cfg = Config::default();
+    cfg.dump_dir = game.trim().to_string();
+    let mut base = 0.0f64;
+    let src = PathBuf::from(&cfg.dump_dir);
+    if src.is_file() && src.extension().map(|e| e.eq_ignore_ascii_case("nup")).unwrap_or(false) {
+        // same as the Setup page's .nup button: unpack into nup_dump and use that folder
+        let repo = match need_repo(&cfg) {
+            Ok(r) => r,
+            Err(e) => return prepare_fail(&e),
+        };
+        let out = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("nup_dump") } else { repo.join("game").join("nup_dump") };
+        let mut last = -1.0f64;
+        let res = nup::extract(
+            &src,
+            &out,
+            &mut |done, total, _file| {
+                if total > 0 {
+                    let f = 0.1 * (done as f64 / total as f64).min(1.0);
+                    if f - last >= 0.005 {
+                        last = f;
+                        out_line(&format!("progress {:.3} Unpacking the .nup package", f));
+                    }
+                }
+            },
+            &|| false,
+        );
+        match res {
+            Ok(d) => {
+                cfg.dump_dir = dump::fwd(&d);
+                base = 0.1;
+            }
+            Err(e) => return prepare_fail(&e),
+        }
+    }
+    let p = match paths(&cfg) {
+        Ok(p) => p,
+        Err(e) => return prepare_fail(&e),
+    };
+    let shared = Arc::new(setup::Shared::default());
+    *shared.progress.lock().unwrap() = setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
+    shared.cancel.store(false, Ordering::SeqCst);
+    let jobs = jobs_of(&cfg);
+    let n = setup::steps(&p, None).iter().filter(|s| s.state != "done").count().max(1) as f64;
+    let seen = Arc::new(Mutex::new((String::new(), 0usize)));
+    let emit = move |pr: setup::Progress| {
+        let mut g = seen.lock().unwrap();
+        if g.0 != pr.step {
+            g.0 = pr.step.clone();
+            g.1 += 1;
+        }
+        let within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
+        let f = base + (1.0 - base) * (g.1.saturating_sub(1) as f64 + within) / n;
+        let text = pr.message.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(pr.step.as_str()).to_string();
+        out_line(&format!("progress {:.3} {}", f.clamp(0.0, 1.0), text));
+    };
+    let emit_log = move |_lines: Vec<String>| {};
+    let end = setup::run(&shared, &p, jobs, &emit, &emit_log);
+    if end.state != "done" {
+        let why = if end.message.trim().is_empty() { "Setup did not finish." } else { end.message.as_str() };
+        return prepare_fail(why);
+    }
+    if !setup::complete(&p) {
+        return prepare_fail("Setup ended, but the game is not ready. See setup.log.");
+    }
+    // what the Play button does before it starts fefw.exe: point fefw.ini at the dump
+    if let Err(e) = settings::ensure_play_paths(&p.game_dir, &p) {
+        return prepare_fail(&e);
+    }
+    out_line("progress 1 Ready to play");
+    0
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let game_arg = arg_value(&args, "--game");
+    if args.iter().any(|a| a == "--prepare") {
+        std::process::exit(prepare_headless(game_arg));
+    }
+    if let Some(g) = game_arg.filter(|g| PathBuf::from(g.trim()).is_dir()) {
+        let _ = GAME_ARG.set(g.trim().to_string());
+    }
     if package_tools().is_some() {
         update::cleanup(&exe_dir());
     }

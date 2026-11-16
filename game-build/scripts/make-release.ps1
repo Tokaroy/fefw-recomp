@@ -98,6 +98,7 @@ Put (Join-Path $RtDir 'fefw_rt.dll') 'fefw_rt.dll'
 Put (Join-Path $RtDir 'fonts\DejaVuSans.ttf') 'fonts\DejaVuSans.ttf'
 Get-ChildItem $RtDir -Filter 'astcdec-*-shared.dll' -ErrorAction SilentlyContinue | ForEach-Object { Put $_.FullName $_.Name }
 Put $Launcher 'fefw-launcher.exe'
+Put "$root\recomplauncher.json" 'recomplauncher.json'
 Put (Join-Path $RtDir 'fefw_rt.lib') 'tools\build\sdk\fefw_rt.lib'
 foreach ($f in 'fefw_rt_api.h', 'fefw_stub.cpp', 'fefw_fma.c') { Put "$root\game-build\fefw\src\$f" "tools\build\sdk\$f" }
 foreach ($f in 'fefw.rc', 'fefw.manifest', 'fefw.ico') { Put "$root\game-build\fefw\res\$f" "tools\build\sdk\$f" }
