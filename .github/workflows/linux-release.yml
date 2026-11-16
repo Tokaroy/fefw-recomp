@@ -113,6 +113,7 @@ jobs:
         with:
           path: |
             game-build/fefw/build/rtdll/fefw_rt.dll
+            game-build/fefw/build/rtdll/fefw_rt.pdb
             game-build/fefw/build/rtdll/fefw_rt.lib
             game-build/fefw/build/rtdll/fonts
             game-build/fefw/build/rtdll/astcdec-*-shared.dll
@@ -150,9 +151,20 @@ jobs:
 
       - name: Check the runtime files
         run: |
-          foreach ($f in 'fefw_rt.dll', 'fefw_rt.lib', 'fonts\DejaVuSans.ttf') {
+          foreach ($f in 'fefw_rt.dll', 'fefw_rt.pdb', 'fefw_rt.lib', 'fonts\DejaVuSans.ttf') {
             if (-not (Test-Path "game-build\fefw\build\rtdll\$f")) { throw "the runtime build is missing $f" }
           }
+
+      # fefw_rt.pdb must belong to this fefw_rt.dll: every export of the DLL has to come back from llvm-symbolizer under its own name.
+      # Then the DLL and its PDB are packed as fefw-recomp-<version>-win64-symbols.zip, published beside the packages (not in them).
+      - name: Symbols (fefw_rt.pdb)
+        run: |
+          $rt = Resolve-Path game-build\fefw\build\rtdll
+          python tools\symbolize.py --self-test "$rt\fefw_rt.dll" --llvm-bin "$env:NX_LLVM_BIN"
+          if ($LASTEXITCODE) { throw 'fefw_rt.pdb does not resolve the DLL''s exports' }
+          New-Item -ItemType Directory -Force work\release | Out-Null
+          $zip = "work\release\fefw-recomp-${{ steps.names.outputs.version }}-win64-symbols.zip"
+          Compress-Archive -Force -Path "$rt\fefw_rt.dll", "$rt\fefw_rt.pdb" -DestinationPath $zip
 
       # the shader translator (dotnet publish of tools/shaders/harness over the pinned Ryujinx sources)
       - name: Shader translator cache
@@ -184,6 +196,13 @@ jobs:
         with:
           name: win64
           path: work/release/fefw-recomp-${{ steps.names.outputs.version }}-win64.zip
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win64-symbols
+          path: work/release/fefw-recomp-${{ steps.names.outputs.version }}-win64-symbols.zip
           compression-level: 0
           if-no-files-found: error
 
@@ -224,6 +243,11 @@ jobs:
           name: win64
           path: work/base
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: win64-symbols
+          path: work/base
+
       - name: Package (game-build/scripts/make-release-linux.sh)
         run: game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
 
@@ -237,7 +261,8 @@ jobs:
       - name: Release
         if: inputs.publish
         run: |
-          files=("work/base/fefw-recomp-$VERSION-win64.zip" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz")
+          files=("work/base/fefw-recomp-$VERSION-win64.zip" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz"
+                 "work/base/fefw-recomp-$VERSION-win64-symbols.zip")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
