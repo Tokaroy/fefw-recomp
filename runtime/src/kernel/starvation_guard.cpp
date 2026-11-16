@@ -297,7 +297,7 @@ void starvation_guard_start() {
     const int poll = static_cast<int>(std::clamp<int64_t>(config_get_int("sched", "starvation_poll_ms", 50), 10, 1000));
     const int need = (ms + poll - 1) / poll + 1;
     g.stop = false;
-    const bool lean = config_get_bool("sched", "starvation_lean", false);
+    const bool lean = config_get_bool("sched", "starvation_lean", true);
     const int idle = static_cast<int>(std::clamp<int64_t>(config_get_int("sched", "starvation_idle_poll_ms", 200), poll, 1000));
     g.th = std::thread(loop, &g, poll, need, lean, idle);
     NXLOG_I("sched", "starvation guard on: a guest thread ready for %d ms without running (polled every %d ms%s) is boosted to top priority on the whole processor pool for %d ms (debug note 422)",

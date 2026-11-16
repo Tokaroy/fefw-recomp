@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -141,21 +142,55 @@ bool name_listed(const std::vector<std::string>& v, const char* name) {
     return false;
 }
 void stats_report_loop(int64_t seconds);
+// Physical cores of processor group 0 (SMT siblings counted once). 0 when the call fails.
+int physical_core_count() {
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (!len) return 0;
+    std::vector<uint8_t> buf(len);
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()), &len)) return 0;
+    int n = 0;
+    for (DWORD off = 0; off < len;) {
+        auto* e = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + off);
+        if (e->Size == 0) break;
+        if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount >= 1 && e->Processor.GroupMask[0].Group == 0) ++n;
+        off += e->Size;
+    }
+    return n;
+}
+// [kernel] wait_spin (default auto): the measured spin set (PERF_NOTES, waits track: 0.4-0.8 ms off main's frame work in the street,
+// 10-35 % fewer frames over 20 ms on a Ryzen 3700X) as the defaults of spin_us = 30, spin_threads = main,Basic_Worker, lock_spin_us = 30
+// and lock_spin_threads = main; each of those keys set in the ini or the environment still wins. A spinning thread keeps its core busy
+// instead of sleeping, so auto turns it on only with 8 or more physical cores (the six guest cores, the render thread and the driver keep
+// a smaller CPU busy already; a Steam Deck has 4). true / false force it.
+bool wait_spin_on() {
+    std::string v = config_get_str("kernel", "wait_spin", "auto");
+    for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v.empty() || v == "auto") {
+        const int cores = physical_core_count();
+        const bool r = cores >= 8;
+        NXLOG_I("kernel", "[kernel] wait_spin = auto: %s (%d physical cores)", r ? "on" : "off", cores);
+        return r;
+    }
+    return !(v == "false" || v == "0" || v == "off" || v == "no");
+}
 const WaitTuning& wait_tuning() {      // first called before g_k is taken (config reads log)
     static const WaitTuning w = [] {
         WaitTuning v;
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         v.hz = f.QuadPart;
-        const int64_t us = config_get_int("kernel", "spin_us", 0);
+        const bool spin_set = wait_spin_on();
+        const int64_t us = config_get_int("kernel", "spin_us", spin_set ? 30 : 0);
         v.spin = us > 0 ? us * v.hz / 1000000 : 0;
         v.stats_s = config_get_int("kernel", "wait_stats", 0);
         // [kernel] lock_spin_us (experiment, notes/threads.md): ArbitrateLock first polls the mutex word this long without the kernel lock and
         // returns (the guest retries its compare-and-swap) when the owner has released it, before it queues as a waiter. A queued waiter is
         // handed the mutex and owns it until the host wakes it (5-10 us), so contended locks convoy; a spinner never makes that hand-over.
-        const int64_t lus = config_get_int("kernel", "lock_spin_us", 0);
+        const int64_t lus = config_get_int("kernel", "lock_spin_us", spin_set ? 30 : 0);
         v.lock_spin = lus > 0 ? lus * v.hz / 1000000 : 0;
-        const std::string sl = config_get_str("kernel", "spin_threads", ""), ll = config_get_str("kernel", "lock_spin_threads", "");
+        const std::string sl = config_get_str("kernel", "spin_threads", spin_set ? "main,Basic_Worker" : ""),
+                          ll = config_get_str("kernel", "lock_spin_threads", spin_set ? "main" : "");
         v.spin_names = name_list(sl);
         v.lock_names = name_list(ll);
         if (v.lock_spin) NXLOG_I("kernel", "ArbitrateLock polls the mutex word %lld us before queueing ([kernel] lock_spin_us), threads: %s", static_cast<long long>(lus),

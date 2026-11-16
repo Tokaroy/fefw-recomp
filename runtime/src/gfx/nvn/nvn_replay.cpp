@@ -8,6 +8,7 @@
 // handles never dropped by count, deferred bind arrays read at record time.
 #include <atomic>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
@@ -1205,11 +1206,35 @@ Texture* feedback_clone(Texture* t) {
     return tex_gpu_scaled(c.get(), tex_scale(t)) ? c.get() : nullptr;
 }
 
-// [nvn] feedback_levels (default false): the copy holds only the levels the draw's views sample (all bindings of the texture together)
+// [nvn] lean_barriers (default auto): the measured GPU sync set (PERF_NOTES, GPU track: GPU time per frame 15.1 -> 10.9 ms at 4K on an
+// RTX 3080, no visual difference) as the default of its five keys: dispatch_barriers = tracked, game_barriers = tracked, batch_ubo_updates,
+// feedback_levels, depth_ro_sticky. Each of those keys set in the ini or the environment still wins. auto: on for an NVIDIA GPU while
+// pass_barriers is tracked (the F1 page's "Fewer GPU pipeline waits", which turns this off with it); other drivers forgive a missing
+// dependency less readily and the set is not tested there yet. true / false force it.
+bool lean_barriers_on() {
+    static const bool on = [] {
+        std::string v = nxrt::config_get_str("nvn", "lean_barriers", "auto");
+        for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (v.empty() || v == "auto") {
+            const bool nvidia = device().properties().vendorID == 0x10de;
+            const bool pass_tracked = nxrt::config_get_str("nvn", "pass_barriers", "tracked") != "full";
+            const bool r = nvidia && pass_tracked;
+            NXLOG_I(kTag, "[nvn] lean_barriers = auto: %s (%s%s)", r ? "on" : "off", nvidia ? "NVIDIA GPU" : "not an NVIDIA GPU",
+                    pass_tracked ? "" : ", pass_barriers = full");
+            return r;
+        }
+        const bool r = !(v == "false" || v == "0" || v == "off" || v == "no");
+        NXLOG_I(kTag, "[nvn] lean_barriers = %s", r ? "on" : "off");
+        return r;
+    }();
+    return on;
+}
+
+// [nvn] feedback_levels (default: lean_barriers): the copy holds only the levels the draw's views sample (all bindings of the texture together)
 // instead of every level. A draw that renders a small mip while it samples the next larger one (a bloom or blur chain over one mipmapped
 // texture) then copies that one small level, not the whole chain from the full-size level 0 down.
 bool fb_levels_on() {
-    static const bool on = nxrt::config_get_bool("nvn", "feedback_levels", false);
+    static const bool on = nxrt::config_get_bool("nvn", "feedback_levels", lean_barriers_on());
     return on;
 }
 
@@ -2998,7 +3023,7 @@ const ShaderInfo* passthrough_tcs_for(const ShaderInfo* vs, const ShaderInfo* te
 }
 const ShaderInfo* tcs_now() { return S.stage[kTessCtl] ? S.stage[kTessCtl] : g_gen_tcs; }
 
-// [nvn] depth_ro_sticky (default false): a draw that does not sample the depth target and writes neither depth nor stencil stays in an
+// [nvn] depth_ro_sticky (default: lean_barriers): a draw that does not sample the depth target and writes neither depth nor stencil stays in an
 // open pass whose depth attachment is read-only, instead of ending it for a writable one. The transparent and particle draws of a frame
 // (depth test on, depth writes off) where only some of them sample the depth (soft particles) then stay in one pass, without a layout
 // change of the full-size depth buffer back and forth at each switch.
@@ -3007,7 +3032,7 @@ void cs_draw_index_range(uint64_t addr, uint64_t size);
 
 bool depth_ro_for_draw() {
     if (g_want_depth_ro) return true;
-    static const bool sticky = nxrt::config_get_bool("nvn", "depth_ro_sticky", false);
+    static const bool sticky = nxrt::config_get_bool("nvn", "depth_ro_sticky", lean_barriers_on());
     if (!sticky || !P.open || !P.depth_ro || !targets_match()) return false;
     const bool writes_depth = S.ds.depth_test && S.ds.depth_write;
     const bool writes_stencil = P.has_stencil && S.ds.stencil_test && (S.stencil_wmask[0] != 0 || S.stencil_wmask[1] != 0);
@@ -3855,7 +3880,7 @@ uint64_t g_cs_n = 0, g_cs_skipped = 0, g_cs_conflicts = 0, g_cs_untracked = 0;
 // draw that depends on an open dispatch, the pass ends and the barrier is recorded.
 int cs_mode() {
     static const int m = [] {
-        const std::string v = nxrt::config_get_str("nvn", "dispatch_barriers", "full");
+        const std::string v = nxrt::config_get_str("nvn", "dispatch_barriers", lean_barriers_on() ? "tracked" : "full");
         return v == "tracked_draws" ? 2 : v == "tracked" ? 1 : 0;
     }();
     return m;
@@ -4060,7 +4085,7 @@ void cs_after_dispatch() {
 
 // Ops that record no GPU work (state and bindings) or that check the open dispatches themselves keep them open.
 bool game_barriers_tracked() {
-    static const bool tracked = nxrt::config_get_str("nvn", "game_barriers", "full") == "tracked";
+    static const bool tracked = nxrt::config_get_str("nvn", "game_barriers", lean_barriers_on() ? "tracked" : "full") == "tracked";
     return tracked;
 }
 
@@ -4554,7 +4579,7 @@ uint64_t g_wm_mark = 0;                                    // memory_barrier_cou
 std::vector<std::pair<uint64_t, uint64_t>> g_wm_ranges;     // the open updates' [addr, end)
 
 bool wm_batch_on() {
-    static const bool on = nxrt::config_get_bool("nvn", "batch_ubo_updates", false);
+    static const bool on = nxrt::config_get_bool("nvn", "batch_ubo_updates", lean_barriers_on());
     return on;
 }
 
