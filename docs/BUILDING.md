@@ -123,6 +123,20 @@ Other distributions need the equivalent packages. In WSL2 the Windows `PATH` is 
 `/mnt/...` entries, because `linuxdeploy` (the AppImage step) crashes on an unreadable one. Build from a checkout on the Linux
 filesystem (`~/fefw-recomp`), not `/mnt/c/...`: it is much faster.
 
+## Reading crash reports
+
+The release build of `fefw_rt.dll` also writes `fefw_rt.pdb` (the DLL records only its bare name). The release workflow checks it
+against the DLL and publishes both as `fefw-recomp-<version>-win64-symbols.zip`, beside the packages: players never download it.
+To name the `fefw_rt.dll+0x...` frames of a player's `fefw_crash.txt`, `fefw_freeze.txt` or log, unpack the symbols of the version
+they ran and:
+
+```
+python -I tools/symbolize.py fefw_crash.txt --symbols <unpacked folder>
+```
+
+It needs `llvm-symbolizer` (the build's LLVM, or `brew install llvm` on macOS). Only that version's symbols fit; frames of `fefw.exe`
+(linked on the player's PC) and of drivers stay as offsets.
+
 ## Repository layout
 
 | Folder | What |
