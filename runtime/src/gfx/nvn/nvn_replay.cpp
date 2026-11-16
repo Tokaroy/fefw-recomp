@@ -714,6 +714,9 @@ uint64_t split_ticks() {
 uint64_t qpc_now() {     // ns, steady
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+void cs_close();   // dispatch barriers and UBO update runs (further down)
+void wm_close();
+
 void maybe_split() {
     const uint64_t ticks = split_ticks();
     static const uint32_t min_draws = static_cast<uint32_t>(std::max<int64_t>(0, nxrt::config_get_int("nvn", "split_min_draws", 16)));   // tests use 0
@@ -721,6 +724,10 @@ void maybe_split() {
     if (g_occ_active >= 0 || g_cw[0].active >= 0 || g_cw[1].active >= 0 || g_xfb_active || g_xfb_began) return;   // queries, stream-out: one buffer
     const uint64_t now = qpc_now();
     if (now - g_split_t0 < ticks) return;
+    // Open dispatches (dispatch_barriers = tracked*) and an open UBO update run (batch_ubo_updates) owe a barrier in this command buffer:
+    // record it now. After the switch they would see another command buffer, take it for a full barrier between, and record none.
+    cs_close();
+    wm_close();
     const int labels = g_dbg_depth;
     for (int i = 0; i < labels; ++i) vkCmdEndDebugUtilsLabelEXT(F->cb);     // labels cannot outlive their command buffer (later pops close nothing)
     if (labels) g_dbg_depth = 0;
@@ -2343,10 +2350,12 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                 const std::string sized = std::string(r.tex->fmt->name) + ":" + std::to_string(r.tex->b.width) + "x" + std::to_string(r.tex->b.height);
                 if (null_fmt == r.tex->fmt->name || null_fmt == sized) r.tex = nullptr;
             }
-            // a compute dispatch is never inside the graphics pass: a colour attachment of the last pass is an ordinary texture to it
-            const bool feedback = r.tex && d.nvn_stage != kCompute && is_color_feedback(r.tex);
             // a first upload held back for a later frame ([nvn] bound_upload_defer): its image holds nothing yet, the dummy stands in
             const bool waiting = r.tex && tex_layout(r.tex) == VK_IMAGE_LAYOUT_UNDEFINED && tex_first_upload_deferrable(r.tex);
+            // a compute dispatch is never inside the graphics pass: a colour attachment of the last pass is an ordinary texture to it. Not
+            // asked for a held-back texture: is_color_feedback makes its image (tex_gpu), which pool_image_lazy holds back until the upload's
+            // turn, and a deferrable texture (ASTC / BC) is never a colour attachment.
+            const bool feedback = r.tex && !waiting && d.nvn_stage != kCompute && is_color_feedback(r.tex);
             if (r.tex && !waiting && tex_gpu(r.tex) && !feedback) {
                 ViewRequest q = make_request(b, r);
                 if (int_comp) q.component = int_comp;
@@ -2761,6 +2770,7 @@ bool build_key(GraphicsKey& key, VkPrimitiveTopology topo) {
         for (uint32_t i = 0; i < 8; ++i) key.blend_enable[i] = 0;
     }
     // The game's alpha test (alpha_test_wanted, begin_draw chose the alpha-test layout): the fragment shader variant; the reference is a push constant.
+    key.alpha_layout = g_alpha_draw ? 1 : 0;   // the layout begin_draw chose, also when the variant is ruled out below
     if (g_alpha_draw && key.stage[1] && !key.no_out && !key.dual_src && !key.xfb && key.color_format[0] != 0) key.alpha_func = static_cast<uint8_t>(S.color.alpha_test);
     return true;
 }
@@ -4569,7 +4579,7 @@ void do_downsample(const P_Downsample& p) {
     gstamp("downsample");
 }
 
-// [nvn] batch_ubo_updates (default false): the game updates uniform buffers in runs (~15 nvnCommandBufferUpdateUniformBuffer back to
+// [nvn] batch_ubo_updates (default: lean_barriers): the game updates uniform buffers in runs (~15 nvnCommandBufferUpdateUniformBuffer back to
 // back, four runs a frame), and each update had a full barrier before and after it. With this on, an update directly after another one
 // (nothing recorded in between, ranges apart) needs no barrier before it, and the barrier after it waits for the next command that is not
 // an update (wm_close from the interpreter): a run costs two barriers instead of two per update.
@@ -5151,7 +5161,7 @@ void run_list(const CmdList& list, int depth) {
             }
             case Op::Barrier: {
                 counters().game_barriers.fetch_add(1, std::memory_order_relaxed);
-                // [nvn] game_barriers = tracked (default full): with tracked pass barriers, everything recorded since the last full barrier
+                // [nvn] game_barriers = tracked (default: lean_barriers): with tracked pass barriers, everything recorded since the last full barrier
                 // that has no barrier of its own is attachment writes of passes (a pass whose draws wrote other memory ended with a full
                 // barrier, copies and fills carry one, open dispatches are excluded here). Every later use of those attachments gets its
                 // own dependency (a layout change, or pending_conflict for the next pass on the same image), so the game's barrier adds

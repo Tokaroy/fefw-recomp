@@ -157,7 +157,7 @@ void log_starvation(const KThread& t, const std::string& where, int ready_ms, co
             static_cast<unsigned long long>(boost_no), busy.empty() ? "none" : busy.c_str(), other.empty() ? "none" : other.c_str());
 }
 
-// [sched] starvation_lean (default false): the guard costs 1.4-1.6 ms of CPU per frame at THREAD_PRIORITY_HIGHEST in a clean run (a
+// [sched] starvation_lean (default true): the guard costs 1.4-1.6 ms of CPU per frame at THREAD_PRIORITY_HIGHEST in a clean run (a
 // snapshot of every process on the PC every 50 ms, with each process's name copied) and boosted nothing in any tester run. Lean: process
 // names are read only for a log line, and while no guest thread was ready-and-unscheduled at the last poll the next one comes after
 // [sched] starvation_idle_poll_ms (default 200) instead of starvation_poll_ms; once one is seen, polls are starvation_poll_ms apart again.

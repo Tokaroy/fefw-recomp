@@ -99,7 +99,10 @@ struct GraphicsKey {
     // After the tessellation stages, so that the prewarm key file keeps its record layout (it records the bytes before them): the fixed-function
     // alpha test of the game ([nvn] alpha_test). alpha_func = NVNalphaFunc 1..7 (0: none / ALWAYS); the fragment shader then runs as a variant
     // that kills the invocation when the test fails (spirv_alpha_test); the reference is a push constant (ProgLayout::alpha_push).
-    uint8_t alpha_func = 0, alpha_pad[7] = {};
+    // alpha_layout = 1: built with the alpha-test layout (alpha_layout(): the program's sets plus the reference's push constant range). It is in
+    // the key because begin_draw picks that layout before the pass is known: a draw whose pass then rules the variant out (no colour target 0,
+    // dual-source blend) keeps alpha_func = 0 but still uses the other layout, and pipelines of incompatible layouts must not share a cache entry.
+    uint8_t alpha_func = 0, alpha_layout = 0, alpha_pad[6] = {};
     bool operator==(const GraphicsKey& o) const;
     uint64_t hash() const;
 };

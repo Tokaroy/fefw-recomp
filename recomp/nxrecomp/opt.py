@@ -172,17 +172,35 @@ def _uses(func):
 CCMP = re.compile(r'^if \(cond\(c, \d+\)\) [^;]*\b(?:adds64|adds32|fcmp)\(c, [^;]*; else set_nzcv\(c, \d+\);$')
 
 
+def _writer_reads_flags(toks, i, text):
+    """A flag writer toks[i] (`adds64(c, ...`) whose own arguments read a flag: ADCS / SBCS / NGCS pass `c->C` as the carry-in. Its
+    arguments are evaluated before it writes, so that read comes first even though its token follows the writer's."""
+    depth, end = 1, len(text)
+    for p in range(toks[i].end(), len(text)):
+        ch = text[p]
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                end = p
+                break
+    return any(t.lastgroup in ('ff', 'fr', 'fg') and t.start() < end for t in toks[i + 1:])
+
+
 def _flag_effects(toks, text):
     """(gen, kill) of one node for the flag liveness, in token order: gen = a flag read before any write or call."""
     gen = kill = False
     partial = 'if (' in text and not CCMP.match(text.strip())
-    for m in toks:
+    for j, m in enumerate(toks):
         g = m.lastgroup
         if kill:
             break
         if g in ('ff', 'fr', 'fg'):
             gen = True
         elif g == 'fw':
+            if _writer_reads_flags(toks, j, text):
+                gen = True
             # a write: adds/logic/set_nzcv/fcmp; ccmp is `if (cond(c, k)) adds(...); else set_nzcv(...)`: read first, then a write on
             # both paths. A writer inside any other `if` may be partial: not taken as a kill (conservative).
             kill = not partial
@@ -231,11 +249,13 @@ def optimize(text, flags_abi=True, vregs=True, keep_cs=True, xregs=True, vstore=
             if mt.lastgroup != 'call':
                 continue
             after = out
-            for mt2 in toks[i + 1:]:
-                if mt2.lastgroup in ('ff', 'fr', 'fg'):
+            text = func.nodes[k][1]
+            for j in range(i + 1, len(toks)):
+                g2 = toks[j].lastgroup
+                if g2 in ('ff', 'fr', 'fg') or (g2 == 'fw' and _writer_reads_flags(toks, j, text)):
                     after = True
                     break
-                if mt2.lastgroup in ('fw', 'call', 'ret'):
+                if g2 in ('fw', 'call', 'ret'):
                     after = False
                     break
             flag_after_call = flag_after_call or after
