@@ -36,7 +36,9 @@ class Config(GameConfig):
     # scalar results written to a V register as one whole-register store (perf/codegen2: every V register write), and x8..x17 in
     # function locals in functions that make calls ('tregs', opt.temps_local: AAPCS64 temporaries, not written back at calls and
     # returns). tregs changes the control flow clang sees in ~40 % of the functions it touches: build PGO with a profile of tregs code.
-    opt = ('flags', 'vstore', 'tregs')
+    # tregs is off until it is shown safe for this game: it assumes no value in x9..x17 crosses a call or a return, and a first static
+    # check of the lifted game left a few hundred places it could not clear yet. NXRECOMP_OPT=flags,vstore,tregs turns it on for a build.
+    opt = ('flags', 'vstore')
     # nnSdk 22.2.0's C string routines run natively (cxx.h hle_*; same results, checked against the lifted routines by
     # recomp/tests/hle_libc_test.cpp). Address: (body, the routine's first instruction words).
     inline_replace = {
