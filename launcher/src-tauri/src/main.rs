@@ -55,8 +55,13 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// The dump folder passed with --game: used in place of the saved one for this run (what the folder picker would have set).
 static GAME_ARG: OnceLock<String> = OnceLock::new();
 
+/// The saved launcher.json, without the --game override.
+fn load_saved_config(app: &AppHandle) -> Config {
+    config_path(app).ok().and_then(|p| fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
 fn load_config(app: &AppHandle) -> Config {
-    let mut cfg: Config = config_path(app).ok().and_then(|p| fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut cfg = load_saved_config(app);
     if let Some(g) = GAME_ARG.get() {
         cfg.dump_dir = g.clone();
     }
@@ -163,7 +168,11 @@ fn get_config(app: AppHandle) -> Config {
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, config: Config) -> Result<(), String> {
+fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
+    // the settings page sends back what get_config gave it: keep the --game folder out of launcher.json
+    if GAME_ARG.get().is_some_and(|g| *g == config.dump_dir) {
+        config.dump_dir = load_saved_config(&app).dump_dir;
+    }
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     settings::write_atomic(&config_path(&app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
 }
