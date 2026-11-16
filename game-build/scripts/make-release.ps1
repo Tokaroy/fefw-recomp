@@ -100,14 +100,15 @@ Get-ChildItem $RtDir -Filter 'astcdec-*-shared.dll' -ErrorAction SilentlyContinu
 Put $Launcher 'fefw-launcher.exe'
 Put "$root\recomplauncher.json" 'recomplauncher.json'
 Put (Join-Path $RtDir 'fefw_rt.lib') 'tools\build\sdk\fefw_rt.lib'
-foreach ($f in 'fefw_rt_api.h', 'fefw_stub.cpp', 'fefw_fma.c') { Put "$root\game-build\fefw\src\$f" "tools\build\sdk\$f" }
+foreach ($f in 'fefw_rt_api.h', 'fefw_stub.cpp', 'fefw_fma.c', 'fefw_hle.cpp') { Put "$root\game-build\fefw\src\$f" "tools\build\sdk\$f" }
 foreach ($f in 'fefw.rc', 'fefw.manifest', 'fefw.ico') { Put "$root\game-build\fefw\res\$f" "tools\build\sdk\$f" }
+Mirror "$root\game-build\fefw\third_party\zstd" 'tools\build\sdk\zstd'
 foreach ($f in 'fefw_build.py', 'dump_hashes.json') { Put "$root\game-build\release\$f" "tools\build\$f" }
 Put "$root\tools\nso\nso_unpack.py" 'tools\build\nso_unpack.py'
 Put "$root\recomp\LICENSE" 'tools\build\recomp\LICENSE'
 Mirror "$root\recomp\nxrecomp" 'tools\build\recomp\nxrecomp' @('*__pycache__*', '*.pyc')
 Mirror "$root\recomp\include\nxrecomp" 'tools\build\recomp\include\nxrecomp'
-foreach ($f in 'CMakeLists.txt', 'config.py', 'main.sites') { Put "$root\recomp\games\fefw\$f" "tools\build\recomp\games\fefw\$f" }
+foreach ($f in 'CMakeLists.txt', 'config.py', 'main.sites', 'hot.txt', 'inline.txt') { Put "$root\recomp\games\fefw\$f" "tools\build\recomp\games\fefw\$f" }
 Put "$root\tools\shaders\ampere\extract_corpus.py" 'tools\shaders\extract_corpus.py'
 (Get-Content -Raw "$root\game-build\release\README.txt").Replace('@VERSION@', $Version) | Set-Content -NoNewline (Join-Path $pkg 'README.txt')
 Put "$root\LICENSE" 'LICENSE.txt'

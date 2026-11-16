@@ -48,10 +48,13 @@ ZIG = os.path.join(HERE, 'zig', 'zig.exe' if WINDOWS else 'zig')
 FORMAT = 2          # bump when the build layout or the stamp changes: older builds (partial or done) are then started over
 # the lifter as game-build/scripts/make-release.ps1 ships it: paths under RECOMP, the same in the zip (tools/build/recomp/...)
 # and in the repo (recomp/...)
-LIFTER = ['nxrecomp', 'include/nxrecomp', 'games/fefw/CMakeLists.txt', 'games/fefw/config.py']
+LIFTER = ['nxrecomp', 'include/nxrecomp', 'games/fefw/CMakeLists.txt', 'games/fefw/config.py', 'games/fefw/hot.txt',
+          'games/fefw/inline.txt']
 SITES = 'games/fefw/main.sites'
 # what the link takes from sdk/ besides the lifted objects and fefw_rt.lib (stamped on its own, as 'runtime')
-SDK_FILES = ['fefw_stub.cpp', 'fefw_rt_api.h', 'fefw_fma.c', 'fefw.rc', 'fefw.manifest', 'fefw.ico']
+SDK_FILES = ['fefw_stub.cpp', 'fefw_rt_api.h', 'fefw_fma.c', 'fefw.rc', 'fefw.manifest', 'fefw.ico', 'fefw_hle.cpp', 'zstd']
+# fefw_hle.cpp: native routines the lifted code calls (GameConfig.inline_replace); zstd/: zstd 1.5.7's decoder sources (lib/zstd.h,
+# lib/common, lib/decompress; BSD), which fefw_hle.cpp uses. Both are compiled into fefw.exe at the link step.
 
 # name, NSO file, guest base, NxModule.index, translation units (as recomp/games/fefw/CMakeLists.txt)
 MODULES = [
@@ -80,13 +83,32 @@ CPU_VARIANTS = {
 }
 # recomp/cmake/NxRecomp.cmake flags for the lifted code, in clang (not clang-cl) syntax, plus NX_INLINE_INDIRECT
 # (recomp/games/fefw/CMakeLists.txt); -mcpu per variant. -ffp-contract=off: no multiply and add is fused that the guest kept apart.
-CXXFLAGS_COMMON = ['-std=c++20', '-O1', '-w', '-fno-exceptions', '-fno-rtti', '-fno-strict-aliasing', '-ffp-contract=off', '-fno-math-errno',
-                   '-fno-threadsafe-statics', '-DNX_INLINE_INDIRECT']
+# The bundled zig c++ turns -O1, -O2 and -O3 alike into clang -O2 (plus loop and SLP vectorisation; `zig c++ -###` shows it). -g0: no
+# debug info (zig adds CodeView by default; nothing reads it, and the compile is faster without). -fomit-frame-pointer: one more host
+# register for the lifted code (zig keeps RBP frames by default); host unwinding uses the .pdata tables, not frame pointers.
+# NX_NOESCAPE_CTX + the capture-tracking limit (perf/codegen2): the context pointer is `noescape` at every call (recomp ctx.h NX_NOESC), and
+# LLVM follows its thousands of uses instead of giving up after 100, so guest loads and stores no longer force the context registers
+# in use to be reloaded (hot code: -20 % context loads, -17 % context stores, -4 % instructions; a cold unit: -11 % instructions).
+CXXFLAGS_COMMON = ['-std=c++20', '-O1', '-g0', '-fomit-frame-pointer', '-w', '-fno-exceptions', '-fno-rtti', '-fno-strict-aliasing', '-ffp-contract=off', '-fno-math-errno',
+                   '-fno-threadsafe-statics', '-DNX_INLINE_INDIRECT',
+                   '-DNX_NOESCAPE_CTX', '-mllvm', '-capture-tracking-max-uses-to-explore=100000']
+
+
+# Profile-guided builds (developer option, perf/codegen): --pgo-gen <profile runtime .a> builds an instrumented fefw.exe (IR PGO; its
+# stub writes the counters to LLVM_PROFILE_FILE every 15 s, since the game ends with TerminateProcess); --pgo-use <.profdata> builds
+# with that profile. The lifted sources must be the same in both builds (same package). --mcpu overrides the variant's -mcpu.
+PGO = {'gen': None, 'use': None, 'mcpu': None}
 
 
 def cxxflags(variant):
     """The compile flags of the lifted code for a CPU_VARIANTS key ('fma': the flags every release before 0.1.7 used)."""
-    return ['-target', 'x86_64-windows-gnu', '-mcpu=' + CPU_VARIANTS[variant]['mcpu']] + CXXFLAGS_COMMON
+    extra = []
+    if PGO['gen']:
+        extra += ['-fprofile-generate', '-mllvm', '-enable-name-compression=false']   # (the LLVM 22 llvm-profdata release has no zlib)
+    if PGO['use']:
+        extra += ['-fprofile-use=' + PGO['use'], '-Wno-profile-instr-out-of-date', '-Wno-profile-instr-unprofiled',
+                  '-mllvm', '-enable-ext-tsp-block-placement']   # profile-driven block order (ext-TSP) for the instruction cache
+    return ['-target', 'x86_64-windows-gnu', '-mcpu=' + (PGO['mcpu'] or CPU_VARIANTS[variant]['mcpu'])] + CXXFLAGS_COMMON + extra
 CREATE_NO_WINDOW = 0x08000000
 BELOW_NORMAL = 0x00004000
 
@@ -382,6 +404,17 @@ def free_memory():
         return None
 
 
+def pgo_gen_skip(src):
+    """--pgo-gen: units built without instrumentation. clang's instrumented compile of the unit holding the lifted original of the
+    game's zstd decoder (the NX_ORIG fallback of nx_hle_zstd_multiframe, one huge function) ran for over 45 CPU-minutes without
+    finishing (perf/codegen, 13 Nov); that code runs only when the native decoder declines, so it needs no profile."""
+    try:
+        with open(src, encoding='utf-8', errors='replace') as f:
+            return 'nx_hle_zstd_multiframe' in f.read()
+    except OSError:
+        return False
+
+
 def compile_all(runner, gen, obj, jobs, env, variant):
     units = []
     for name, _, _, _, shards in MODULES:
@@ -406,6 +439,8 @@ def compile_all(runner, gen, obj, jobs, env, variant):
         name, src, o = t
         tmp = o + '.tmp'
         cmd = [ZIG, 'c++'] + cxxflags(variant) + ['-I', os.path.join(RECOMP, 'include'), '-I', os.path.dirname(src), '-c', src, '-o', tmp]
+        if PGO['gen'] and pgo_gen_skip(src):     # see pgo_gen_skip
+            cmd = [x for x in cmd if x not in ('-fprofile-generate',)]
         rc, tail = runner.run(cmd, env=env)
         if rc != 0:
             return 'Compiling %s/%s failed (exit %d):\n%s' % (name, os.path.basename(src), rc, tail)
@@ -509,6 +544,20 @@ def link(runner, obj, game, env, variant):
         libs.append(a)
     # the variant's own sources (compat: sdk/fefw_fma.c), as C and ahead of the libraries, so their fma / fmaf are the ones linked
     extra = []
+    # the native routines (sdk/fefw_hle.cpp) and the zstd decoder they use
+    zdir = os.path.join(SDK, 'zstd')
+    hle = [(os.path.join(SDK, 'fefw_hle.cpp'), 'c++')] + [(os.path.join(zdir, sub, f), 'cc') for sub in ('common', 'decompress')
+                                                       for f in sorted(os.listdir(os.path.join(zdir, sub))) if f.endswith('.c')]
+    for src, lang in hle:
+        o = os.path.join(obj, 'hle_' + os.path.basename(src) + '.o')
+        cmd = [ZIG, lang, '-target', 'x86_64-windows-gnu', '-mcpu=' + CPU_VARIANTS[variant]['mcpu'], '-O2', '-g0', '-w', '-DZSTD_DISABLE_ASM',
+               '-DZSTD_LEGACY_SUPPORT=0', '-I', zdir, '-I', os.path.join(RECOMP, 'include')]
+        if lang == 'c++':
+            cmd += ['-std=c++20', '-fno-exceptions', '-fno-rtti']
+        rc, tail = runner.run(cmd + ['-c', src, '-o', o], env=env)
+        if rc != 0:
+            raise Fail('Compiling %s failed (exit %d):\n%s' % (os.path.basename(src), rc, tail))
+        extra.append(o)
     for src in CPU_VARIANTS[variant]['link']:
         o = os.path.join(obj, os.path.splitext(src)[0] + '.o')
         rc, tail = runner.run([ZIG, 'cc', '-target', 'x86_64-windows-gnu', '-mcpu=' + CPU_VARIANTS[variant]['mcpu'], '-O1', '-ffp-contract=off',
@@ -518,8 +567,10 @@ def link(runner, obj, game, env, variant):
         extra.append(o)
     tmp = os.path.join(obj, 'fefw.exe')
     # FEFW_CPU_NEEDS: what fefw_rt.dll checks the processor for before the game starts (fefw_rt_api.h)
-    cmd = [ZIG, 'c++', '-target', 'x86_64-windows-gnu', '-mcpu=x86_64+cx16', '-O1', '-fno-exceptions', '-fno-rtti', '-I', SDK,
-           '-DFEFW_CPU_NEEDS=' + CPU_VARIANTS[variant]['needs'], os.path.join(SDK, 'fefw_stub.cpp'), os.path.join(SDK, 'fefw.rc')] +         extra + libs + [os.path.join(SDK, 'fefw_rt.lib'), '-o', tmp, '-Wl,--stack,134217728', '-Wl,--subsystem,windows']
+    cmd = ([ZIG, 'c++', '-target', 'x86_64-windows-gnu', '-mcpu=x86_64+cx16', '-O1', '-fno-exceptions', '-fno-rtti', '-I', SDK,
+            '-DFEFW_CPU_NEEDS=' + CPU_VARIANTS[variant]['needs']] + (['-DFEFW_PGO_GEN'] if PGO['gen'] else []) +
+           [os.path.join(SDK, 'fefw_stub.cpp'), os.path.join(SDK, 'fefw.rc')] + extra + libs + ([PGO['gen']] if PGO['gen'] else []) +
+           [os.path.join(SDK, 'fefw_rt.lib'), '-o', tmp, '-Wl,--stack,134217728', '-Wl,--subsystem,windows'])
     rc, tail = runner.run(cmd, env=env, cwd=SDK)
     if rc != 0:
         raise Fail('Linking fefw.exe failed (exit %d):\n%s' % (rc, tail))
@@ -538,8 +589,14 @@ def main():
     ap.add_argument('--keep', action='store_true', help='keep the generated sources and objects')
     ap.add_argument('--check', action='store_true', help='only say whether <game>/build/done.json matches these tools')
     ap.add_argument('--cpu', default='auto', help='the build for the processor: fma, compat or auto (CPU_VARIANTS)')
+    ap.add_argument('--pgo-gen', help='developer: build instrumented for a profile, linking this profile runtime library (.a)')
+    ap.add_argument('--pgo-use', help='developer: build with this profile (.profdata)')
+    ap.add_argument('--mcpu', help='developer: -mcpu for the lifted code instead of the variant one (e.g. znver2: this PC only)')
     ap.add_argument('--lift-one', help=argparse.SUPPRESS)
     a = ap.parse_args()
+    PGO['gen'] = os.path.abspath(a.pgo_gen) if a.pgo_gen else None
+    PGO['use'] = os.path.abspath(a.pgo_use) if a.pgo_use else None
+    PGO['mcpu'] = a.mcpu
     if a.lift_one:                       # child process: one lifter run (keeps the lifter's own pool out of this process)
         sys.path.insert(0, RECOMP)
         from nxrecomp.__main__ import main as nx_main
