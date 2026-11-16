@@ -220,6 +220,7 @@ export async function render(el, ctx) {
     <div class="field">
       <label class="name">${esc(t(f.label))}${f.hint ? `<span class="hint">${esc(t(f.hint))}</span>` : ''}${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}</label>
       <div class="control">${CONTROL[f.type](f, model[f.id])}</div>
+      ${f.status ? `<div class="fetch" data-fetch="${f.status}"></div>` : ''}
     </div>`;
 
   const barText = (n) => (n ? (n > 1 ? t('common.unsavedMany', { count: n }) : t('common.unsavedOne')) : t('common.noChanges'));
@@ -246,6 +247,7 @@ export async function render(el, ctx) {
     refreshIcons();
     bind();
     checkFiles();
+    drawFetch();
   }
 
   /** Puts the (unsaved) model back into freshly drawn markup. */
@@ -329,6 +331,76 @@ export async function render(el, ctx) {
   }
   let checkTimer = 0;
 
+  // ----- downloading the upscaler files from the vendors (fetch.rs) -----
+  // Nothing is downloaded before the player has seen where the files come from and under whose licence, and accepted.
+  const FETCH = {
+    fsr: [['fsr', 'fsr']],
+    xess: [['xess', 'xess']],
+    dlss: [['dlss', 'dlss'], ['dlss_framegen', 'dlssFg']],
+  };
+  let fetchAsk = null; // the kind waiting for the player's accept
+  let fetchSt = { state: 'idle', kind: '' };
+  let fetchTimer = 0;
+
+  function fetchHtml(which) {
+    const kinds = FETCH[which];
+    const busy = fetchSt.state === 'running';
+    if (busy && kinds.some(([k]) => k === fetchSt.kind)) {
+      const pct = fetchSt.total ? Math.min(100, Math.round((fetchSt.done / fetchSt.total) * 100)) : 0;
+      return `<div class="banner info">${icon('download')}<div style="flex:1"><div>${esc(fetchSt.message)}</div>${fetchSt.total ? `<progress max="100" value="${pct}" style="width:100%"></progress>` : ''}</div><button class="btn quiet" data-fetch-stop>${esc(t('settings.fetch.stop'))}</button></div>`;
+    }
+    const ask = kinds.find(([k]) => k === fetchAsk);
+    if (ask) {
+      return `<div class="banner warn">${icon('triangle-alert')}<div style="flex:1">${esc(t(`settings.fetch.ask.${ask[1]}`))}
+        <div class="row" style="margin-top: var(--space-3)"><button class="btn primary" data-fetch-go="${ask[0]}">${icon('download')}${esc(t('settings.fetch.accept'))}</button><button class="btn quiet" data-fetch-no>${esc(t('settings.fetch.no'))}</button></div></div></div>`;
+    }
+    return `<div class="row">${kinds.map(([k, id]) => `<button class="btn" data-fetch-ask="${k}" ${busy ? 'disabled' : ''}>${icon('download')}${esc(t(`settings.fetch.button.${id}`))}</button>`).join('')}</div>`;
+  }
+
+  function drawFetch() {
+    el.querySelectorAll('[data-fetch]').forEach((box) => {
+      box.innerHTML = fetchHtml(box.dataset.fetch);
+      box.querySelectorAll('[data-fetch-ask]').forEach((b) => b.addEventListener('click', () => { fetchAsk = b.dataset.fetchAsk; drawFetch(); }));
+      box.querySelector('[data-fetch-no]')?.addEventListener('click', () => { fetchAsk = null; drawFetch(); });
+      box.querySelector('[data-fetch-go]')?.addEventListener('click', (ev) => startFetch(ev.currentTarget.dataset.fetchGo));
+      box.querySelector('[data-fetch-stop]')?.addEventListener('click', () => api('cancel_fetch'));
+    });
+    refreshIcons();
+  }
+
+  async function startFetch(kind) {
+    fetchAsk = null;
+    try {
+      // into the folder set for this upscaler, as the file check above looks there first
+      const dir = kind === 'fsr' ? model.fsr_dll : kind === 'xess' ? model.xess_dll : model.dlss_dll;
+      await api('fetch_upscaler', { kind, dir: fwd(dir || '') });
+    } catch (e) {
+      toast(errText(e), 'error');
+      return;
+    }
+    fetchSt = { state: 'running', kind, message: '', done: 0, total: 0 };
+    pollFetch();
+  }
+
+  async function pollFetch() {
+    clearTimeout(fetchTimer);
+    if (!el.isConnected) return; // the page was left; the download carries on and the next visit picks its state up
+    try {
+      fetchSt = await api('fetch_status');
+    } catch (e) {
+      fetchSt = { state: 'idle', kind: '' };
+    }
+    drawFetch();
+    if (fetchSt.state === 'running') {
+      fetchTimer = setTimeout(pollFetch, 400);
+    } else if (fetchSt.state === 'done' || fetchSt.state === 'error' || fetchSt.state === 'cancelled') {
+      if (fetchSt.state !== 'cancelled') toast(fetchSt.message, fetchSt.state === 'done' ? 'ok' : 'error');
+      fetchSt = { state: 'idle', kind: '' };
+      drawFetch();
+      checkFiles();
+    }
+  }
+
   function bind() {
     const byId = Object.fromEntries(all.map((f) => [f.id, f]));
     el.querySelectorAll('[data-f]').forEach((input) => {
@@ -406,4 +478,5 @@ export async function render(el, ctx) {
   }
 
   draw();
+  pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }
