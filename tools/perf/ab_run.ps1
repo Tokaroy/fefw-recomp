@@ -8,6 +8,8 @@
 #
 # A variant is a list of environment variables, `NAME=value` separated by ';' (empty: the ini as it is). Every [section] key of the
 # runtime has one: NXRT_<SECTION>_<KEY> in capitals (runtime/docs/CONFIG.md, the "Variable" column); the environment wins over the ini.
+# `{run}` in a value becomes a text new to every run (variant, run number, time), e.g. NXRT_NVN_SPIRV_SALT={run} for a cold shader
+# compile in each run, as on a player's first start, without deleting any cache.
 param(
     [string]$A = "",
     [string]$B = "",
@@ -63,7 +65,8 @@ for ($r = 1; $r -le $Runs; $r++) {
         foreach ($n in $allNames + @("NXRT_TEST_SCRIPT", "NXRT_TEST_OUT", "NXRT_TEST_SHOT_DIR")) { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
         try {
             foreach ($n in $allNames) { [Environment]::SetEnvironmentVariable($n, $null) }
-            foreach ($kv in $vars[$v].GetEnumerator()) { [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value) }
+            $tag = "{0}-{1}-{2}" -f $name, $r, (Get-Date -Format "HHmmssfff")
+            foreach ($kv in $vars[$v].GetEnumerator()) { [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value.Replace("{run}", $tag)) }
             [Environment]::SetEnvironmentVariable("NXRT_TEST_SCRIPT", $Route)
             [Environment]::SetEnvironmentVariable("NXRT_TEST_OUT", (Join-Path $Out ("tt_{0}_{1}" -f $name, $r)))
             [Environment]::SetEnvironmentVariable("NXRT_TEST_SHOT_DIR", $shots)

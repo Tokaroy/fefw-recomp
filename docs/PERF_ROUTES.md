@@ -85,6 +85,8 @@ pwsh -File tools\perf\ab_run.ps1 -B "NXRT_NVN_REAPER=false" -Names on,off
 
 - `-A` and `-B` are environment variables, `NAME=value` separated by `;`. Every ini key has one: `NXRT_<SECTION>_<KEY>`
   (runtime/docs/CONFIG.md); it overrides the ini for that run only. Leave one side empty for "the ini as it is".
+- `{run}` in a value becomes a text new to every run. `NXRT_NVN_SPIRV_SALT={run}` on both sides makes every run compile its
+  shaders from scratch, as on a player's first start, without deleting any cache (the way to test shader compile stutter).
 - `-Runs 3` (default) runs each side three times, alternating A B, B A, A B, so slow drift over the session falls on both.
 - Logs, screenshots and `report.md` go to `work\perf\<date-time>`. Each run takes about two minutes; don't use the PC meanwhile.
 - `-Exe`, `-Ini`, `-Route`, `-Out` point elsewhere; `-TimeoutS` (600) stops a run whose route got stuck.
