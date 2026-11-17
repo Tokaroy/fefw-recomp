@@ -58,6 +58,10 @@ Each button press and stick movement happens at the same time from the launch as
 did at any frame rate. `--scene name:start:end` marks the measured parts (seconds from the launch); without it, add the
 `@log SCENE start/end` lines by hand. Run it with `-Route tools\perf\routes\my_route.tt`.
 
+Free movement drifts a little between runs (a load half a second slower, frame timing), enough to miss a spot over a minute of
+walking. For a scene in a particular place, save the game there and record only the menus, standing still and turning the camera;
+on a battle map, the tile cursor repeats exactly.
+
 The menus of a recorded route depend on load times staying about the same: keep the same save, cache and settings, and leave a few
 seconds of margin before each press in the recording (don't rush through the menus).
 
