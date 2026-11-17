@@ -244,6 +244,26 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
     static const bool init_outputs = config_get_bool("nvn", "init_outputs", true);
     std::vector<uint32_t> initialised;
     if (init_outputs && spirv_init_outputs(*code, initialised)) code = &initialised;
+    // A float add to a storage buffer comes from the translator as a compare-and-swap loop; with shaderBufferFloat32AtomicAdd it becomes one
+    // OpAtomicFAddEXT (spirv_native_float_add): one atomic in place of a load and a retried CAS, and no loop for the driver to get wrong.
+    // [nvn] float_atomic_add = false: keep the loops (A/B).
+    static const bool float_add = config_get_bool("nvn", "float_atomic_add", true) && device().features().buffer_float32_atomic_add;
+    std::vector<uint32_t> native_add;
+    static std::once_flag float_add_note;
+    std::call_once(float_add_note, [] {
+        NXLOG_I(kTag, "float adds to buffers: %s", float_add ? "native atomic adds (VK_EXT_shader_atomic_float)"
+                                                              : (config_get_bool("nvn", "float_atomic_add", true) ? "compare-and-swap loops (the GPU has no shaderBufferFloat32AtomicAdd)"
+                                                                                                                  : "compare-and-swap loops ([nvn] float_atomic_add is false)"));
+    });
+    if (float_add) {
+        const int n = spirv_native_float_add(*code, native_add);
+        if (n > 0) {
+            code = &native_add;
+            static std::atomic<int> logged{0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
+                NXLOG_I(kTag, "%s: %d float add loop(s) to a buffer are native atomic adds", what ? what : "shader", n);
+        }
+    }
     // [nvn] spirv_salt (measurement only): an OpSourceExtension with the salt in every module gives the driver a new shader hash, so a run
     // compiles every shader from scratch without touching the driver's own cache on disk.
     static const std::string salt = config_get_str("nvn", "spirv_salt", "");
