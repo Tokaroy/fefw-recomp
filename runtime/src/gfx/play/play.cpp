@@ -1299,7 +1299,8 @@ bool load() {
     // S38 GPU paths: the file's choice becomes [nvn] pool_mirror / pass_barriers unless mpr.ini or the environment set them. The replay
     // reads both once, at its first pool and its first submission, after this.
     if (!config_has("nvn", "pool_mirror")) config_set("nvn", "pool_mirror", st.settings.display.fast_gpu_memory ? "on" : "off");
-    if (!config_has("nvn", "pass_barriers")) config_set("nvn", "pass_barriers", st.settings.display.fewer_gpu_waits ? "tracked" : "full");
+    // Only the option off is passed on: on is the built-in default, which [gfx] igpu_compat turns to full on Intel integrated GPUs (#5, #18).
+    if (!config_has("nvn", "pass_barriers") && !st.settings.display.fewer_gpu_waits) config_set("nvn", "pass_barriers", "full");
     // The same option off also turns off the GPU sync set ([nvn] lean_barriers, auto by default: on for NVIDIA GPUs), so one switch takes
     // every left-out barrier back when a player sees a glitch.
     if (!config_has("nvn", "lean_barriers") && !st.settings.display.fewer_gpu_waits) config_set("nvn", "lean_barriers", "false");
@@ -1308,7 +1309,8 @@ bool load() {
     // ASTC texture quality: the file's choice becomes [gfx] astc_quality unless the ini or the environment set it (the texture back end reads it at its first ASTC texture).
     if (!config_has("gfx", "astc_quality")) config_set("gfx", "astc_quality", st.settings.display.astc_quality.c_str());
     // ASTC storage (BC1 for opaque textures on small GPUs): the same, as [gfx] astc_bc (read once, at the first ASTC image).
-    if (!config_has("gfx", "astc_bc")) config_set("gfx", "astc_bc", st.settings.display.astc_bc.c_str());
+    // (auto is left unset, as the built-in default, so [gfx] igpu_compat still applies to it.)
+    if (!config_has("gfx", "astc_bc") && st.settings.display.astc_bc != "auto") config_set("gfx", "astc_bc", st.settings.display.astc_bc.c_str());
     // Audio: a volume or device set in the ini or the environment wins over the file; the page then shows what is in force.
     if (config_has("audio", "volume")) st.settings.audio.volume = audio::master_volume();
     else audio::set_master_volume(static_cast<float>(st.settings.audio.volume));

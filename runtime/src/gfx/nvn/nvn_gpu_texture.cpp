@@ -614,16 +614,20 @@ bool astc_bc1_active_impl() {
     for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
         if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, mp.memoryHeaps[i].size);
     const bool integrated = device().properties().deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
-    bool on = false;
+    bool on = false, igpu_off = false;
     if (m == "bc1") on = true;
     else if (m == "off" || m == "bc7" || m == "0") on = false;
     else {
         if (m != "auto") NXLOG_W(kTag, "[gfx] astc_bc '%s' is not auto, off or bc1: using auto", m.c_str());
         m = "auto";
         on = integrated || (heap != 0 && heap < kAstcBcAutoHeap);
+        if (on && nxrt::gfx::gpu_quirks().igpu_compat) {   // #5, #18
+            on = false;
+            igpu_off = true;
+        }
     }
     const gfx::DeviceFeatures& ft = device().features();
-    const char* why = "";
+    const char* why = igpu_off ? " ([gfx] igpu_compat: off on this GPU)" : "";
     if (on && ft.astc_ldr) { on = false; why = " (the GPU samples ASTC: nothing is transcoded)"; }
     if (on && !bc1_encoder_available()) { on = false; why = " (this build has no BC1 encoder: rgbcx was not found)"; }
     if (on && !device().image_supported(make_desc(Shape{}, VK_FORMAT_BC1_RGB_SRGB_BLOCK, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0))) {
@@ -2695,7 +2699,7 @@ VkImageView tex_sampled_view(Texture* t, const ViewRequest& req) {
     // Check the actual alias format, rather than only the image's original format. view_for
     // can restrict inherited usages, but a descriptor must still have sampled-image usage.
     // Cache per image/device; this is also called for every pool descriptor refresh.
-    static const bool lean = nxrt::config_get_bool("nvn", "lean_draws", true);   // the last format's answer without the map (a property of the format)
+    static const bool lean = nxrt::config_get_bool("nvn", "lean_draws", !nxrt::gfx::gpu_quirks().igpu_compat);   // the last format's answer without the map (a property of the format)
     if (!lean || g->last_sampled_fmt != fmt) {
         auto [feature, inserted] = g->sampled_formats.try_emplace(fmt, false);
         if (inserted) {

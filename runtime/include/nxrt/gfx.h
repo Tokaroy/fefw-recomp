@@ -152,6 +152,12 @@ struct GpuQuirks {
     // texture_detail = half does), so scene loads stop pushing video memory past the budget, where Windows moves it to system memory
     // and the frame rate halves (#49).
     bool pressure_detail = false;
+    // [gfx] igpu_compat (auto: on for Intel integrated GPUs only): the 0.2.0 GPU paths are off by default, as in 0.1.7. On an Arc 140V
+    // (#5) and an Arc B390 (#18) the device was lost on the title screen from 0.2.0 on; turning these off together fixed #18, turning
+    // any one off did not fix #5. While on, the defaults become [nvn] gfx_ssbo_readonly = false, ubo_only_rebind = false,
+    // lean_draws = false, pass_barriers = full and [gfx] residency = off, astc_bc = off; a key set in the ini or the environment still
+    // wins. (pipeline_cache_lock stays on for Intel: it only orders CPU threads, and it is the fix for #124.)
+    bool igpu_compat = false;
 };
 const GpuQuirks& gpu_quirks();
 uint64_t video_budget_bytes();      // the OS's video memory budget for this process on the largest device-local heap (0: no device yet)

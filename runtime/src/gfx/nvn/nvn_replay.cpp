@@ -212,7 +212,7 @@ VkCommandBuffer g_sets_cb = VK_NULL_HANDLE;
 // keeps the texture and storage sets it has bound, instead of resolving every texture and building every set again. In the Dagsion
 // crowd about 600 of 3,200 draws a frame take it (most of the others change program); the plaza replay went from 4.16 to 3.99 us a draw.
 bool ubo_only_rebind_on() {
-    static const bool on = nxrt::config_get_bool("nvn", "ubo_only_rebind", true);
+    static const bool on = nxrt::config_get_bool("nvn", "ubo_only_rebind", !nxrt::gfx::gpu_quirks().igpu_compat);   // [gfx] igpu_compat: off
     return on;
 }
 // [nvn] lean_draws (default true): cheaper forms of work every draw repeats, with the same Vulkan state as a result: the held-result
@@ -223,7 +223,7 @@ bool ubo_only_rebind_on() {
 // measurement with [nvn] replay_stats in one run.
 bool g_lean = true;
 bool lean_setting() {
-    static const bool on = nxrt::config_get_bool("nvn", "lean_draws", true);
+    static const bool on = nxrt::config_get_bool("nvn", "lean_draws", !nxrt::gfx::gpu_quirks().igpu_compat);   // [gfx] igpu_compat: off
     return on;
 }
 inline bool lean_on() { return g_lean; }
@@ -1224,7 +1224,7 @@ bool lean_barriers_on() {
         for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (v.empty() || v == "auto") {
             const bool nvidia = device().properties().vendorID == 0x10de;
-            const bool pass_tracked = nxrt::config_get_str("nvn", "pass_barriers", "tracked") != "full";
+            const bool pass_tracked = nxrt::config_get_str("nvn", "pass_barriers", nxrt::gfx::gpu_quirks().igpu_compat ? "full" : "tracked") != "full";
             const bool r = nvidia && pass_tracked;
             NXLOG_I(kTag, "[nvn] lean_barriers = auto: %s (%s%s)", r ? "on" : "off", nvidia ? "NVIDIA GPU" : "not an NVIDIA GPU",
                     pass_tracked ? "" : ", pass_barriers = full");
@@ -2332,7 +2332,7 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                         // [nvn] gfx_ssbo_readonly (NXRT_NVN_GFX_SSBO_READONLY): a graphics shader that never stores to or applies an atomic to the buffer
                         // (reflection: DescriptorBinding::written) leaves the pages valid: no GPU write is recorded, the device copies of the pool stay usable
                         // and the next draw does not have to bind again. (In the translated Fortune's Weave shaders no vertex or fragment shader writes one.)
-                        static const bool ssbo_ro = nxrt::config_get_bool("nvn", "gfx_ssbo_readonly", true);
+                        static const bool ssbo_ro = nxrt::config_get_bool("nvn", "gfx_ssbo_readonly", !nxrt::gfx::gpu_quirks().igpu_compat);   // [gfx] igpu_compat: off
                         const bool read_only_gfx = ssbo_ro && d.nvn_stage != kCompute && !b.written;
                         if (br.ok && !served && !read_only_gfx) gpu_wrote(bind.addr, bi.range, kWriteStorage);      // a storage buffer may be written by the shader
                     }
@@ -3184,7 +3184,7 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     if (g_dirty & (kDesc | kPipe)) {
         ++g_rs.draws_desc;
         g_prog_writes = false;
-        static const bool ssbo_ro_pass = nxrt::config_get_bool("nvn", "gfx_ssbo_readonly", true);
+        static const bool ssbo_ro_pass = nxrt::config_get_bool("nvn", "gfx_ssbo_readonly", !nxrt::gfx::gpu_quirks().igpu_compat);
         for (const BindingDesc& d : pl->bindings)
             g_prog_writes |= (d.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && !(ssbo_ro_pass && !d.shader->refl.bindings[d.index].written)) || d.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         attach_targets(false);
@@ -5404,7 +5404,7 @@ void replay_begin_submit(Frame& f) {
     {   // S38: device-local pool copies and tracked barriers. [nvn] gpuperf_ab = N: both are off in even windows of N presents and on in odd
         // ones (the paired-window measurement of S29); without it they follow their own settings.
         static const int64_t ab = config_get_int("nvn", "gpuperf_ab", 0);
-        static const bool tracked = config_get_str("nvn", "pass_barriers", "tracked") != "full";
+        static const bool tracked = config_get_str("nvn", "pass_barriers", nxrt::gfx::gpu_quirks().igpu_compat ? "full" : "tracked") != "full";   // [gfx] igpu_compat: full
         static int last_on = -1;
         bool on = true;
         if (ab > 0) on = ((counters().presents.load() / static_cast<uint64_t>(ab)) & 1) != 0;
