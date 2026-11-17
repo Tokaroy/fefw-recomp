@@ -2,22 +2,24 @@
 // Haptic feedback for the play-mode gamepads (S-haptic). The game sends the Switch HD Rumble value (amp_low, freq_low,
 // amp_high, freq_high per hand) through the vibration sink in input_source.h; this module decides how it reaches the pad:
 //
-//   Auto       DualSense on a wire gets haptics, a Switch Pro Controller gets HD Rumble packets, everything else gets the
-//              standard two-motor rumble the runtime always had.
+//   Auto       a DualSense gets haptics (audio on a cable, report 0x32 over Bluetooth), a Switch Pro Controller gets HD
+//              Rumble packets (cable or Bluetooth), an Xbox pad gets all four motors, everything else gets the standard
+//              two-motor rumble the runtime always had.
 //   Off        nothing is sent (the game's vibration values are dropped).
 //   Rumble     always the standard SDL two-motor rumble, whatever the pad is.
-//   DualSense  haptics when a DualSense is on USB; falls back to the mode above it would have picked, and says why.
+//   DualSense  haptics when a DualSense is connected; falls back to the mode above it would have picked, and says why.
 //
 // The haptic backends come from renhdrum.dll (MIT OR Apache-2.0, https://github.com/trzz1214/RenHDrum), loaded next to the
 // executable when it is there: the library is optional, and without it Auto and DualSense behave as Rumble.
 //
 // A haptic backend only owns the pad while it is really driving it: when the library is missing, the engine or the audio
-// stream fails to start, the DualSense audio endpoint disappears, or SDL refuses a packet, the module drops back to the
+// stream fails to start, the DualSense audio endpoint disappears, or SDL refuses the packets, the module drops back to the
 // standard rumble on its own (legacy_rumble() turns true again), so the pad is never left without feedback.
 //
 // Every function is safe to call from any thread. Nothing here blocks the calling thread for long: the packets are sent by a
-// 1 ms worker, and the DualSense audio stream is filled by SDL's audio thread. The state the other threads read is atomic;
-// the two engines are behind one mutex; no lock is ever held while waiting for the worker.
+// 1 ms worker (a wireless DualSense's reports by a writer thread of their own), and the DualSense audio stream is filled by
+// SDL's audio thread. The state the other threads read is atomic; the engines are behind one mutex; no lock is ever held while
+// waiting for a worker.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -52,7 +54,8 @@ enum class Backend : uint8_t {
     Rumble,          // SDL_RumbleGamepad, two motors
     ProController,   // renhdrum 10-byte sub-command 0x10 packets
     DualSenseUsb,    // renhdrum 4-channel 48 kHz audio haptics
-    DualSenseBt,     // DualSense over Bluetooth: the standard rumble is all there is
+    DualSenseBt,     // renhdrum DualSense haptics over Bluetooth, HID report 0x32
+    Xbox,            // renhdrum four-motor converter: grips and trigger motors
 };
 const char* backend_name(Backend b);
 
