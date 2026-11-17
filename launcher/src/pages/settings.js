@@ -80,8 +80,21 @@ const SECTIONS = [
       { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
       { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
       { id: 'frame_gen', type: 'select', label: 'settings.frameGen.label', sec: 'dlss', key: 'frame_gen', def: '0',
-        options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss'], ['fsr3', 'settings.frameGen.fsr3']],
-        hint: 'settings.frameGen.hint' },
+        // Linux: the game's own FSR 3 frame generation is not supported under Proton, so it is not offered (`unsupported`)
+        options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss'], ...(IS_LINUX ? [] : [['fsr3', 'settings.frameGen.fsr3']])],
+        unsupported: IS_LINUX ? ['fsr3'] : [],
+        hint: IS_LINUX ? 'settings.frameGen.hintLinux' : 'settings.frameGen.hint' },
+      // Linux only: LSFG-VK frame generation on the finished picture (launcher/src-tauri/src/lsfg.rs); stored in launcher.json
+      ...(IS_LINUX ? [
+        // can be turned on only when the layer and lsfg-vk.dll are found; always off
+        { id: 'lsfg', type: 'toggle', label: 'settings.lsfg.label', sec: '', key: 'lsfg', def: '0', hint: 'settings.lsfg.hint', lsfgNote: true,
+          lockedIf: (m, ctx) => !m.lsfg && !ctx.lsfgReady },
+        { id: 'lsfg_multiplier', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.multiplier', sec: '', key: 'lsfg_multiplier', def: '2',
+          options: [['2', '2x'], ['3', '3x'], ['4', '4x']] },
+        { id: 'lsfg_flow_scale', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.flowScale', sec: '', key: 'lsfg_flow_scale', def: '1',
+          options: [['1', '100%'], ['0.75', '75%'], ['0.5', '50%'], ['0.25', '25%']], hint: 'settings.lsfg.flowScaleHint' },
+        { id: 'lsfg_performance', showIf: (m) => m.lsfg, type: 'toggle', label: 'settings.lsfg.performance', sec: '', key: 'lsfg_performance', def: '0', hint: 'settings.lsfg.performanceHint' },
+      ] : []),
     ],
   },
   {
@@ -154,15 +167,19 @@ const optName = (label) => (String(label).includes('.') ? t(label) : label);
 
 export async function render(el, ctx) {
   const [cfg, status] = await Promise.all([api('get_config'), api('game_status')]);
+  // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
+  let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
+  const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
-  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '' } };
+  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
+    lsfg: cfg.lsfg ? '1' : '0', lsfg_multiplier: String(cfg.lsfg_multiplier || 2), lsfg_flow_scale: cfg.lsfg_flow_scale || '1', lsfg_performance: cfg.lsfg_performance ? '1' : '0' } };
   const exists = { game: true, controls: data.controls_exists, config: true };
   const keyOf = (f, k) => (f.file === 'config' ? k : `${f.sec}.${k}`);
   const get = (f, k, def) => files[f.file][keyOf(f, k)] ?? def;
 
   // ----- model: one UI value per field -----
   const READ = {
-    select: (f) => get(f, f.key, f.def),
+    select: (f) => { const v = get(f, f.key, f.def); return f.unsupported?.includes(v) ? f.def : v; },
     toggle: (f) => (f.off !== undefined ? ![f.off, '0', 'false', 'no'].includes(String(get(f, f.key, f.def)).trim().toLowerCase()) : truthy(get(f, f.key, f.def))),
     size: (f) => ({ w: get(f, f.keys[0], f.def[0]), h: get(f, f.keys[1], f.def[1]) }),
     autonum: (f) => {
@@ -195,7 +212,8 @@ export async function render(el, ctx) {
   const orig = {};
   for (const f of all) {
     model[f.id] = READ[f.type](f);
-    orig[f.id] = JSON.stringify(model[f.id]);
+    // a stored value this platform cannot use shows as the default and counts as changed, so the next Save replaces it
+    orig[f.id] = f.unsupported?.includes(get(f, f.key, f.def)) ? JSON.stringify(get(f, f.key, f.def)) : JSON.stringify(model[f.id]);
   }
   const dirtyFields = () => all.filter((f) => JSON.stringify(model[f.id]) !== orig[f.id]);
 
@@ -206,7 +224,7 @@ export async function render(el, ctx) {
       const opts = f.options.some(([v]) => String(v) === String(x)) ? f.options : [...f.options, [x, x]];
       return `<select data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
     },
-    toggle: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f)}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
+    toggle: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
     size: (f, x) => `<input type="number" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
     autonum: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
     range: (f, x) => `<input type="range" data-f="${f.id}" min="0" max="100" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 3.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
@@ -218,7 +236,7 @@ export async function render(el, ctx) {
 
   const fieldHtml = (f) => `
     <div class="field">
-      <label class="name">${esc(t(f.label))}${f.hint ? `<span class="hint">${esc(t(f.hint))}</span>` : ''}${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}</label>
+      <label class="name">${esc(t(f.label))}${f.hint ? `<span class="hint">${esc(t(f.hint))}</span>` : ''}${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}${f.lsfgNote ? `<span class="hint" data-lsfg-note>${esc(t('settings.files.checking'))}</span>` : ''}</label>
       <div class="control">${CONTROL[f.type](f, model[f.id])}</div>
       ${f.status ? `<div class="fetch" data-fetch="${f.status}"></div>` : ''}
     </div>`;
@@ -235,7 +253,7 @@ export async function render(el, ctx) {
         </div>
         ${status.state === 'running' ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t('settings.gameRunning'))}</div></div>` : ''}
         ${!data.controls_exists ? `<div class="banner info">${icon('info')}<div>${esc(t('settings.noControlsBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.noControlsAfter'))}</div></div>` : ''}
-        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.map((f) => fieldHtml({ ...f, file: s.file })).join('')}</div>`).join('')}
+        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.filter((f) => !f.showIf || f.showIf(model)).map((f) => fieldHtml({ ...f, file: s.file })).join('')}</div>`).join('')}
         <div class="savebar">
           <span class="dim">${esc(barText(n))}</span>
           <div class="row">
@@ -247,6 +265,7 @@ export async function render(el, ctx) {
     refreshIcons();
     bind();
     checkFiles();
+    checkLsfg();
     drawFetch();
   }
 
@@ -335,13 +354,37 @@ export async function render(el, ctx) {
           n.appendChild(w);
         }
       });
-    put('fsr', `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
+    // FSR 3 frame generation is not offered on Linux, so its file is not listed there
+    put('fsr', IS_LINUX ? `${line('settings.files.upscaling', r.fsr_upscaling)}.` : `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
     // With DLSS chosen (upscaling or frame generation), a folder that holds the rest of the Streamline SDK gets a note about the files this game does not use.
     const dlssOn = model.upscaler === 'dlss' || model.frame_gen === 'dlss';
     const unused = dlssOn && r.dlss.found && Array.isArray(r.dlss_unused) ? r.dlss_unused : [];
     put('dlss', `${line('settings.files.dlss', r.dlss)}. ${line('settings.files.dlssFrameGen', r.dlss_framegen)}.`,
       unused.length ? t('settings.files.dlssUnused', { files: unused.join(', ') }) : '');
     if (r.xess) put('xess', `${line('settings.files.xess', r.xess)}.`);
+  }
+  // LSFG-VK: is the layer installed, and is Lossless Scaling on its lsfg-vk branch (lsfg.rs)?
+  async function checkLsfg() {
+    const note = el.querySelector('[data-lsfg-note]');
+    if (!note) return;
+    const was = fieldCtx.lsfgReady;
+    const r = await api('lsfg_status').catch(() => null);
+    if (!r) { note.textContent = ''; return; }
+    lsfgSt = r;
+    if (fieldCtx.lsfgReady !== was) { draw(); return; }
+    note.textContent = [
+      r.layer ? t('settings.lsfg.layerFound') : t('settings.lsfg.layerMissing'),
+      r.dll ? t('settings.lsfg.dllFound', { path: r.dll }) : t(r.wrong_branch ? 'settings.lsfg.wrongBranch' : 'settings.lsfg.dllMissing'),
+    ].join(' ');
+    if (!r.layer) {
+      // the layer is the one part the launcher cannot set up: link to its install instructions
+      const b = document.createElement('button');
+      b.className = 'btn quiet';
+      b.style.marginTop = 'var(--space-2)';
+      b.textContent = t('settings.lsfg.installLink');
+      b.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
+      note.append(document.createElement('br'), b);
+    }
   }
   let checkTimer = 0;
 
@@ -475,7 +518,7 @@ export async function render(el, ctx) {
     for (const f of dirtyFields()) {
       for (const [sec, key, value] of WRITE[f.type](f, model[f.id])) {
         if (f.file === 'config') {
-          cfgNew[key] = key === 'minimize_on_play' ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'runner' ? String(value).trim() : fwd(value);
+          cfgNew[key] = ['minimize_on_play', 'lsfg', 'lsfg_performance'].includes(key) ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'lsfg_multiplier' ? clamp(parseInt(value, 10) || 2, 2, 4) : key === 'lsfg_flow_scale' ? String(value) : key === 'runner' ? String(value).trim() : fwd(value);
         } else {
           edits.push({ file: f.file, section: sec, key, value });
         }
@@ -485,6 +528,11 @@ export async function render(el, ctx) {
       if (edits.length) await api('write_settings', { edits });
       if (JSON.stringify(cfgNew) !== JSON.stringify(cfg)) await api('save_config', { config: cfgNew });
       toast(t('common.settingsSaved'), 'ok');
+      // the Steam shortcut carries some launcher settings (LSFG-VK): say when it no longer matches them
+      if (IS_LINUX) {
+        const st = await api('steam_status').catch(() => null);
+        if (st && st.stale) toast(t('play.steamStale'), 'error');
+      }
       ctx.go('settings');
     } catch (e) {
       toast(errText(e), 'error');
