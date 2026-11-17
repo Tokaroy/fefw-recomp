@@ -139,16 +139,50 @@ impl Paths {
     }
 }
 
-/// The last `fefw_build.py --check`: (done.json mtime and size, fefw.exe mtime) -> current. The tools do not change while the
-/// launcher runs and a finished build rewrites done.json, so one Python run per finished build is enough.
-type CheckKey = (Option<std::time::SystemTime>, u64, Option<std::time::SystemTime>);
+/// The last `fefw_build.py --check`: (done.json mtime and size, fefw.exe mtime, mods_fingerprint) -> current. The tools do not
+/// change while the launcher runs and a finished build rewrites done.json, so one Python run per finished build is enough, unless
+/// the code mods change: their exefs patches and hook sites are part of the build stamp.
+type CheckKey = (Option<std::time::SystemTime>, u64, Option<std::time::SystemTime>, u64);
 static BUILD_CHECK: Mutex<Option<(CheckKey, bool)>> = Mutex::new(None);
+
+/// A hash of the files under `mods` that go into the build (exefs/*.ips, *.pchtxt, *.sites: fefw_build.py collect_exefs_patches,
+/// collect_mod_sites): their paths, sizes and modification times. Adding, changing, removing or switching off (renaming) a mod
+/// that has them changes it, so the next check asks fefw_build.py again. It may change for a file the build ignores (another
+/// game version's patch, say); that only costs one more check.
+fn mods_fingerprint(mods: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn walk(dir: &Path, depth: u32, out: &mut Vec<(String, u64, Option<std::time::SystemTime>)>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let path = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < 6 {
+                    walk(&path, depth + 1, out);
+                }
+                continue;
+            }
+            let in_exefs = dir.file_name().map_or(false, |n| n.eq_ignore_ascii_case("exefs"));
+            let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+            if in_exefs && matches!(ext.as_str(), "ips" | "pchtxt" | "sites") {
+                let m = e.metadata().ok();
+                out.push((path.to_string_lossy().into_owned(), m.as_ref().map_or(0, |m| m.len()), m.and_then(|m| m.modified().ok())));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(mods, 0, &mut files);
+    files.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    files.hash(&mut h);
+    h.finish()
+}
 
 fn package_build_ok(p: &Paths) -> bool {
     let Some(tools) = &p.package else { return false };
     let done = p.in_game(&["build", "done.json"]);
     let (Ok(dm), true) = (fs::metadata(&done), p.exe().is_file()) else { return false };
-    let key: CheckKey = (dm.modified().ok(), dm.len(), mtime(&p.exe()));
+    let key: CheckKey = (dm.modified().ok(), dm.len(), mtime(&p.exe()), mods_fingerprint(&p.mods()));
     if let Some((k, b)) = BUILD_CHECK.lock().unwrap().as_ref() {
         if *k == key {
             return *b;
@@ -872,5 +906,27 @@ mod tests {
         assert_eq!(tool_progress("prepare: 4900 9943"), Some((4900, 9943)));
         assert_eq!(tool_progress("prepare: ready"), None);
         assert_eq!(tool_progress("prepare: done programs=9943 prepared=9943 failed=0 seconds=42.0"), None);
+    }
+
+    #[test]
+    fn mods_fingerprint_follows_build_inputs() {
+        let dir = std::env::temp_dir().join(format!("fefw_mods_fp_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let exefs = dir.join("fps").join("exefs");
+        fs::create_dir_all(&exefs).unwrap();
+        let empty = mods_fingerprint(&dir);
+        fs::write(exefs.join("readme.txt"), "x").unwrap();
+        fs::write(dir.join("fps").join("note.ips"), "x").unwrap();   // not in exefs/
+        assert_eq!(mods_fingerprint(&dir), empty, "files the build does not read");
+        fs::write(exefs.join("60fps.pchtxt"), "@nsobid-00").unwrap();
+        let one = mods_fingerprint(&dir);
+        assert_ne!(one, empty, "a patch added");
+        fs::write(exefs.join("60fps.pchtxt"), "@nsobid-0000").unwrap();
+        assert_ne!(mods_fingerprint(&dir), one, "a patch changed");
+        let changed = mods_fingerprint(&dir);
+        fs::rename(dir.join("fps"), dir.join("-fps")).unwrap();
+        assert_ne!(mods_fingerprint(&dir), changed, "a mod switched off");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mods_fingerprint(&dir), mods_fingerprint(&dir.join("missing")), "no mods folder");
     }
 }
