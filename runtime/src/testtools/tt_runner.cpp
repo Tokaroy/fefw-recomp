@@ -211,6 +211,7 @@ void Runner::frame(uint64_t k, const GameState& s, bool valid, ::Ctx* c) {
             if (!name.empty() && !take_shot(name, &why)) NXLOG_W("tt", "live shot %s: %s", name.c_str(), why.c_str());
         }
     }
+    if (!run_t0_ms_) run_t0_ms_ = GetTickCount64();
     for (int guard = 0; guard < 100000; guard++) {
         if (done_) return;
         if (idx_ >= script_.steps.size() && !live_path_.empty()) {
@@ -361,6 +362,9 @@ void Runner::frame(uint64_t k, const GameState& s, bool valid, ::Ctx* c) {
                 if (!detail::give_item(static_cast<int>(st.x), static_cast<int>(st.y))) { fail(st, "@give: the player state is not readable yet"); return; }
                 advance();
                 continue;
+            case StepKind::WaitAt:
+                if (static_cast<double>(GetTickCount64() - run_t0_ms_) >= st.x) { advance(); continue; }
+                return;
             case StepKind::WaitMs: {
                 const uint64_t now_ms = GetTickCount64();
                 if (first) start_ms_ = now_ms;

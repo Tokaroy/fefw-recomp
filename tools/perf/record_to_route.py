@@ -5,8 +5,9 @@
 
 <rec dir> is the [test] out folder of a recording run ([test] record = <dir>/input.nxin, [test] out = <dir>): input.nxin holds the pad of
 every frame, trace.jsonl the wall time between frames. Each change of the buttons or the left / right stick becomes a step at the same
-time from the start as in the recording (`hold` / `release` / `stick`, with `@sleep` between), so the route repeats what you did at the
-same moments whatever the frame rate. Mouse movement is not carried over (play the route with a controller).
+time from the start as in the recording (`hold` / `release` / `stick`, each after `@at <ms>`, an absolute time, so small delays never add
+up), so the route repeats what you did at the same moments whatever the frame rate. Stick changes are rounded to steps of 0.05 and kept at
+least 25 ms apart (the last value always wins). Mouse movement is not carried over (play the route with a controller).
 
 --scene name:start:end adds `@log SCENE start/end` at those seconds from the start (e.g. --scene map_pan:62:75); without one the script
 measures nothing and you add the SCENE lines by hand.
@@ -53,7 +54,10 @@ def read_times(path):
 
 
 def q(v):
-    return 0 if abs(v) < STICK_DEAD else v
+    """hid units -> -1..1 in steps of 0.05, 0 inside the dead zone."""
+    if abs(v) < STICK_DEAD:
+        return 0.0
+    return round(v / 32767 * 20) / 20
 
 
 def main():
@@ -84,6 +88,9 @@ def main():
     events = []     # (ms, order, text)
     prev = (0, 0, 0, 0, 0)
     down_at = {}    # button bit -> ms it went down
+    stick_sent = {'left': (0.0, 0.0), 'right': (0.0, 0.0)}
+    stick_last = {'left': -1e9, 'right': -1e9}
+    stick_pending = {'left': None, 'right': None}
     for fr, b, lx, ly, rx, ry in frames:
         t = at(fr)
         pb, plx, ply, prx, pry = prev
@@ -97,11 +104,22 @@ def main():
                 if down >> i & 1:
                     down_at[i] = t
             events.append((t, 1, 'hold ' + '+'.join(n for i, n in enumerate(BUTTONS) if down >> i & 1)))
-        for name, (x, y), (px, py) in (('left', (lx, ly), (plx, ply)), ('right', (rx, ry), (prx, pry))):
-            x, y = q(x), q(y)
-            if (x, y) != (q(px), q(py)):
-                events.append((t, 2, f'stick {name} {x / 32767:.3f} {y / 32767:.3f}'))
+        for name, (x, y) in (('left', (lx, ly)), ('right', (rx, ry))):
+            v = (q(x), q(y))
+            if v != stick_sent[name]:
+                stick_pending[name] = (t, v)
+        for name in ('left', 'right'):   # a pending change goes out when 25 ms have passed since the last one (or it is a return to 0)
+            if stick_pending[name] and (stick_pending[name][0] - stick_last[name] >= 25.0 or stick_pending[name][1] == (0.0, 0.0)):
+                tt, v = stick_pending[name]
+                events.append((tt, 2, f'stick {name} {v[0]:.2f} {v[1]:.2f}'))
+                stick_sent[name] = v
+                stick_last[name] = tt
+                stick_pending[name] = None
         prev = (b, lx, ly, rx, ry)
+    for name in ('left', 'right'):
+        if stick_pending[name]:
+            tt, v = stick_pending[name]
+            events.append((tt, 2, f'stick {name} {v[0]:.2f} {v[1]:.2f}'))
     for sc in a.scene:
         name, s0, s1 = sc.split(':')
         events.append((float(s0) * 1000.0, 3, f'@log SCENE start {name}'))
@@ -110,22 +128,23 @@ def main():
 
     lines = ['# Route recorded from play (tools/perf/record_to_route.py ' + ' '.join(sys.argv[1:]) + ').',
              f'# {len(frames)} pad changes over {last_f + 1} frames, {at(last_f) / 1000.0:.1f} s. Waits are host time.', '', '@timeout 0']
-    now = 0.0
+    now = 0
     for t, _, text in events:
-        d = int(round(t - now))
-        if d > 0:
-            lines.append(f'@sleep {d}')
-            now += d
+        ms = int(round(t))
+        if ms > now:
+            lines.append(f'@at {ms}')
+            now = ms
         lines.append(text)
-    tail = int(round(at(last_f) - now))
-    if tail > 0:
-        lines.append(f'@sleep {tail}')
+    end_ms = int(round(at(last_f)))
+    if end_ms > now:
+        lines.append(f'@at {end_ms}')
+        now = end_ms
     lines += ['release all', 'stick left 0 0', 'stick right 0 0', '@pass', '']
     text = '\n'.join(lines)
     if a.out:
         with open(a.out, 'w', encoding='utf-8', newline='\n') as f:
             f.write(text)
-        print(f'{a.out}: {len(events)} steps, {now / 1000.0:.1f} s')
+        print(f'{a.out}: {len(events)} steps, {now / 1000.0:.1f} s (needs a runtime that knows @at: PR #90)')
     else:
         sys.stdout.write(text)
     return 0

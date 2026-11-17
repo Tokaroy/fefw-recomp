@@ -54,7 +54,7 @@ tools\.venv\Scripts\python.exe -I tools\perf\record_to_route.py work\perf\rec -o
     --scene map_still:60:80 --scene map_pan:80:95
 ```
 
-Each button press and stick movement happens at the same time from the launch as in your recording, so the route repeats what you
+Each button press and stick movement happens at the same time from the launch as in your recording (`@at`, an absolute time, so small delays never add up), so the route repeats what you
 did at any frame rate. `--scene name:start:end` marks the measured parts (seconds from the launch); without it, add the
 `@log SCENE start/end` lines by hand. Run it with `-Route tools\perf\routes\my_route.tt`.
 
