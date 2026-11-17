@@ -274,7 +274,7 @@ export const zh = {
     'settings.faceButtons.label_': '按印字（Xbox 的 A = Switch 的 A）',
     'settings.faceButtons.position': '按位置（底部 = Switch 的 B）',
   'settings.haptic.label': '震动模式',
-  'settings.haptic.hint': '游戏的高清震动值怎么送到手柄上。自动：有线 USB 的 DualSense 用触觉反馈，Switch Pro 手柄用 HD Rumble 数据包，其它手柄用普通震动。游戏启动时读取这一项，改完下次运行生效。',
+  'settings.haptic.hint': '游戏的高清震动值怎么送到手柄上。自动：DualSense 用触觉反馈（有线 USB 或蓝牙），Switch Pro 手柄用 HD Rumble 数据包，Xbox 手柄使用全部四个马达，其它手柄用普通震动。游戏启动时读取这一项，改完下次运行生效。',
   'settings.haptic.auto': '自动',
   'settings.haptic.off': '关闭',
   'settings.haptic.rumble': '普通震动',

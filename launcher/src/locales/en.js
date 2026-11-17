@@ -308,7 +308,7 @@ export const en = {
     'settings.faceButtons.label_': 'By label (Xbox A = Switch A)',
     'settings.faceButtons.position': 'By position (bottom = Switch B)',
   'settings.haptic.label': 'Vibration',
-  'settings.haptic.hint': 'How the HD Rumble value from the game reaches the pad. Automatic: DualSense haptics over a USB cable, HD Rumble packets for a Switch Pro Controller, the standard rumble for anything else. The game reads this when it starts, so a change takes effect on the next run.',
+  'settings.haptic.hint': 'How the HD Rumble value from the game reaches the pad. Automatic: DualSense haptics (USB cable or Bluetooth), HD Rumble packets for a Switch Pro Controller, all four motors of an Xbox pad, the standard rumble for anything else. The game reads this when it starts, so a change takes effect on the next run.',
   'settings.haptic.auto': 'Automatic',
   'settings.haptic.off': 'Off',
   'settings.haptic.rumble': 'Standard rumble',
