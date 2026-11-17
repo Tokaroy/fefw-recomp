@@ -6,6 +6,7 @@
 mod cpu;
 mod dump;
 mod fetch;
+mod gpu;
 mod ini;
 mod locale;
 mod lsfg;
@@ -679,6 +680,12 @@ fn open_setup_log(app: AppHandle) -> Result<(), String> {
     play::open_with_shell(&log)
 }
 
+/// The graphics adapters by vendor (gpu.rs): Settings shows the NVIDIA-only options only with an NVIDIA GPU.
+#[tauri::command]
+async fn gpu_info() -> gpu::Gpus {
+    tauri::async_runtime::spawn_blocking(gpu::get).await.unwrap_or_default()
+}
+
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<update::Check, String> {
     // FEFW_LAUNCHER_PRETEND_VERSION: test the update path against the published release from an older-looking launcher
@@ -886,6 +893,8 @@ fn main() {
     if package_tools().is_some() {
         update::cleanup(&exe_dir());
     }
+    // probed now, off the main thread, so the Settings page finds the answer ready (PowerShell takes a moment on Windows)
+    std::thread::spawn(gpu::get);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(play::PlayState::default())
@@ -912,6 +921,7 @@ fn main() {
             read_settings,
             write_settings,
             upscaler_files,
+            gpu_info,
             fetch_upscaler,
             fetch_status,
             cancel_fetch,
