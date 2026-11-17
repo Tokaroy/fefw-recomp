@@ -13,160 +13,233 @@ import { fileDetail } from '../rusttext.js';
 // The WebKitGTK launcher on Linux (the Windows one is WebView2). Asked of the launcher: WebKitGTK's user agent says macOS.
 const IS_LINUX = (await api('platform').catch(() => '')) === 'linux';
 
-const SECTIONS = [
+/*
+ * Layout: tabs, each holding groups (one card each), each holding fields. A group's `file` is the default for its fields; a field
+ * can name its own. `nv: true` on a field, or as the third element of an option, marks an NVIDIA-only choice (DLSS): it is shown
+ * only when gpu_info found an NVIDIA GPU, when the probe found nothing at all, or when it is the value already set.
+ * Descriptions: a `hint` with a `.short` sibling key (settings.x.short next to settings.x.hint) shows the short line, and an info
+ * button opens the full hint under the row; a hint with no short form is short enough to show as it is. `restart: true` puts a
+ * "Next start" chip by the name (the game reads the setting only when it starts).
+ */
+const TABS = [
   {
-    title: 'settings.sec.picture', icon: 'monitor', file: 'game',
-    fields: [
-      { id: 'output', type: 'select', label: 'settings.output.label', sec: 'fefw', key: 'output', def: 'console',
-        options: [['console', 'settings.output.console'], ['720p', '720p'], ['1080p', '1080p'], ['1440p', '1440p'], ['2160p', '2160p (4K)'],
-          ['2560x1080', 'settings.output.uw2560'], ['3440x1440', 'settings.output.uw3440'], ['5120x1440', 'settings.output.uw5120'],
-          ['window', 'settings.output.window']],
-        hint: 'settings.output.hint' },
-      { id: 'ultrawide', type: 'toggle', label: 'settings.ultrawide.label', sec: 'fefw', key: 'ultrawide', def: 'auto', on: 'auto', off: 'off',
-        onLabel: 'settings.ultrawide.auto', offLabel: 'settings.ultrawide.off', hint: 'settings.ultrawide.hint' },
-      { id: 'render_ratio', type: 'select', label: 'settings.renderRatio.label', sec: 'fefw', key: 'render_ratio', def: '0',
-        options: [['0', 'settings.renderRatio.game'], ['0.5', '50%'], ['0.67', '67%'], ['0.75', '75%'], ['1.0', 'settings.renderRatio.full']],
-        hint: 'settings.renderRatio.hint' },
-      { id: 'sr_tier', type: 'select', label: 'settings.srTier.label', sec: 'fefw', key: 'render_ratio', def: '0',
-        options: [['0', 'settings.srTier.game'], ['0.33', 'settings.srTier.ultraPerformance'], ['0.5', 'settings.srTier.performance'],
-          ['0.59', 'settings.srTier.balanced'], ['0.67', 'settings.srTier.quality'], ['0.75', 'settings.srTier.ultraQuality'],
-          ['0.85', 'settings.srTier.highQuality'], ['1.0', 'settings.srTier.dlaa']],
-        hint: 'settings.srTier.hint' },
-      { id: 'upscaler', type: 'select', label: 'settings.upscaler.label', sec: 'dlss', key: 'upscaler', def: 'taau',
-        options: [['taau', 'settings.upscaler.taau'], ['dlss', 'settings.upscaler.dlss'], ['fsr3', 'settings.upscaler.fsr3'],
-          ['xess', 'settings.upscaler.xess'], ['bilinear', 'settings.upscaler.bilinear'], ['auto', 'settings.upscaler.auto']],
-        hint: 'settings.upscaler.hint' },
-      { id: 'fsr_dll', type: 'path', label: 'settings.fsrDll.label', sec: 'upscale', key: 'fsr_dll', def: '', placeholder: 'settings.fsrDll.placeholder', status: 'fsr',
-        hint: 'settings.fsrDll.hint' },
-      { id: 'dlss_dll', type: 'path', label: 'settings.dlssDll.label', sec: 'upscale', key: 'dlss_dll', def: '', placeholder: 'settings.dlssDll.placeholder', status: 'dlss',
-        hint: 'settings.dlssDll.hint' },
-      { id: 'xess_dll', type: 'path', label: 'settings.xessDll.label', sec: 'upscale', key: 'xess_dll', def: '', placeholder: 'settings.xessDll.placeholder', status: 'xess',
-        hint: 'settings.xessDll.hint' },
-      { id: 'quality', type: 'select', label: 'settings.quality.label', sec: 'fefw', key: 'quality', def: 'console',
-        options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked']] },
-      { id: 'shadow_size', type: 'select', label: 'settings.shadowSize.label', sec: 'fefw', key: 'shadow_size', def: '0',
-        options: [['0', 'settings.shadowSize.game'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
-      { id: 'texture_detail', type: 'select', label: 'settings.textureDetail.label', sec: 'gfx', key: 'texture_detail', def: 'auto',
-        options: [['auto', 'settings.textureDetail.auto'], ['full', 'settings.textureDetail.full'], ['half', 'settings.textureDetail.half']],
-        hint: 'settings.textureDetail.hint' },
-      // [gfx] astc_bc (runtime/src/gfx/nvn/nvn_texdata.h): opaque ASTC textures as BC1, half the video memory of BC7
-      { id: 'astc_bc', type: 'select', label: 'settings.astcBc.label', sec: 'gfx', key: 'astc_bc', def: 'auto',
-        options: [['auto', 'settings.astcBc.auto'], ['off', 'settings.astcBc.off'], ['bc1', 'settings.astcBc.bc1']],
-        hint: 'settings.astcBc.hint' },
-    ],
-  },
-  {
-    // [tweaks] language of controls.ini (runtime/docs/CONFIG.md). The names are the ones the runtime reads (services/common.cpp); the list is
-    // the languages the game ships (games/fefw/fefw_data.cpp). A [system] language in fefw.ini wins over this.
-    title: 'settings.sec.language', icon: 'languages', file: 'controls',
-    fields: [
-      { id: 'language', type: 'select', label: 'settings.gameLang.label', sec: 'tweaks', key: 'language', def: 'auto',
-        options: [
-          ['auto', 'settings.gameLang.auto'],
-          ['AmericanEnglish', 'settings.gameLang.americanEnglish'], ['BritishEnglish', 'settings.gameLang.britishEnglish'],
-          ['Japanese', 'settings.gameLang.japanese'], ['French', 'settings.gameLang.french'],
-          ['CanadianFrench', 'settings.gameLang.canadianFrench'], ['German', 'settings.gameLang.german'],
-          ['Italian', 'settings.gameLang.italian'], ['Spanish', 'settings.gameLang.spanish'],
-          ['LatinAmericanSpanish', 'settings.gameLang.latinSpanish'], ['Korean', 'settings.gameLang.korean'],
-          ['SimplifiedChinese', 'settings.gameLang.simplifiedChinese'], ['TraditionalChinese', 'settings.gameLang.traditionalChinese'],
+    id: 'display', title: 'settings.tab.display', icon: 'monitor',
+    groups: [
+      {
+        title: 'settings.sec.resolution', icon: 'monitor', file: 'game',
+        fields: [
+          { id: 'output', type: 'select', label: 'settings.output.label', sec: 'fefw', key: 'output', def: 'console',
+            options: [['console', 'settings.output.console'], ['720p', '720p'], ['1080p', '1080p'], ['1440p', '1440p'], ['2160p', '2160p (4K)'],
+              ['2560x1080', 'settings.output.uw2560'], ['3440x1440', 'settings.output.uw3440'], ['5120x1440', 'settings.output.uw5120'],
+              ['window', 'settings.output.window']],
+            hint: 'settings.output.hint', restart: true },
+          { id: 'ultrawide', type: 'toggle', label: 'settings.ultrawide.label', sec: 'fefw', key: 'ultrawide', def: 'auto', on: 'auto', off: 'off',
+            onLabel: 'settings.ultrawide.auto', offLabel: 'settings.ultrawide.off', hint: 'settings.ultrawide.hint' },
         ],
-        hint: 'settings.gameLang.hint' },
+      },
+      {
+        title: 'settings.sec.window', icon: 'app-window', file: 'controls',
+        fields: [
+          { id: 'window_mode', type: 'select', label: 'settings.windowMode.label', sec: 'display', key: 'window_mode', def: 'windowed',
+            options: [['windowed', 'settings.windowMode.windowed'], ['borderless', 'settings.windowMode.borderless'], ['exclusive', 'settings.windowMode.exclusive']],
+            hint: 'settings.windowMode.hint' },
+          { id: 'size', type: 'size', label: 'settings.windowSize.label', sec: 'display', keys: ['width', 'height'], def: ['1280', '720'] },
+        ],
+      },
+      {
+        title: 'settings.sec.frameRate', icon: 'gauge', file: 'game',
+        fields: [
+          { id: 'fps60', type: 'toggle', label: 'settings.fps60.label', sec: 'fefw', key: 'fps60', def: '0', hint: 'settings.fps60.hint' },
+          { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
+          { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
+          { id: 'fps_limit', type: 'autonum', label: 'settings.fpsLimit.label', file: 'controls', sec: 'display', key: 'fps_limit', def: 'auto',
+            min: 0, max: 1000, numDefault: 60, unit: 'settings.fpsLimit.unit', autoLabel: 'settings.fpsLimit.auto', hint: 'settings.fpsLimit.hint' },
+          { id: 'vsync', type: 'toggle', label: 'settings.vsync.label', file: 'controls', sec: 'display', key: 'vsync', def: '1' },
+        ],
+      },
     ],
   },
   {
-    title: 'settings.sec.frameRate', icon: 'gauge', file: 'game',
-    fields: [
-      { id: 'fps60', type: 'toggle', label: 'settings.fps60.label', sec: 'fefw', key: 'fps60', def: '0', hint: 'settings.fps60.hint' },
-      { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
-      { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
-      { id: 'frame_gen', type: 'select', label: 'settings.frameGen.label', sec: 'dlss', key: 'frame_gen', def: '0',
-        // Linux: the game's own FSR 3 frame generation is not supported under Proton, so it is not offered (`unsupported`)
-        options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss'], ...(IS_LINUX ? [] : [['fsr3', 'settings.frameGen.fsr3']])],
-        unsupported: IS_LINUX ? ['fsr3'] : [],
-        hint: IS_LINUX ? 'settings.frameGen.hintLinux' : 'settings.frameGen.hint' },
-      // Linux only: LSFG-VK frame generation on the finished picture (launcher/src-tauri/src/lsfg.rs); stored in launcher.json
-      ...(IS_LINUX ? [
-        // can be turned on only when the layer and lsfg-vk.dll are found; always off
-        { id: 'lsfg', file: 'config', type: 'toggle', label: 'settings.lsfg.label', sec: '', key: 'lsfg', def: '0', hint: 'settings.lsfg.hint', lsfgNote: true,
-          lockedIf: (m, ctx) => !m.lsfg && !ctx.lsfgReady },
-        { id: 'lsfg_multiplier', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.multiplier', sec: '', key: 'lsfg_multiplier', def: '2',
-          options: [['2', '2x'], ['3', '3x'], ['4', '4x']] },
-        { id: 'lsfg_flow_scale', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.flowScale', sec: '', key: 'lsfg_flow_scale', def: '1',
-          options: [['1', '100%'], ['0.75', '75%'], ['0.5', '50%'], ['0.25', '25%']], hint: 'settings.lsfg.flowScaleHint' },
-        { id: 'lsfg_performance', file: 'config', showIf: (m) => m.lsfg, type: 'toggle', label: 'settings.lsfg.performance', sec: '', key: 'lsfg_performance', def: '0', hint: 'settings.lsfg.performanceHint' },
-      ] : []),
+    id: 'graphics', title: 'settings.tab.graphics', icon: 'sparkles',
+    groups: [
+      {
+        title: 'settings.sec.upscaling', icon: 'image-upscale', file: 'game', gpuNote: true,
+        fields: [
+          { id: 'upscaler', type: 'select', label: 'settings.upscaler.label', sec: 'dlss', key: 'upscaler', def: 'taau',
+            options: [['taau', 'settings.upscaler.taau'], ['dlss', 'settings.upscaler.dlss', { nv: true }], ['fsr3', 'settings.upscaler.fsr3'],
+              ['xess', 'settings.upscaler.xess'], ['bilinear', 'settings.upscaler.bilinear'], ['auto', 'settings.upscaler.auto']],
+            hint: 'settings.upscaler.hint', restart: true },
+          // One list for [fefw] render_ratio: the percentages with the usual upscaler tier names (the F1 menu's Render scale steps).
+          { id: 'render_ratio', type: 'select', label: 'settings.renderRatio.label', sec: 'fefw', key: 'render_ratio', def: '0',
+            options: [['0', 'settings.renderRatio.game'], ['0.33', ['33%', 'settings.srTier.ultraPerformance']], ['0.5', ['50%', 'settings.srTier.performance']],
+              ['0.59', ['59%', 'settings.srTier.balanced']], ['0.67', ['67%', 'settings.srTier.quality']], ['0.75', ['75%', 'settings.srTier.ultraQuality']],
+              ['0.85', ['85%', 'settings.srTier.highQuality']], ['1.0', 'settings.renderRatio.full']],
+            hint: 'settings.renderRatio.hint' },
+          { id: 'frame_gen', type: 'select', label: 'settings.frameGen.label', sec: 'dlss', key: 'frame_gen', def: '0',
+            // Linux: the game's own FSR 3 frame generation is not supported under Proton, so it is not offered (`unsupported`)
+            options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss', { nv: true }], ...(IS_LINUX ? [] : [['fsr3', 'settings.frameGen.fsr3']])],
+            unsupported: IS_LINUX ? ['fsr3'] : [],
+            hint: IS_LINUX ? 'settings.frameGen.hintLinux' : 'settings.frameGen.hint', restart: true },
+          // Linux only: LSFG-VK frame generation on the finished picture (launcher/src-tauri/src/lsfg.rs); stored in launcher.json
+          ...(IS_LINUX ? [
+            // can be turned on only when the layer and lsfg-vk.dll are found; always off
+            { id: 'lsfg', file: 'config', type: 'toggle', label: 'settings.lsfg.label', sec: '', key: 'lsfg', def: '0', hint: 'settings.lsfg.hint', restart: true, lsfgNote: true,
+              lockedIf: (m, ctx) => !m.lsfg && !ctx.lsfgReady },
+            { id: 'lsfg_multiplier', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.multiplier', sec: '', key: 'lsfg_multiplier', def: '2',
+              options: [['2', '2x'], ['3', '3x'], ['4', '4x']] },
+            { id: 'lsfg_flow_scale', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.flowScale', sec: '', key: 'lsfg_flow_scale', def: '1',
+              options: [['1', '100%'], ['0.75', '75%'], ['0.5', '50%'], ['0.25', '25%']], hint: 'settings.lsfg.flowScaleHint' },
+            { id: 'lsfg_performance', file: 'config', showIf: (m) => m.lsfg, type: 'toggle', label: 'settings.lsfg.performance', sec: '', key: 'lsfg_performance', def: '0', hint: 'settings.lsfg.performanceHint' },
+          ] : []),
+        ],
+      },
+      {
+        title: 'settings.sec.detail', icon: 'layers', file: 'game',
+        fields: [
+          { id: 'quality', type: 'select', label: 'settings.quality.label', sec: 'fefw', key: 'quality', def: 'console',
+            options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked']] },
+          { id: 'shadow_size', type: 'select', label: 'settings.shadowSize.label', sec: 'fefw', key: 'shadow_size', def: '0',
+            options: [['0', 'settings.shadowSize.game'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
+          { id: 'texture_detail', type: 'select', label: 'settings.textureDetail.label', sec: 'gfx', key: 'texture_detail', def: 'auto',
+            options: [['auto', 'settings.textureDetail.auto'], ['full', 'settings.textureDetail.full'], ['half', 'settings.textureDetail.half']],
+            hint: 'settings.textureDetail.hint', restart: true },
+          // [gfx] astc_bc (runtime/src/gfx/nvn/nvn_texdata.h): opaque ASTC textures as BC1, half the video memory of BC7
+          { id: 'astc_bc', type: 'select', label: 'settings.astcBc.label', sec: 'gfx', key: 'astc_bc', def: 'auto',
+            options: [['auto', 'settings.astcBc.auto'], ['off', 'settings.astcBc.off'], ['bc1', 'settings.astcBc.bc1']],
+            hint: 'settings.astcBc.hint', restart: true },
+        ],
+      },
+      {
+        title: 'settings.sec.upscalerFiles', icon: 'download', file: 'game',
+        fields: [
+          { id: 'fsr_dll', type: 'path', label: 'settings.fsrDll.label', sec: 'upscale', key: 'fsr_dll', def: '', placeholder: 'settings.fsrDll.placeholder', status: 'fsr',
+            hint: 'settings.fsrDll.hint' },
+          { id: 'dlss_dll', type: 'path', label: 'settings.dlssDll.label', sec: 'upscale', key: 'dlss_dll', def: '', placeholder: 'settings.dlssDll.placeholder', status: 'dlss',
+            hint: 'settings.dlssDll.hint', nv: true },
+          { id: 'xess_dll', type: 'path', label: 'settings.xessDll.label', sec: 'upscale', key: 'xess_dll', def: '', placeholder: 'settings.xessDll.placeholder', status: 'xess',
+            hint: 'settings.xessDll.hint' },
+        ],
+      },
     ],
   },
   {
-    title: 'settings.sec.window', icon: 'monitor', file: 'controls',
-    fields: [
-      { id: 'window_mode', type: 'select', label: 'settings.windowMode.label', sec: 'display', key: 'window_mode', def: 'windowed',
-        options: [['windowed', 'settings.windowMode.windowed'], ['borderless', 'settings.windowMode.borderless'], ['exclusive', 'settings.windowMode.exclusive']],
-        hint: 'settings.windowMode.hint' },
-      { id: 'size', type: 'size', label: 'settings.windowSize.label', sec: 'display', keys: ['width', 'height'], def: ['1280', '720'] },
-      { id: 'fps_limit', type: 'autonum', label: 'settings.fpsLimit.label', sec: 'display', key: 'fps_limit', def: 'auto',
-        min: 0, max: 1000, numDefault: 60, unit: 'settings.fpsLimit.unit', autoLabel: 'settings.fpsLimit.auto', hint: 'settings.fpsLimit.hint' },
-      { id: 'vsync', type: 'toggle', label: 'settings.vsync.label', sec: 'display', key: 'vsync', def: '1' },
+    id: 'audio', title: 'settings.tab.audio', icon: 'volume-2',
+    groups: [
+      {
+        title: 'settings.sec.sound', icon: 'volume-2', file: 'controls',
+        fields: [
+          { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', unit: 'settings.volume.unit' },
+          { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
+        ],
+      },
+      {
+        // [tweaks] language of controls.ini (runtime/docs/CONFIG.md). The names are the ones the runtime reads (services/common.cpp); the list is
+        // the languages the game ships (games/fefw/fefw_data.cpp). A [system] language in fefw.ini wins over this.
+        title: 'settings.sec.language', icon: 'languages', file: 'controls',
+        fields: [
+          { id: 'language', type: 'select', label: 'settings.gameLang.label', sec: 'tweaks', key: 'language', def: 'auto',
+            options: [
+              ['auto', 'settings.gameLang.auto'],
+              ['AmericanEnglish', 'settings.gameLang.americanEnglish'], ['BritishEnglish', 'settings.gameLang.britishEnglish'],
+              ['Japanese', 'settings.gameLang.japanese'], ['French', 'settings.gameLang.french'],
+              ['CanadianFrench', 'settings.gameLang.canadianFrench'], ['German', 'settings.gameLang.german'],
+              ['Italian', 'settings.gameLang.italian'], ['Spanish', 'settings.gameLang.spanish'],
+              ['LatinAmericanSpanish', 'settings.gameLang.latinSpanish'], ['Korean', 'settings.gameLang.korean'],
+              ['SimplifiedChinese', 'settings.gameLang.simplifiedChinese'], ['TraditionalChinese', 'settings.gameLang.traditionalChinese'],
+            ],
+            hint: 'settings.gameLang.hint', restart: true },
+        ],
+      },
     ],
   },
   {
-    title: 'settings.sec.sound', icon: 'volume-2', file: 'controls',
-    fields: [
-      { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', unit: 'settings.volume.unit' },
-      { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
-      { id: 'prompt_style', type: 'select', label: 'settings.promptStyle.label', sec: 'prompts', key: 'style', def: 'auto',
-        options: [['auto', 'settings.promptStyle.auto'], ['switch', 'settings.promptStyle.switch'], ['xbox', 'settings.promptStyle.xbox'],
-          ['playstation', 'settings.promptStyle.playstation'], ['keyboard', 'settings.promptStyle.keyboard']],
-        hint: 'settings.promptStyle.hint' },
-      // [pad] label_abxy: which physical button the Switch's A is mapped from. The button prompts follow it (runtime/gfx/play/prompt_resolve.cpp).
-      { id: 'face_buttons', type: 'select', label: 'settings.faceButtons.label', sec: 'pad', key: 'label_abxy', def: '1',
-        options: [['1', 'settings.faceButtons.label_'], ['0', 'settings.faceButtons.position']],
-        hint: 'settings.faceButtons.hint' },
-      // [pad] haptic: how the game's HD Rumble value reaches the pad (runtime/gfx/haptic.cpp). The launcher only writes the
-      // setting; the game reads it when it starts, so a change lands on the next run.
-      { id: 'haptic', type: 'select', label: 'settings.haptic.label', sec: 'pad', key: 'haptic', def: 'auto',
-        options: [['auto', 'settings.haptic.auto'], ['off', 'settings.haptic.off'], ['rumble', 'settings.haptic.rumble'],
-          ['dualsense', 'settings.haptic.dualsense']],
-        hint: 'settings.haptic.hint' },
-      // [pad] haptic_strength: 0..100 percent for the haptic backends, or -1 to keep using the rumble strength above.
-      { id: 'haptic_strength', type: 'number', label: 'settings.hapticStrength.label', sec: 'pad', key: 'haptic_strength',
-        def: '-1', min: -1, max: 100, hint: 'settings.hapticStrength.hint' },
+    id: 'controls', title: 'settings.tab.controls', icon: 'gamepad-2',
+    groups: [
+      {
+        title: 'settings.sec.buttons', icon: 'gamepad-2', file: 'controls',
+        fields: [
+          { id: 'prompt_style', type: 'select', label: 'settings.promptStyle.label', sec: 'prompts', key: 'style', def: 'auto',
+            options: [['auto', 'settings.promptStyle.auto'], ['switch', 'settings.promptStyle.switch'], ['xbox', 'settings.promptStyle.xbox'],
+              ['playstation', 'settings.promptStyle.playstation'], ['keyboard', 'settings.promptStyle.keyboard']],
+            hint: 'settings.promptStyle.hint' },
+          // [pad] label_abxy: which physical button the Switch's A is mapped from. The button prompts follow it (runtime/gfx/play/prompt_resolve.cpp).
+          { id: 'face_buttons', type: 'select', label: 'settings.faceButtons.label', sec: 'pad', key: 'label_abxy', def: '1',
+            options: [['1', 'settings.faceButtons.label_'], ['0', 'settings.faceButtons.position']],
+            hint: 'settings.faceButtons.hint' },
+        ],
+      },
+      {
+        title: 'settings.sec.vibration', icon: 'vibrate', file: 'controls',
+        fields: [
+          // [pad] haptic: how the game's HD Rumble value reaches the pad (runtime/gfx/haptic.cpp). The launcher only writes the
+          // setting; the game reads it when it starts, so a change lands on the next run.
+          { id: 'haptic', type: 'select', label: 'settings.haptic.label', sec: 'pad', key: 'haptic', def: 'auto',
+            options: [['auto', 'settings.haptic.auto'], ['off', 'settings.haptic.off'], ['rumble', 'settings.haptic.rumble'],
+              ['dualsense', 'settings.haptic.dualsense']],
+            hint: 'settings.haptic.hint', restart: true },
+          // [pad] haptic_strength: 0..100 percent for the haptic backends, or -1 to keep using the rumble strength above.
+          { id: 'haptic_strength', type: 'number', label: 'settings.hapticStrength.label', sec: 'pad', key: 'haptic_strength',
+            def: '-1', min: -1, max: 100, hint: 'settings.hapticStrength.hint' },
+        ],
+      },
+      {
+        title: 'settings.sec.mouse', icon: 'mouse', file: 'game',
+        fields: [
+          { id: 'jc2_mouse', type: 'select', label: 'settings.jc2Mouse.label', sec: 'input', key: 'jc2_mouse', def: 'auto',
+            options: [['auto', 'settings.jc2Mouse.auto'], ['on', 'settings.jc2Mouse.on'], ['off', 'settings.jc2Mouse.off']], hint: 'settings.jc2Mouse.hint' },
+        ],
+      },
     ],
   },
   {
-    title: 'settings.sec.input', icon: 'folder', file: 'game',
-    fields: [
-      { id: 'jc2_mouse', type: 'select', label: 'settings.jc2Mouse.label', sec: 'input', key: 'jc2_mouse', def: 'auto',
-        options: [['auto', 'settings.jc2Mouse.auto'], ['on', 'settings.jc2Mouse.on'], ['off', 'settings.jc2Mouse.off']], hint: 'settings.jc2Mouse.hint' },
-      { id: 'save_dir', type: 'path', label: 'settings.saveDir.label', sec: 'fs', key: 'save_dir', def: '', placeholder: 'settings.saveDir.placeholder' },
-      { id: 'log_level', type: 'select', label: 'settings.logLevel.label', sec: 'log', key: 'level', def: 'info',
-        options: [['error', 'settings.logLevel.error'], ['warn', 'settings.logLevel.warn'], ['info', 'settings.logLevel.info'], ['debug', 'settings.logLevel.debug']] },
-    ],
-  },
-  {
-    title: 'settings.sec.launcher', icon: 'wrench', file: 'config',
-    fields: [
-      // The launcher's own interface language: kept in launcher.json, applied at once, no file patching involved.
-      { id: 'lang', type: 'language', label: 'settings.lang.label', hint: 'settings.lang.hint' },
-      { id: 'repo_dir', type: 'path', label: 'settings.repoDir.label', sec: '', key: 'repo_dir', def: '', placeholder: 'settings.repoDir.placeholder', hint: 'settings.repoDir.hint' },
-      { id: 'game_dir', type: 'path', label: 'settings.gameDir.label', sec: '', key: 'game_dir', def: '', placeholder: 'settings.gameDir.placeholder', hint: 'settings.gameDir.hint' },
-      { id: 'jobs', type: 'number', label: 'settings.jobs.label', sec: '', key: 'jobs', def: '0', min: 0, max: 256, hint: 'settings.jobs.hint' },
-      { id: 'minimize_on_play', type: 'toggle', label: 'settings.minimizeOnPlay.label', sec: '', key: 'minimize_on_play', def: '0' },
-      // Linux only: fefw.exe runs through Wine/Proton (launcher/src-tauri/src/play.rs runner())
-      ...(IS_LINUX ? [{ id: 'runner', type: 'text', label: 'settings.runner.label', sec: '', key: 'runner', def: '', placeholder: 'settings.runner.placeholder', hint: 'settings.runner.hint' }] : []),
+    id: 'launcher', title: 'settings.tab.launcher', icon: 'wrench',
+    groups: [
+      {
+        title: 'settings.sec.general', icon: 'sliders-horizontal', file: 'config',
+        fields: [
+          // The launcher's own interface language: kept in launcher.json, applied at once, no file patching involved.
+          { id: 'lang', type: 'language', label: 'settings.lang.label', hint: 'settings.lang.hint' },
+          { id: 'minimize_on_play', type: 'toggle', label: 'settings.minimizeOnPlay.label', sec: '', key: 'minimize_on_play', def: '0' },
+        ],
+      },
+      {
+        title: 'settings.sec.folders', icon: 'folder', file: 'config',
+        fields: [
+          { id: 'game_dir', type: 'path', label: 'settings.gameDir.label', sec: '', key: 'game_dir', def: '', placeholder: 'settings.gameDir.placeholder', hint: 'settings.gameDir.hint' },
+          { id: 'save_dir', type: 'path', label: 'settings.saveDir.label', file: 'game', sec: 'fs', key: 'save_dir', def: '', placeholder: 'settings.saveDir.placeholder' },
+          { id: 'repo_dir', type: 'path', label: 'settings.repoDir.label', sec: '', key: 'repo_dir', def: '', placeholder: 'settings.repoDir.placeholder', hint: 'settings.repoDir.hint' },
+        ],
+      },
+      {
+        title: 'settings.sec.advanced', icon: 'terminal', file: 'config',
+        fields: [
+          { id: 'jobs', type: 'number', label: 'settings.jobs.label', sec: '', key: 'jobs', def: '0', min: 0, max: 256, hint: 'settings.jobs.hint' },
+          // Linux only: fefw.exe runs through Wine/Proton (launcher/src-tauri/src/play.rs runner())
+          ...(IS_LINUX ? [{ id: 'runner', type: 'text', label: 'settings.runner.label', sec: '', key: 'runner', def: '', placeholder: 'settings.runner.placeholder', hint: 'settings.runner.hint' }] : []),
+          { id: 'log_level', type: 'select', label: 'settings.logLevel.label', file: 'game', sec: 'log', key: 'level', def: 'info',
+            options: [['error', 'settings.logLevel.error'], ['warn', 'settings.logLevel.warn'], ['info', 'settings.logLevel.info'], ['debug', 'settings.logLevel.debug']] },
+        ],
+      },
     ],
   },
 ];
+
+// The open tab, kept while the launcher runs (saving re-renders the page; it should come back on the same tab)
+let activeTab = TABS[0].id;
+// The fields whose full description is open, kept across redraws like the tab
+const openHints = new Set();
 
 const truthy = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 const fwd = (s) => String(s).trim().replace(/\\/g, '/');
 
-/** An option label: a dotted name is a key, anything else ("720p", "DLAA") is shown as written. */
-const optName = (label) => (String(label).includes('.') ? t(label) : label);
+/** An option label: a dotted name is a key, anything else ("720p") is shown as written; [a, b] reads "a (b)". */
+const optName = (label) => (Array.isArray(label) ? `${optName(label[0])} (${optName(label[1])})` : String(label).includes('.') ? t(label) : label);
 
 export async function render(el, ctx) {
-  const [cfg, status] = await Promise.all([api('get_config'), api('game_status')]);
+  const [cfg, status, gpu] = await Promise.all([api('get_config'), api('game_status'), api('gpu_info').catch(() => ({ known: false }))]);
+  // NVIDIA-only choices: shown with an NVIDIA GPU, and also when the probe found no GPU at all (better shown than wrongly hidden)
+  const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
@@ -207,7 +280,11 @@ export async function render(el, ctx) {
     language: () => [],
   };
 
-  const all = SECTIONS.flatMap((s) => s.fields.map((f) => ({ file: s.file, ...f })));
+  // Every field, with its file filled in from the group. A hidden NVIDIA-only field stays in the model: it is never dirty, so never written.
+  const tabs = TABS.map((tab) => ({ ...tab, groups: tab.groups.map((g) => ({ ...g, fields: g.fields.map((f) => ({ ...f, file: f.file ?? g.file, tab: tab.id })) })) }));
+  const all = tabs.flatMap((tab) => tab.groups.flatMap((g) => g.fields));
+  // `showIf`: a field that only makes sense with another one set (the LSFG-VK options, with LSFG-VK on)
+  const shown = (f) => (!f.nv || nvOk) && (!f.showIf || f.showIf(model));
   const model = {};
   const orig = {};
   for (const f of all) {
@@ -221,25 +298,69 @@ export async function render(el, ctx) {
   const dis = (f) => (exists[f.file] ? '' : 'disabled');
   const CONTROL = {
     select: (f, x) => {
-      const opts = f.options.some(([v]) => String(v) === String(x)) ? f.options : [...f.options, [x, x]];
-      return `<select data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
+      // an NVIDIA-only option is kept when it is the value already set, so the file is shown as it is rather than as a raw word
+      const avail = f.options.filter(([v, , o]) => !o?.nv || nvOk || String(v) === String(x));
+      const opts = avail.some(([v]) => String(v) === String(x)) ? avail : [...avail, [x, x]];
+      return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
     },
-    toggle: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
-    size: (f, x) => `<input type="number" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
-    autonum: (f, x) => `<label class="switch"><input type="checkbox" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
-    range: (f, x) => `<input type="range" data-f="${f.id}" min="0" max="100" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 3.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
-    text: (f, x) => `<input type="text" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
-    number: (f, x) => `<input type="number" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
-    path: (f, x) => `<input type="text" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
-    language: (f, x) => `<select data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
+    toggle: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
+    size: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
+    autonum: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
+    range: (f, x) => `<input type="range" id="f-${f.id}" data-f="${f.id}" min="0" max="100" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 3.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
+    text: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
+    number: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
+    path: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
+    language: (f, x) => `<select id="f-${f.id}" data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
   };
 
-  const fieldHtml = (f) => `
-    <div class="field">
-      <label class="name">${esc(t(f.label))}${f.hint ? `<span class="hint">${esc(t(f.hint))}</span>` : ''}${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}${f.lsfgNote ? `<span class="hint" data-lsfg-note>${esc(t('settings.files.checking'))}</span>` : ''}</label>
+  /** The short form of a hint, or '' when it has none (or it would say the same as the full one). */
+  const shortOf = (f) => {
+    if (!f.hint) return '';
+    const k = f.hint.replace(/\.hint\w*$/, '.short') // settings.x.hint and settings.x.hintLinux share settings.x.short;
+    const s = t(k);
+    return s === k || s === t(f.hint) ? '' : s;
+  };
+  const fieldHtml = (f) => {
+    const short = shortOf(f);
+    const open = openHints.has(f.id);
+    const more = short
+      ? `<button class="more" data-more="${f.id}" aria-expanded="${open}" aria-controls="hint-${f.id}" title="${esc(t('settings.moreInfo'))}" aria-label="${esc(t('settings.moreInfo'))}">${icon('info')}</button>`
+      : '';
+    return `
+    <div class="field ${open ? 'open' : ''}">
+      <div class="name">
+        <div class="name-row"><label for="f-${f.id}">${esc(t(f.label))}</label>${f.restart ? `<span class="chip restart" title="${esc(t('settings.nextStartTip'))}">${icon('rotate-cw')}${esc(t('settings.nextStart'))}</span>` : ''}</div>
+        ${f.hint ? `<span class="hint">${esc(short || t(f.hint))}${more ? `&nbsp;${more}` : ''}</span>` : ''}
+        ${f.status ? `<span class="hint" data-status="${f.status}">${esc(t('settings.files.checking'))}</span>` : ''}
+        ${f.lsfgNote ? `<span class="hint" data-lsfg-note>${esc(t('settings.files.checking'))}</span>` : ''}
+      </div>
       <div class="control">${CONTROL[f.type](f, model[f.id])}</div>
+      ${short ? `<div class="hint-full" id="hint-${f.id}" ${open ? '' : 'hidden'}>${esc(t(f.hint))}</div>` : ''}
       ${f.status ? `<div class="fetch" data-fetch="${f.status}"></div>` : ''}
     </div>`;
+  };
+
+  const groupHtml = (g) => {
+    const fields = g.fields.filter(shown);
+    if (!fields.length) return '';
+    const note = g.gpuNote && !nvOk ? `<p class="faint group-note">${esc(t('settings.gpu.noNvidia'))}</p>` : '';
+    return `<div class="card"><h2>${icon(g.icon)}${esc(t(g.title))}</h2>${note}${fields.map(fieldHtml).join('')}</div>`;
+  };
+  // controls.ini is written by the game on its first start: the tabs with its options say so where the disabled options are
+  const needsControls = (tab) => !data.controls_exists && tab.groups.some((g) => g.fields.some((f) => f.file === 'controls'));
+  const panelHtml = (tab) => `
+    <div class="tabpanel" role="tabpanel" id="panel-${tab.id}" aria-labelledby="tab-${tab.id}" ${tab.id === activeTab ? '' : 'hidden'}>
+      ${needsControls(tab) ? `<div class="banner info">${icon('info')}<div>${esc(t('settings.noControlsBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.noControlsAfter'))}</div></div>` : ''}
+      ${tab.groups.map(groupHtml).join('')}
+    </div>`;
+  const dirtyTabs = () => new Set(dirtyFields().map((f) => f.tab));
+  const tabsHtml = () => {
+    const dirty = dirtyTabs();
+    return `<div id="tabs-anchor"></div><div class="tabbar"><div class="tabs" role="tablist" aria-label="${esc(t('settings.title'))}">${tabs.map((tab) => `
+      <button class="tab ${dirty.has(tab.id) ? 'dirty' : ''}" role="tab" id="tab-${tab.id}" data-tab="${tab.id}" aria-controls="panel-${tab.id}"
+        title="${esc(t(tab.title))}" aria-selected="${tab.id === activeTab}" tabindex="${tab.id === activeTab ? 0 : -1}">${icon(tab.icon)}<span>${esc(t(tab.title))}</span><span class="dot" aria-hidden="true"></span></button>`).join('')}
+    </div></div>`;
+  };
 
   const barText = (n) => (n ? (n > 1 ? t('common.unsavedMany', { count: n }) : t('common.unsavedOne')) : t('common.noChanges'));
 
@@ -252,8 +373,8 @@ export async function render(el, ctx) {
           <p class="dim">${esc(t('settings.introBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.introAfter'))}</p>
         </div>
         ${status.state === 'running' ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t('settings.gameRunning'))}</div></div>` : ''}
-        ${!data.controls_exists ? `<div class="banner info">${icon('info')}<div>${esc(t('settings.noControlsBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.noControlsAfter'))}</div></div>` : ''}
-        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.filter((f) => !f.showIf || f.showIf(model)).map((f) => fieldHtml({ file: s.file, ...f })).join('')}</div>`).join('')}
+        ${tabsHtml()}
+        ${tabs.map(panelHtml).join('')}
         <div class="savebar">
           <span class="dim">${esc(barText(n))}</span>
           <div class="row">
@@ -458,7 +579,43 @@ export async function render(el, ctx) {
     }
   }
 
+  /** Shows one tab without redrawing: every panel is in the markup, so edits on the others stay where they are. */
+  function selectTab(id, focus) {
+    activeTab = id;
+    el.querySelectorAll('[role="tab"]').forEach((b) => {
+      const on = b.dataset.tab === id;
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+      if (on && focus) b.focus();
+    });
+    el.querySelectorAll('.tabpanel').forEach((p) => { p.hidden = p.id !== `panel-${id}`; });
+    // scrolled past the tabs: bring the top of the new tab into view under the (sticky) bar
+    const anchor = el.querySelector('#tabs-anchor');
+    if (anchor && el.scrollTop > anchor.offsetTop) el.scrollTop = anchor.offsetTop;
+  }
+
   function bind() {
+    el.querySelectorAll('[data-more]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const id = b.dataset.more;
+        const open = !openHints.has(id);
+        if (open) openHints.add(id);
+        else openHints.delete(id);
+        b.setAttribute('aria-expanded', String(open));
+        b.closest('.field').classList.toggle('open', open);
+        el.querySelector(`#hint-${id}`).hidden = !open;
+      }),
+    );
+    el.querySelectorAll('[role="tab"]').forEach((b) => {
+      b.addEventListener('click', () => selectTab(b.dataset.tab));
+      b.addEventListener('keydown', (ev) => {
+        const i = TABS.findIndex((x) => x.id === b.dataset.tab);
+        const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[ev.key];
+        if (to === undefined) return;
+        ev.preventDefault();
+        selectTab(TABS[(to + TABS.length) % TABS.length].id, true);
+      });
+    });
     const byId = Object.fromEntries(all.map((f) => [f.id, f]));
     el.querySelectorAll('[data-f]').forEach((input) => {
       const f = byId[input.dataset.f];
@@ -510,6 +667,8 @@ export async function render(el, ctx) {
     bar.querySelector('span').textContent = barText(n);
     bar.querySelector('#save').disabled = !n;
     bar.querySelector('#revert').disabled = !n;
+    const dirty = dirtyTabs();
+    el.querySelectorAll('[role="tab"]').forEach((b) => b.classList.toggle('dirty', dirty.has(b.dataset.tab)));
   }
 
   async function save() {
