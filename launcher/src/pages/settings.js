@@ -10,8 +10,8 @@ import { fileDetail } from '../rusttext.js';
  * Text is a key into src/locales: `label` and `hint` are always translated, and an option name that contains a dot is a key
  * too (a plain name such as "720p" or "DLAA" is shown as it is).
  */
-// The WebKitGTK launcher on Linux (the Windows one is WebView2)
-const IS_LINUX = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+// The WebKitGTK launcher on Linux (the Windows one is WebView2). Asked of the launcher: WebKitGTK's user agent says macOS.
+const IS_LINUX = (await api('platform').catch(() => '')) === 'linux';
 
 const SECTIONS = [
   {
@@ -87,13 +87,13 @@ const SECTIONS = [
       // Linux only: LSFG-VK frame generation on the finished picture (launcher/src-tauri/src/lsfg.rs); stored in launcher.json
       ...(IS_LINUX ? [
         // can be turned on only when the layer and lsfg-vk.dll are found; always off
-        { id: 'lsfg', type: 'toggle', label: 'settings.lsfg.label', sec: '', key: 'lsfg', def: '0', hint: 'settings.lsfg.hint', lsfgNote: true,
+        { id: 'lsfg', file: 'config', type: 'toggle', label: 'settings.lsfg.label', sec: '', key: 'lsfg', def: '0', hint: 'settings.lsfg.hint', lsfgNote: true,
           lockedIf: (m, ctx) => !m.lsfg && !ctx.lsfgReady },
-        { id: 'lsfg_multiplier', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.multiplier', sec: '', key: 'lsfg_multiplier', def: '2',
+        { id: 'lsfg_multiplier', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.multiplier', sec: '', key: 'lsfg_multiplier', def: '2',
           options: [['2', '2x'], ['3', '3x'], ['4', '4x']] },
-        { id: 'lsfg_flow_scale', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.flowScale', sec: '', key: 'lsfg_flow_scale', def: '1',
+        { id: 'lsfg_flow_scale', file: 'config', showIf: (m) => m.lsfg, type: 'select', label: 'settings.lsfg.flowScale', sec: '', key: 'lsfg_flow_scale', def: '1',
           options: [['1', '100%'], ['0.75', '75%'], ['0.5', '50%'], ['0.25', '25%']], hint: 'settings.lsfg.flowScaleHint' },
-        { id: 'lsfg_performance', showIf: (m) => m.lsfg, type: 'toggle', label: 'settings.lsfg.performance', sec: '', key: 'lsfg_performance', def: '0', hint: 'settings.lsfg.performanceHint' },
+        { id: 'lsfg_performance', file: 'config', showIf: (m) => m.lsfg, type: 'toggle', label: 'settings.lsfg.performance', sec: '', key: 'lsfg_performance', def: '0', hint: 'settings.lsfg.performanceHint' },
       ] : []),
     ],
   },
@@ -207,7 +207,7 @@ export async function render(el, ctx) {
     language: () => [],
   };
 
-  const all = SECTIONS.flatMap((s) => s.fields.map((f) => ({ ...f, file: s.file })));
+  const all = SECTIONS.flatMap((s) => s.fields.map((f) => ({ file: s.file, ...f })));
   const model = {};
   const orig = {};
   for (const f of all) {
@@ -253,7 +253,7 @@ export async function render(el, ctx) {
         </div>
         ${status.state === 'running' ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t('settings.gameRunning'))}</div></div>` : ''}
         ${!data.controls_exists ? `<div class="banner info">${icon('info')}<div>${esc(t('settings.noControlsBefore'))}<code>${esc(data.game_dir)}</code>${esc(t('settings.noControlsAfter'))}</div></div>` : ''}
-        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.filter((f) => !f.showIf || f.showIf(model)).map((f) => fieldHtml({ ...f, file: s.file })).join('')}</div>`).join('')}
+        ${SECTIONS.map((s) => `<div class="card"><h2>${icon(s.icon)}${esc(t(s.title))}</h2>${s.fields.filter((f) => !f.showIf || f.showIf(model)).map((f) => fieldHtml({ file: s.file, ...f })).join('')}</div>`).join('')}
         <div class="savebar">
           <span class="dim">${esc(barText(n))}</span>
           <div class="row">

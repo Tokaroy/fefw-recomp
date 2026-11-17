@@ -551,6 +551,12 @@ fn open_lsfg_install() -> Result<(), String> {
     play::open_with_shell(Path::new(lsfg::INSTALL_URL))
 }
 
+/// The OS the launcher runs on ("linux", "windows"). The page cannot tell from its user agent: WebKitGTK reports a macOS one.
+#[tauri::command]
+fn platform() -> &'static str {
+    std::env::consts::OS
+}
+
 /// Linux: whether the LSFG-VK layer and Lossless Scaling's lsfg-vk.dll are there (Settings).
 #[tauri::command]
 async fn lsfg_status() -> lsfg::Status {
@@ -913,6 +919,7 @@ fn main() {
             start_setup,
             cancel_setup,
             play,
+            platform,
             lsfg_status,
             open_lsfg_install,
             game_status,
