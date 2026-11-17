@@ -33,6 +33,34 @@ elsewhere, change the `press` and `@sleep` lines (the grammar is in `runtime/inc
 
 Other routes are new `.tt` files: any number of `@log SCENE start <name>` / `@log SCENE end <name>` pairs.
 
+### Record your own route instead
+
+If the menus need other presses than the template's, play the route yourself once and turn the recording into a script. Use a
+controller (mouse movement is not carried over), and start from the launch so the recording includes the menus:
+
+```
+set NXRT_TEST_RECORD=C:\ObeliskChamber-src\work\perf\rec\input.nxin
+set NXRT_TEST_OUT=C:\ObeliskChamber-src\work\perf\rec
+game-build\fefw\build\release\ObeliskChamber.exe --ini C:\ObeliskChamber-run\ObeliskChamber.ini
+set NXRT_TEST_RECORD=
+set NXRT_TEST_OUT=
+```
+
+Play to the map, then do what you want measured (stand still for a while, pan the camera, open a menu), noting roughly when each
+part starts and ends (seconds from the launch), and close the window. Then:
+
+```
+tools\.venv\Scripts\python.exe -I tools\perf\record_to_route.py work\perf\rec -o tools\perf\routes\my_route.tt ^
+    --scene map_still:60:80 --scene map_pan:80:95
+```
+
+Each button press and stick movement happens at the same time from the launch as in your recording, so the route repeats what you
+did at any frame rate. `--scene name:start:end` marks the measured parts (seconds from the launch); without it, add the
+`@log SCENE start/end` lines by hand. Run it with `-Route tools\perf\routes\my_route.tt`.
+
+The menus of a recorded route depend on load times staying about the same: keep the same save, cache and settings, and leave a few
+seconds of margin before each press in the recording (don't rush through the menus).
+
 ## 2. What a scene measures
 
 At `SCENE end` the log gets one line for exactly the frames between the two marks:
