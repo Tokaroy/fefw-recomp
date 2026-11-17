@@ -505,6 +505,7 @@ void worker_main(bool burst) {
     };
     for (;;) {
         Job j;
+        bool cold = false;
         {
             std::unique_lock<std::mutex> lk(g_mu);
             if (!ab_pause_on()) {
@@ -519,12 +520,14 @@ void worker_main(bool burst) {
             }
             if (!g_exact_q.empty() || !g_task_q.empty() || (g_hot_q.empty() && !g_pre_q.empty())) {
                 auto& q = !g_exact_q.empty() ? g_exact_q : !g_task_q.empty() ? g_task_q : g_pre_q;
+                const bool speculative = &q == &g_pre_q;     // key-file keys built ahead: nothing waits for them yet
                 std::function<void()> fn = std::move(q.front());
                 q.pop_front();
                 ++g_running;
                 publish_backlog_locked();
                 lk.unlock();
                 fn();
+                if (speculative) pace_shader_work();
                 lk.lock();
                 --g_running;
                 publish_backlog_locked();
@@ -533,14 +536,17 @@ void worker_main(bool burst) {
             if (!g_hot_q.empty()) {
                 j = g_hot_q.front();
                 g_hot_q.pop_front();
+                cold = false;
             } else {                                 // the programs set last belong to the area being loaded now, which is drawn next
                 j = g_cold_q.back();
                 g_cold_q.pop_back();
+                cold = true;
             }
             ++g_running;
             publish_backlog_locked();
         }
         run_job(j);
+        if (cold) pace_shader_work();
         {
             std::lock_guard<std::mutex> lk(g_mu);
             --g_running;
@@ -583,6 +589,7 @@ void upgrade_main() {
         const double ms = ms_since(t0);
         j.up->pipe = p;
         j.up->state.store(1, std::memory_order_release);
+        pace_shader_work();                  // an upgrade replaces a pipeline that already works: never urgent
         {
             std::lock_guard<std::mutex> lk(g_mu);
             --g_up_running;
@@ -599,7 +606,16 @@ void init_once() {
     g_stop = false;
     g_enabled = config_get_bool("nvn", "gpl", true) && device().features().graphics_pipeline_library;
     g_lto = config_get_bool("nvn", "gpl_lto", false);
-    g_cold = config_get_bool("nvn", "gpl_cold", true);
+    // [nvn] gpl_cold: true / false, or auto (the default): off on a CPU with 8 hardware threads or fewer, where compiling the parts of every
+    // program the game sets (most are never drawn: 15% bound in a 2026-11-16 log, 12% in EmblemWeave's) takes cores from an area load; on
+    // more threads the spare cores build them ahead and a new program's first draw finds its parts ready.
+    {
+        const std::string c = config_get_str("nvn", "gpl_cold", "auto");
+        const unsigned hwc = std::max(1u, std::thread::hardware_concurrency());
+        g_cold = (c == "auto") ? hwc > 8 : !(c == "false" || c == "0" || c == "off");
+        NXLOG_I(kTag, "parts of programs not drawn yet: %s ([nvn] gpl_cold = %s%s)", g_cold ? "compiled ahead" : "compiled when a draw needs them",
+                c.c_str(), c == "auto" ? (hwc > 8 ? ", more than 8 hardware threads" : ", 8 hardware threads or fewer") : "");
+    }
     {
         const std::string m = config_get_str("nvn", "gpl_upgrade", "whole");
         g_up_mode = (m == "off" || m == "false" || m == "0") ? UpMode::Off : (m == "lto") ? UpMode::Lto : UpMode::Whole;
@@ -673,6 +689,29 @@ bool cpu_is_hybrid() {
 }
 }  // namespace
 #endif
+
+namespace {
+std::atomic<uint64_t> g_paced_n{0}, g_paced_ms{0};
+uint64_t g_paced_logged_n = 0;
+}  // namespace
+
+void pace_shader_work() {
+    static const int64_t cap = std::clamp<int64_t>(config_get_int("nvn", "compile_pace_ms", 8), 0, 50);
+    static const double after = config_get_double("nvn", "compile_pace_after_ms", 20.0);
+    if (cap <= 0) return;
+    uint64_t frames = 0;
+    double age_ms = 0;
+    if (!hitch_frame_age(&frames, &age_ms) || frames < 2) return;    // before the second presented frame: the boot prewarm runs at full speed
+    float last = 0;
+    if (frame_times_recent(&last, 1) != 1) return;
+    const double late = std::max<double>(last, age_ms) - after;      // the last frame, or the one in progress when it is overdue already
+    if (late <= 0) return;
+    const int64_t ms = std::min<int64_t>(cap, 1 + static_cast<int64_t>(late / 2));
+    Sleep(static_cast<DWORD>(ms));
+    const uint64_t n = g_paced_n.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_paced_ms.fetch_add(static_cast<uint64_t>(ms), std::memory_order_relaxed);
+    if (n == 1) NXLOG_I(kTag, "compile threads step aside for late frames: up to %lld ms after a frame over %.0f ms ([nvn] compile_pace_ms)", static_cast<long long>(cap), after);
+}
 
 void set_compile_thread_priority(bool background) {
 #if defined(_WIN32)
@@ -1020,6 +1059,11 @@ void gpl_progress_log() {
             s.draw_part_ms, static_cast<unsigned long long>(s.parts_waited), s.wait_ms, static_cast<unsigned long long>(s.parts_hit), static_cast<unsigned long long>(s.link_failed),
             static_cast<unsigned long long>(s.upgrades_queued), static_cast<unsigned long long>(s.upgrades_done), s.upgrade_ms, static_cast<unsigned long long>(s.upgrades_taken),
             static_cast<unsigned long long>(s.upgrades_failed));
+    if (const uint64_t pn = g_paced_n.load(std::memory_order_relaxed); pn != g_paced_logged_n) {
+        g_paced_logged_n = pn;
+        NXLOG_I(kTag, "compile threads stepped aside for late frames: %llu times, %llu ms in all", static_cast<unsigned long long>(pn),
+                static_cast<unsigned long long>(g_paced_ms.load(std::memory_order_relaxed)));
+    }
     NXLOG_I(kTag, "libraries ahead: programs set %llu (covered by the key file %llu, new %llu), bound %llu (new %llu); jobs queued %llu, run %llu, "
                   "no layout %llu, no modules %llu; draws deferred %llu for %llu parts; single-stage programs %llu; key-file keys queued %llu, run %llu",
             static_cast<unsigned long long>(s.prog_set), static_cast<unsigned long long>(s.prog_covered), static_cast<unsigned long long>(s.prog_new),
