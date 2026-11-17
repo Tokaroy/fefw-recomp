@@ -1031,8 +1031,8 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         const double budget_gib = static_cast<double>(b[device_local_heap(vma_)].budget) / (1024.0 * 1024.0 * 1024.0);
         if (q.intel || q.budget_detail || q.pressure_detail || q.igpu_compat)
             NXLOG_I(kTag, "GPU quirks: %s%s; video memory budget %.2f GiB; budget_detail %d (texture_detail = auto goes by the budget), "
-                          "pressure_detail %d (textures made over 90%% of the budget leave out their largest level), igpu_compat %d (the 0.2.0 "
-                          "GPU paths default to off: gfx_ssbo_readonly, ubo_only_rebind, lean_draws, pass_barriers, residency, astc_bc) "
+                          "pressure_detail %d (textures made over 90%% of the budget leave out their largest level), igpu_compat %d ([nvn] lean_draws "
+                          "and [gfx] residency default to off) "
                           "([gfx] budget_detail, pressure_detail, igpu_compat = auto|1|0)",
                     q.intel ? "Intel " : "", q.intel ? (q.intel_integrated ? "integrated GPU" : "discrete GPU") : "not an Intel GPU (forced on)", budget_gib,
                     q.budget_detail, q.pressure_detail, q.igpu_compat);
