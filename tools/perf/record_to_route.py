@@ -61,6 +61,8 @@ def main():
     ap.add_argument('rec')
     ap.add_argument('-o', '--out', default='')
     ap.add_argument('--scene', action='append', default=[], help='name:start_s:end_s')
+    ap.add_argument('--min-hold-ms', type=float, default=120.0,
+                    help='a button is held at least this long (default 120): a quick tap can fall between two game updates and be missed')
     a = ap.parse_args()
     nx = os.path.join(a.rec, 'input.nxin') if os.path.isdir(a.rec) else a.rec
     tr = os.path.join(os.path.dirname(nx), 'trace.jsonl')
@@ -81,14 +83,19 @@ def main():
 
     events = []     # (ms, order, text)
     prev = (0, 0, 0, 0, 0)
+    down_at = {}    # button bit -> ms it went down
     for fr, b, lx, ly, rx, ry in frames:
         t = at(fr)
         pb, plx, ply, prx, pry = prev
         up = pb & ~b
         down = b & ~pb
-        if up:
-            events.append((t, 0, 'release ' + '+'.join(n for i, n in enumerate(BUTTONS) if up >> i & 1)))
+        for i in range(len(BUTTONS)):
+            if up >> i & 1:   # released no sooner than min_hold after it went down
+                events.append((max(t, down_at.pop(i, t) + a.min_hold_ms), 0, 'release ' + BUTTONS[i]))
         if down:
+            for i in range(len(BUTTONS)):
+                if down >> i & 1:
+                    down_at[i] = t
             events.append((t, 1, 'hold ' + '+'.join(n for i, n in enumerate(BUTTONS) if down >> i & 1)))
         for name, (x, y), (px, py) in (('left', (lx, ly), (plx, ply)), ('right', (rx, ry), (prx, pry))):
             x, y = q(x), q(y)
