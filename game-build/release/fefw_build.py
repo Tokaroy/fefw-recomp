@@ -10,7 +10,8 @@ bundled Zig what this processor has. The variant is part of the build stamp, so 
 
 The package ships no game code. This script
   1. verifies the dump's ExeFS against dump_hashes.json (the supported build: sha256 of every module + main's build ID) and writes
-     <game>/exefs: the same NSOs with main uncompressed (the console's main is ZBIC-compressed; tools/build/nso_unpack.py),
+     <game>/build/exefs: the same NSOs with main uncompressed (the console's main is ZBIC-compressed; tools/build/nso_unpack.py)
+     and the mods' exefs patches applied; they move to <game>/exefs once step 4 has linked fefw.exe,
   2. lifts the six NSOs with the bundled lifter (recomp/nxrecomp) into <game>/build/lift,
   3. compiles the generated C++ with the bundled Zig (zig c++, mingw target) into <game>/build/obj, in parallel,
   4. links fefw.exe = sdk/fefw_stub.cpp + the lifted objects + sdk/fefw_rt.lib (the runtime, fefw_rt.dll in the package),
@@ -299,7 +300,8 @@ def verify(exefs):
 
 
 def write_exefs(exefs, out):
-    """<game>/exefs: the dump's NSOs, main uncompressed (the lifter and the runtime read plain NSOs only)."""
+    """The dump's NSOs into `out`, main uncompressed (the lifter and the runtime read plain NSOs only). Set up writes them to
+    <game>/build/exefs; install_exefs moves them to <game>/exefs after the link."""
     sys.path.insert(0, HERE)
     from nso_unpack import unpack
     os.makedirs(out, exist_ok=True)
@@ -322,10 +324,21 @@ def write_exefs(exefs, out):
             shutil.copyfile(src, dst)
 
 
+def install_exefs(stage, out):
+    """Move the NSOs fefw.exe was just linked from (<game>/build/exefs, exefs patches applied) into <game>/exefs, which the runtime
+    maps. Only after the link: a build that stops or fails earlier leaves <game>/exefs as the fefw.exe still there was built from."""
+    os.makedirs(out, exist_ok=True)
+    for n in EXEFS_FILES:
+        src = os.path.join(stage, n)
+        if os.path.isfile(src):
+            os.replace(src, os.path.join(out, n))
+
+
 # ---- exefs patches (mods/<name>/exefs/*.ips, *.pchtxt) ----------------------------------------------------------------------
 # The game code is lifted ahead of time, so a patch cannot be applied when the game starts as on an emulator. Set up applies the
-# patches of the installed mods to <game>/exefs/main (the plain NSO the lifter and the runtime both read) before lifting: code
-# patches are then compiled into fefw.exe, data patches are loaded by the runtime. Only patches for main's build ID are used. The
+# patches of the installed mods to the plain main NSO before lifting (in <game>/build/exefs; install_exefs moves it to <game>/exefs,
+# which the runtime reads, only once fefw.exe is linked): code patches are then compiled into fefw.exe, data patches are loaded by
+# the runtime. Only patches for main's build ID are used. The
 # patched bytes are part of the build stamp, so adding, changing or removing a patch makes Set up build again. A patch must not touch
 # an instruction that main.sites patches or hooks (the hook would run against code it was not written for): Set up stops and names it.
 PROGRAM_ID = 0x04007EF01F8AE000
@@ -435,11 +448,16 @@ def parse_pchtxt(text, where, build_id):
         if low.startswith('@flag'):
             parts = line.split()
             if len(parts) >= 3 and parts[1].lower() == 'offset_shift':
-                shift = int(parts[2], 0)
+                try:
+                    shift = int(parts[2], 0)
+                except ValueError:
+                    raise Fail('%s:%d: offset_shift takes a number (0x100 or 256), not %s' % (where, ln, parts[2]))
             continue
         if low.startswith('@'):
             continue                     # other @ lines (e.g. @flag print_values) change nothing here
-        m = re.match(r'^([0-9A-Fa-f]{1,8})\s+(.+)$', line)
+        # a patch line has an 8-digit offset, as IPSwitch writes them and yuzu reads them: a shorter one would take a title
+        # line such as "Add 60 FPS" or "Fade 00" (both start with hex letters) for a patch
+        m = re.match(r'^([0-9A-Fa-f]{8})\s+(.+)$', line)
         if not m:
             continue                     # a title line between blocks
         if not enabled:
@@ -575,9 +593,8 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
 # a call into the runtime (inline, midhook, entryhook: the instructions are lifted as before), plus one line
 #     @nsobid <main build ID>          (as in a .pchtxt)
 # so that sites for another version of the game are left out. Set up lifts main with main.sites plus these sites; they are part
-# of the build stamp, so installing, updating or removing such a mod lifts again. The sites of a mod with exefs = off in mod.ini
-# are kept: a site no hook is attached to only passes through, so switching the mod on or off (the game's Mods menu) needs no Set up,
-# only the next start, like any DLL mod. The list main was lifted with is written next to fefw.exe (fefw.sites,
+# of the build stamp, so installing, updating or removing such a mod lifts again, and so does switching it off or on (a folder
+# name starting with - or _, as find_mod_dirs reads it). The list main was lifted with is written next to fefw.exe (fefw.sites,
 # write_lifted_sites), so the runtime can tell a mod whose sites are missing from this build.
 MOD_SITE_KINDS = ('inline', 'midhook', 'entryhook')
 
@@ -587,7 +604,7 @@ def collect_mod_sites(game, build_id):
     found = []
     for name, d in find_mod_dirs(os.path.join(game, 'mods')):
         ex = os.path.join(d, 'exefs')
-        if not os.path.isdir(ex):        # exefs = off does not count here (see above)
+        if not os.path.isdir(ex):
             continue
         for f in sorted(os.listdir(ex), key=str.lower):
             if not f.lower().endswith('.sites') or not os.path.isfile(os.path.join(ex, f)):
@@ -1084,12 +1101,14 @@ def main():
         if variant == 'compat':
             progress('verify', 0, 1, 'Building the compatible version of the game (for processors without FMA3)')
         want = verify(a.exefs)
-        plain = os.path.join(game, 'exefs')
-        write_exefs(a.exefs, plain)
+        # the NSOs are written and patched in build/exefs and lifted from there; install_exefs moves them to <game>/exefs once
+        # fefw.exe is linked, so the old fefw.exe never maps a main patched for the build that replaces it
+        plain, stage = os.path.join(game, 'exefs'), os.path.join(build, 'exefs')
+        write_exefs(a.exefs, stage)
         patches = collect_exefs_patches(game, want['main_build_id'])
         mod_sites = collect_mod_sites(game, want['main_build_id'])
-        apply_exefs_patches(os.path.join(plain, 'main'), patches, mod_sites)
-        sites = write_sites(os.path.join(plain, 'main'), mod_sites, build)
+        apply_exefs_patches(os.path.join(stage, 'main'), patches, mod_sites)
+        sites = write_sites(os.path.join(stage, 'main'), mod_sites, build)
         stamp = {'format': FORMAT, 'main_build_id': want['main_build_id'], 'sha256': want['sha256'],
                  'tools': tool_stamp(variant, exefs_patch_stamp(patches), mod_sites_stamp(mod_sites))}
         state_p = os.path.join(build, 'state.json')
@@ -1106,18 +1125,19 @@ def main():
         env['ZIG_LOCAL_CACHE_DIR'] = os.path.join(build, 'zig-cache')
         gen, obj = os.path.join(build, 'lift'), os.path.join(build, 'obj')
         t = time.time()
-        lift(runner, plain, gen, a.jobs, sites)
+        lift(runner, stage, gen, a.jobs, sites)
         times['lift'] = round(time.time() - t, 1)
         t = time.time()
         compile_all(runner, gen, obj, a.jobs, env, variant)
         times['compile'] = round(time.time() - t, 1)
         t = time.time()
         exe = link(runner, obj, game, env, variant)
+        install_exefs(stage, plain)
         write_lifted_sites(game, sites, want['main_build_id'])
         times['link'] = round(time.time() - t, 1)
         if not a.keep:
             progress('finish', 0, 1, 'Removing the build files')
-            for d in ('lift', 'obj', 'zig-cache'):
+            for d in ('lift', 'obj', 'zig-cache', 'exefs'):
                 shutil.rmtree(os.path.join(build, d), ignore_errors=True)
         done = dict(stamp, exe_sha256=sha256(exe), seconds=times, finished=time.strftime('%Y-%m-%d %H:%M:%S'))
         write_json(os.path.join(build, 'done.json'), done)

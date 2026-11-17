@@ -71,6 +71,9 @@ struct ModCodec {
     int64_t (*zstd_compress)(const void* src, uint64_t src_size, void* dst, uint64_t cap, int level) = nullptr;
 };
 void set_codec(const ModCodec& c);
+// Closes registration (as the first wants / edit call does) and says whether any mod registered an edit: with none, the RomFS image
+// is built without the two, so its ~250k files are not each looked up.
+bool file_edits_close();
 bool file_edit_wanted(const std::string& image_path);
 // Hook sites (a mod's exefs/*.sites, built in by Set up): how many sites the mod in mod_dir lists for this game build that the running
 // fefw.exe was not lifted with (0 = all there); -1 when the build's own list (<exe>.sites) is unknown. Any thread.

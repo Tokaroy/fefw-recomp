@@ -90,10 +90,8 @@ target_link_options(fefw PRIVATE /MAP /STACK:134217728 /HIGHENTROPYVA:NO /DEBUG 
 add_custom_command(TARGET fefw POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${FEFW_RUNTIME_DIR}/assets/fonts/DejaVuSans.ttf" "$<TARGET_FILE_DIR:fefw>/fonts/DejaVuSans.ttf")
 # The site list the libraries were lifted with (recomp/games/fefw/CMakeLists.txt), for the runtime's hook checks.
-if(EXISTS "${FEFW_LIB_DIR}/main.sites")
-    add_custom_command(TARGET fefw POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${FEFW_LIB_DIR}/main.sites" "$<TARGET_FILE_DIR:fefw>/fefw.sites")
-endif()
+add_custom_command(TARGET fefw POST_BUILD COMMAND ${CMAKE_COMMAND} -D "SRC=${FEFW_LIB_DIR}/main.sites"
+    -D "DST=$<TARGET_FILE_DIR:fefw>/fefw.sites" -P "${CMAKE_CURRENT_LIST_DIR}/cmake/copy_sites.cmake")
 foreach(dll ${NXRT_A2B_DLLS})
     add_custom_command(TARGET fefw POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "$<TARGET_FILE_DIR:fefw>")
 endforeach()

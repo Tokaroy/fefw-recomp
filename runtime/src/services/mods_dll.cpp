@@ -512,6 +512,12 @@ std::string notice() {
 
 void set_codec(const ModCodec& c) { st().codec = c; }
 
+bool file_edits_close() {
+    std::lock_guard<std::mutex> lk(st().mu);
+    st().edits_closed = true;
+    return !st().editors.empty();
+}
+
 bool file_edit_wanted(const std::string& image_path) {
     const std::string key = edit_key(image_path.c_str());
     std::lock_guard<std::mutex> lk(st().mu);

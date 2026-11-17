@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Code mods as DLLs: the interface between the runtime and a mod (services/mods_dll.cpp loads them).
  *
- * A mod is a folder under [fs] mods in the layout emulators use. Its exefs/ (where an emulator mod keeps IPS patches, which are not
- * applied here because the game code is compiled ahead of time) may also hold DLLs: every *.dll there is loaded when play mode starts,
+ * A mod is a folder under [fs] mods in the layout emulators use. Its exefs/ (where an emulator mod keeps IPS / pchtxt patches, which
+ * Set up applies to main before it compiles the game: game-build/release/fefw_build.py) may also hold DLLs: every *.dll there is loaded when play mode starts,
  * in the order of the mods (sorted by name, as for RomFS), and its export
  *
  *     extern "C" __declspec(dllexport) int nxmod_init(const NxModApi* api, const char* mod_dir);
@@ -24,11 +24,10 @@
  *         midhook 0x7100e1d03c      # comment
  *
  *     Set up lifts the game with main.sites plus the sites of the installed mods, so after installing, updating or removing such a
- *     mod the game is built again (the Play page says the build is out of date). A mod switched off in mod.ini keeps its sites (a
- *     site with no hook attached only passes through), so switching it on or off needs only the next start. Set up writes the list
- *     main was lifted with next to fefw.exe (fefw.sites); the runtime checks hook_inline / hook_mid /
- *     hook_entry in main against it (a warning in the log for a site this build lacks) and, at start, the installed mods' .sites
- *     files: a mod whose sites are missing is named on screen and marked "needs Set up" in the game's Mods menu.
+ *     mod the game is built again (the Play page says the build is out of date), and so after switching it off or on (a folder name
+ *     starting with - or _). Set up writes the list main was lifted with next to fefw.exe (fefw.sites); the runtime checks
+ *     hook_inline / hook_mid / hook_entry in main against it (a warning in the log for a site this build lacks) and, at start, the
+ *     installed mods' .sites files: a mod whose sites are missing is named on screen for the first 20 seconds.
  *     The condition flags (NZCV) are kept inside each lifted function, not in the Ctx: a hook must not read or set c->N, c->Z,
  *     c->C or c->V. A midhook that runs the rest of the function itself (call_guest at its own site) starts it with stale flags,
  *     so such a site must be where the flags are set again before they are read, e.g. right after a call or at a cmp / tst,

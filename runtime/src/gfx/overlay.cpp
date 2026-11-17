@@ -1118,6 +1118,7 @@ bool Overlay::Impl::note_visible(double now_s) {
 
 constexpr double kModsNoteSeconds = 20.0;
 bool Overlay::Impl::mods_note_visible(double now_s) {
+    if (mods_since_s >= 0 && now_s - mods_since_s >= kModsNoteSeconds) return false;   // shown and gone: no need to read it again
     if (now_s - mods_read_s >= 1.0) {
         mods_read_s = now_s;
         mods_text = services::modapi::notice();
