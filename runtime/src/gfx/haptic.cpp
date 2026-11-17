@@ -74,6 +74,7 @@ constexpr uint64_t kDsBtIdleNs = 2000000000ull;      // stop writing this long a
 constexpr int kDsBtFailuresMax = 50;                 // consecutive failed writes (about half a second) -> standard rumble
 constexpr uint32_t kXboxGripMs = 2000;               // the grips: longer than a tick, the converter re-sends well before
 constexpr uint32_t kXboxTriggerMs = 200;             // the triggers: short, so a lost stop cannot leave them buzzing
+constexpr int64_t kXboxRetryUs = 100000;             // a refused Xbox send is retried at most this often
 constexpr const char* kNeutral = "the standard rumble, in use again";
 
 // The settings struct the library fills in (renhdrum.h, RenHdcSettings). Only `enabled` and the three transport flags are set
@@ -247,6 +248,7 @@ std::atomic<int> g_strength{-1};          // 0..100 percent, or < 0 to inherit g
 std::atomic<float> g_scale{1.f};          // [pad] rumble_scale: the multiplier the standard rumble already used
 std::atomic<Backend> g_backend{Backend::None};
 std::atomic<bool> g_running{false};       // a backend is really driving the pad right now
+std::atomic<uint32_t> g_pad_id{0};        // g_pad.id, readable without g_host_mu: legacy_rumble() runs on the game's thread
 std::atomic<bool> g_rumble_on{true};      // [pad] rumble: the master switch, and it covers every output path
 std::atomic<uint64_t> g_next_enum_ns{0};  // next DualSense audio endpoint scan
 std::atomic<float> g_last_amp{0.f};
@@ -273,6 +275,7 @@ struct PadState {
     bool xbox = false;
     bool bt = false;                  // SDL says wireless
     bool wired = false;               // SDL says wired (both false: SDL does not know)
+    bool rumble = false;              // SDL says the joystick has rumble motors
     char name[64] = {};
 };
 
@@ -470,6 +473,14 @@ bool send_packet(const uint8_t* pkt) {
     return SDL_SendJoystickEffect(g_pad.joy, pkt, 10);
 }
 
+// One hand's value to whichever of the three backends exists (only one does at a time). g_eng_mu must be held. Every path
+// that feeds a backend goes through here: the game's values, the silence watchdog and the master switch.
+void push_locked(int64_t t, int side, float al, float fl, float ah, float fh) {
+    if (g_engine) api().push_half(g_engine, t, side == 1, al, fl, ah, fh);
+    else if (g_xbox) api().xb_push(g_xbox, t, side == 1, al, fl, ah, fh);
+    else if (g_dsp) api().dsp_set_half(g_dsp, side == 1, al, fl, ah, fh);
+}
+
 // Both halves of a 0x10 packet carry the neutral HD Rumble value: nothing is playing, so there is nothing to keep alive.
 bool packet_silent(const uint8_t* p) {
     static const uint8_t kSilentSide[4] = {0x00, 0x01, 0x40, 0x40};
@@ -531,6 +542,7 @@ int bt_writer(void*) {
 int worker(void*) {
     uint8_t pkt[10];
     uint16_t motors[4] = {};
+    int64_t xb_retry_at = 0;   // the next time a refused Xbox send may be retried
     uint64_t last_report = 0;
     while (g_run.load(std::memory_order_relaxed)) {
         const int64_t t = now_us();
@@ -544,9 +556,7 @@ int worker(void*) {
             // (a long rumble outliving the hit is the classic bug). Only one of the three exists at a time.
             for (int s = 0; s < 2; ++s) {
                 if (g_at[s] && !g_muted[s] && t - g_at[s] > kStaleUs) {
-                    if (g_engine) api().push_half(g_engine, t, s == 1, 0.f, 160.f, 0.f, 320.f);
-                    else if (g_xbox) api().xb_push(g_xbox, t, s == 1, 0.f, 160.f, 0.f, 320.f);
-                    else if (g_dsp) api().dsp_set_half(g_dsp, s == 1, 0.f, 160.f, 0.f, 320.f);
+                    push_locked(t, s, 0.f, 160.f, 0.f, 320.f);
                     g_muted[s] = true;
                 }
             }
@@ -577,9 +587,12 @@ int worker(void*) {
         if (be == Backend::Xbox && xb_ready == 1) {
             if (send_motors(motors, kXboxGripMs, kXboxTriggerMs)) {
                 g_packets.fetch_add(1, std::memory_order_relaxed);
-            } else {
+                xb_retry_at = 0;
+            } else if (t >= xb_retry_at) {
                 // Some input paths refuse rumble until the pad's first button press: ask the converter to send the same
-                // motors again on the next tick rather than giving the pad up.
+                // motors again rather than giving the pad up, but at most every 100 ms, so a pad that keeps refusing is not
+                // asked a thousand times a second.
+                xb_retry_at = t + kXboxRetryUs;
                 std::lock_guard<std::mutex> lk(g_eng_mu);
                 if (g_xbox) api().xb_resend(g_xbox);
             }
@@ -587,10 +600,13 @@ int worker(void*) {
         if (be == Backend::DualSenseUsb) {
             if (!audio_alive()) {
                 // Either it has not opened yet, or the cable went away: both end with the pad on the standard rumble until the
-                // endpoint is back (open_dualsense_audio() sets g_running true again when it is).
+                // endpoint is back (open_dualsense_audio() sets g_running true again when it is). The backend stays
+                // DualSenseUsb, which is what keeps this branch, and so the rescan below, running.
                 if (g_running.load(std::memory_order_relaxed)) {
                     close_dualsense_audio();
-                    drop_to_rumble("the DualSense audio endpoint went away: the standard rumble is in use again");
+                    g_running.store(false, std::memory_order_relaxed);
+                    note("the DualSense audio endpoint went away: the standard rumble is in use again");
+                    NXLOG_W(kTag, "the DualSense audio endpoint went away: the standard rumble is in use until it is back");
                 }
                 if (SDL_GetTicksNS() >= g_next_enum_ns.load(std::memory_order_relaxed)) {
                     g_next_enum_ns.store(SDL_GetTicksNS() + kEnumPeriodNs, std::memory_order_relaxed);
@@ -657,7 +673,9 @@ void stop_bt_writer() {
 }
 
 // The wireless DualSense's HID device, opened a second time beside SDL's own driver (Windows shares it). SDL's path for the
-// joystick is the HID path when its HIDAPI driver has the pad; otherwise the first matching device SDL can enumerate.
+// joystick is the HID path when its HIDAPI driver has the pad. Otherwise the device is looked up by vendor and product, but
+// only used when exactly one matches: with two DualSenses there is no telling which one this is, and writing Bluetooth reports
+// to the other pad would be worse than the standard rumble.
 SDL_hid_device* open_dualsense_hid(const PadState& pad) {
     const char* path = pad.joy ? SDL_GetJoystickPath(pad.joy) : nullptr;
     if (path && *path) {
@@ -666,8 +684,15 @@ SDL_hid_device* open_dualsense_hid(const PadState& pad) {
     }
     SDL_hid_device* d = nullptr;
     if (SDL_hid_device_info* list = SDL_hid_enumerate(0x054C, pad.product)) {
-        for (SDL_hid_device_info* i = list; i && !d; i = i->next)
-            if (i->path && *i->path) d = SDL_hid_open_path(i->path);
+        const SDL_hid_device_info* only = nullptr;
+        int matches = 0;
+        for (const SDL_hid_device_info* i = list; i; i = i->next) {
+            if (!i->path || !*i->path) continue;
+            only = i;
+            ++matches;
+        }
+        if (matches == 1) d = SDL_hid_open_path(only->path);
+        else if (matches > 1) NXLOG_W(kTag, "%d DualSense HID devices and no path for this pad: standard rumble", matches);
         SDL_hid_free_enumeration(list);
     }
     return d;
@@ -763,9 +788,7 @@ void silence() {
     std::lock_guard<std::mutex> lk(g_eng_mu);
     for (int s = 0; s < 2; ++s) {
         if (!g_at[s] && g_muted[s]) continue;
-        if (g_engine) api().push_half(g_engine, t, s == 1, 0.f, 160.f, 0.f, 320.f);
-        else if (g_xbox) api().xb_push(g_xbox, t, s == 1, 0.f, 160.f, 0.f, 320.f);
-        else if (g_dsp) api().dsp_set_half(g_dsp, s == 1, 0.f, 160.f, 0.f, 320.f);
+        push_locked(t, s, 0.f, 160.f, 0.f, 320.f);
         g_at[s] = 0;
         g_muted[s] = true;
     }
@@ -811,7 +834,10 @@ void attach() {
         // Controller over Bluetooth goes through the library's Compatible limiter (newest value only, at least 32 ms apart,
         // re-sent every 40 ms while rumbling), which is what keeps the link from lagging the input the way unthrottled
         // packets did in #26; it needs no patched SDL.
-        if (pad.bt && pad.product != 0x2009) {
+        // A link SDL cannot name gets the Bluetooth transport: its limiter is harmless on a cable, while the unthrottled wired
+        // rate over the air is exactly the #26 lag.
+        const bool pro_bt = !pad.wired;
+        if (pro_bt && pad.product != 0x2009) {
             note("Bluetooth Joy-Con: standard rumble in use");
             NXLOG_I(kTag, "pad \"%s\": mode %s -> backend %s; %s", pad.name, mode_name(mode), backend_name(Backend::None),
                     "Bluetooth Joy-Con: the standard rumble");
@@ -826,8 +852,8 @@ void attach() {
         st.usb_no_queue = false;      // unpatched SDL3: the plain blocking write
         st.bt_after_input = false;
         st.bt_fast = false;           // "Detailed (5 ms)" needs SDL's idle-gated transport patches, which this SDL does not have
-        if (pad.bt) st.bluetooth_level = kBtLevelCompatible;
-        RenEngine* e = api().engine_create(pad.bt, true);
+        if (pro_bt) st.bluetooth_level = kBtLevelCompatible;
+        RenEngine* e = api().engine_create(pro_bt, true);
         if (!e) {
             note("the HD Rumble engine did not start, standard rumble in use");
             return;
@@ -838,16 +864,19 @@ void attach() {
             g_engine = e;
             g_at[0] = g_at[1] = 0;
             g_muted[0] = g_muted[1] = false;
-            g_pro_wired = !pad.bt;
+            g_pro_wired = !pro_bt;
             g_last_pkt_live = false;
             g_last_send_us = 0;
         }
         g_backend.store(Backend::ProController, std::memory_order_relaxed);
         g_running.store(true, std::memory_order_relaxed);
-        note(pad.bt ? "sub-command 0x10 packets over Bluetooth, Compatible pacing" : "sub-command 0x10 packets, on the wire");
+        note(pro_bt ? "sub-command 0x10 packets over Bluetooth, Compatible pacing" : "sub-command 0x10 packets, on the wire");
     } else if (pad.xbox) {
         if (!api().has_xbox) {
             note("this renhdrum.dll has no Xbox rumble: standard rumble in use");
+        } else if (!pad.rumble) {
+            // A Microsoft device without rumble motors (vendor 0x045E is wider than the Xbox pads): nothing to claim.
+            note("%s has no haptic backend here: standard rumble in use", pad.name);
         } else {
             // A link SDL cannot name is treated as wireless: the slower cadence is safe on a cable too, the faster one is not
             // safe over the air.
@@ -878,16 +907,24 @@ void attach() {
     if ((be == Backend::ProController || be == Backend::DualSenseUsb || be == Backend::DualSenseBt || be == Backend::Xbox) &&
         !g_thread) {
         g_run.store(true, std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lk(g_host_mu);
-        g_thread = SDL_CreateThread(worker, "nxrt_haptic", nullptr);
-        if (!g_thread) {
+        bool started = false;
+        {
+            std::lock_guard<std::mutex> lk(g_host_mu);
+            g_thread = SDL_CreateThread(worker, "nxrt_haptic", nullptr);
+            started = g_thread != nullptr;
+        }
+        if (!started) {
+            // Nothing would tick the engine or watch for silence: release everything the backend holds (the Bluetooth
+            // writer, the DSP, the engines), which also clears g_running so play.cpp sends the standard rumble again.
             g_run.store(false, std::memory_order_relaxed);
+            detach();
             note("the haptics thread did not start: standard rumble in use");
         }
     }
     {
         std::lock_guard<std::mutex> lk(g_note_mu);
-        NXLOG_I(kTag, "pad \"%s\": mode %s -> backend %s%s%s", pad.name, mode_name(mode), backend_name(be), g_detail[0] ? "; " : "", g_detail);
+        NXLOG_I(kTag, "pad \"%s\": mode %s -> backend %s%s%s", pad.name, mode_name(mode),
+                backend_name(g_backend.load(std::memory_order_relaxed)), g_detail[0] ? "; " : "", g_detail);
     }
 }
 
@@ -946,6 +983,8 @@ void pad_added(uint32_t instance_id) {
     const uint16_t product = SDL_GetJoystickProduct(joy);
     const char* name = SDL_GetJoystickName(joy);
     const SDL_JoystickConnectionState conn = SDL_GetJoystickConnectionState(joy);
+    const SDL_PropertiesID props = SDL_GetJoystickProperties(joy);
+    const bool rumble = props != 0 && SDL_GetBooleanProperty(props, SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN, false);
     // Third-party XInput pads may report another gamepad type, so Microsoft's vendor id counts as well.
     const bool xbox = SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(instance_id)) == SDL_GAMEPAD_TYPE_XBOXONE ||
                       vendor == 0x045E;
@@ -958,6 +997,7 @@ void pad_added(uint32_t instance_id) {
     {
         std::lock_guard<std::mutex> hl(g_host_mu);
         g_pad.id = instance_id;
+        g_pad_id.store(instance_id, std::memory_order_relaxed);
         g_pad.joy = joy;
         g_pad.product = product;
         g_pad.dualsense = is_dualsense(name, vendor, product);
@@ -965,6 +1005,7 @@ void pad_added(uint32_t instance_id) {
         g_pad.xbox = xbox && !g_pad.dualsense && !g_pad.pro;
         g_pad.bt = conn == SDL_JOYSTICK_CONNECTION_WIRELESS;
         g_pad.wired = conn == SDL_JOYSTICK_CONNECTION_WIRED;
+        g_pad.rumble = rumble;
         std::snprintf(g_pad.name, sizeof(g_pad.name), "%s", name ? name : "controller");
     }
     attach();
@@ -979,6 +1020,7 @@ void pad_removed(uint32_t instance_id) {
     detach();
     std::lock_guard<std::mutex> hl(g_host_mu);
     g_pad = PadState{};
+    g_pad_id.store(0, std::memory_order_relaxed);
 }
 
 void audio_devices_changed() {
@@ -1012,27 +1054,21 @@ void push(uint32_t npad_slot, int hand, float amp_low, float freq_low, float amp
     g_pushes.fetch_add(1, std::memory_order_relaxed);
     const int64_t t = now_us();
     std::lock_guard<std::mutex> lk(g_eng_mu);
-    if (g_engine) {
-        api().push_half(g_engine, t, hand == 1, al, fl, ah, fh);
-        g_at[hand] = t;
-        g_muted[hand] = false;
-    } else if (g_xbox) {
-        api().xb_push(g_xbox, t, hand == 1, al, fl, ah, fh);
-        g_at[hand] = t;
-        g_muted[hand] = false;
-    } else if (g_dsp) {
-        api().dsp_set_half(g_dsp, hand == 1, al, fl, ah, fh);
-        g_at[hand] = t;
-        g_muted[hand] = false;
-    }
+    if (!g_engine && !g_xbox && !g_dsp) return;
+    push_locked(t, hand, al, fl, ah, fh);
+    g_at[hand] = t;
+    g_muted[hand] = false;
 }
 
-bool legacy_rumble() {
-    // True unless a haptic backend is really driving the pad: a missing library, an engine that did not start, an audio
-    // endpoint that never appeared or a pad that refuses the packets all leave the standard rumble in charge.
+bool legacy_rumble(uint32_t pad_id) {
+    // True unless a haptic backend is really driving this pad: a missing library, an engine that did not start, an audio
+    // endpoint that never appeared or a pad that refuses the packets all leave the standard rumble in charge. Only one pad
+    // has a haptic backend; every other connected pad keeps the standard rumble whatever that one is doing.
     // With [pad] rumble off nothing vibrates at all, so the caller must not send the standard rumble either.
     if (!g_rumble_on.load(std::memory_order_relaxed)) return false;
-    return g_mode.load(std::memory_order_relaxed) != Mode::Off && !g_running.load(std::memory_order_relaxed);
+    if (g_mode.load(std::memory_order_relaxed) == Mode::Off) return false;
+    if (pad_id != g_pad_id.load(std::memory_order_relaxed)) return true;
+    return !g_running.load(std::memory_order_relaxed);
 }
 
 bool test_start() {
@@ -1053,6 +1089,7 @@ void shutdown() {
     {
         std::lock_guard<std::mutex> hl(g_host_mu);
         g_pad = PadState{};
+        g_pad_id.store(0, std::memory_order_relaxed);
     }
     g_last_amp.store(0.f, std::memory_order_relaxed);
     g_test_until_ns.store(0, std::memory_order_relaxed);
@@ -1066,7 +1103,7 @@ Status status() {
     s.running = g_running.load(std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lk(g_host_mu);
-        s.wired = !g_pad.bt;
+        s.wired = g_pad.wired;
         std::snprintf(s.device, sizeof(s.device), "%s", g_pad.name);
     }
     {

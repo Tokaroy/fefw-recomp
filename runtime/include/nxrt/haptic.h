@@ -92,10 +92,11 @@ void audio_devices_changed();
 // One HD Rumble value from the game: hand 0 = left (or the only device), 1 = right. Called from the game's thread.
 void push(uint32_t npad_slot, int hand, float amp_low, float freq_low, float amp_high, float freq_high);
 
-// True when the caller should keep sending the standard two-motor rumble itself (play.cpp's map_rumble). False only while a
-// haptic backend is really driving the pad, so the two never fight over it and a dead backend never leaves the pad silent; also
-// false whenever [pad] rumble is off, because then nothing is to vibrate at all.
-bool legacy_rumble();
+// True when the caller should keep sending the standard two-motor rumble to this pad itself (play.cpp's map_rumble; pad_id
+// is the SDL instance id given to pad_added). False only while a haptic backend is really driving that pad, so the two never
+// fight over it and a dead backend never leaves the pad silent; any other pad always keeps the standard rumble. Also false for
+// every pad whenever [pad] rumble is off or the mode is Off, because then nothing is to vibrate at all.
+bool legacy_rumble(uint32_t pad_id);
 
 // Stops everything and drops the pads (play mode is ending).
 void shutdown();
