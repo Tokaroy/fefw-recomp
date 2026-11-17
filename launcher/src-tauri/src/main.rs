@@ -8,6 +8,7 @@ mod dump;
 mod fetch;
 mod ini;
 mod locale;
+mod lsfg;
 mod nup;
 mod play;
 mod settings;
@@ -45,6 +46,13 @@ struct Config {
     runner: String,
     /// The launcher's own interface language ("en", "zh", or the code of a language pack in locales/). Empty: English.
     lang: String,
+    /// Linux: LSFG-VK frame generation on top of the game (lsfg.rs)
+    lsfg: bool,
+    /// 2..=4; 0 (unset) is 2
+    lsfg_multiplier: u32,
+    /// "0.25".."1.0"; empty is 1.0
+    lsfg_flow_scale: String,
+    lsfg_performance: bool,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -526,23 +534,72 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         return Err("Setup is not finished: open Setup and press Set up.".into());
     }
     settings::ensure_play_paths(&p.game_dir, &p)?;
-    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner)
+    let mut extra_env = Vec::new();
+    if cfg.lsfg && cfg!(target_os = "linux") {
+        let st = lsfg::status();
+        if let Some(why) = lsfg::problem(&st) {
+            return Err(why);
+        }
+        extra_env = lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance);
+    }
+    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env)
 }
 
-/// Linux: whether Steam is installed and the shortcut to fefw.exe exists.
+/// Opens LSFG-VK's install instructions in the browser (Settings, when the layer is missing). A fixed address, nothing from the page.
+#[tauri::command]
+fn open_lsfg_install() -> Result<(), String> {
+    play::open_with_shell(Path::new(lsfg::INSTALL_URL))
+}
+
+/// The OS the launcher runs on ("linux", "windows"). The page cannot tell from its user agent: WebKitGTK reports a macOS one.
+#[tauri::command]
+fn platform() -> &'static str {
+    std::env::consts::OS
+}
+
+/// Linux: whether the LSFG-VK layer and Lossless Scaling's lsfg-vk.dll are there (Settings).
+#[tauri::command]
+async fn lsfg_status() -> lsfg::Status {
+    tauri::async_runtime::spawn_blocking(lsfg::status).await.unwrap_or_default()
+}
+
+/// The variables a Steam shortcut puts in front of %command% (steam::launch_options): NXRT_LAUNCHER_DIR when the game does not find
+/// the upscalers next to itself, and LSFG-VK's when it is on (Err: it is on but cannot be used, why).
+fn steam_vars(cfg: &Config, p: &setup::Paths) -> Result<Vec<(String, String)>, String> {
+    let mut v = Vec::new();
+    if p.game_dir != exe_dir() {
+        v.push(("NXRT_LAUNCHER_DIR".to_string(), dump::game_path(&exe_dir())));
+    }
+    if cfg.lsfg {
+        let st = lsfg::status();
+        if let Some(why) = lsfg::problem(&st) {
+            return Err(why);
+        }
+        v.extend(lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance));
+    }
+    Ok(v)
+}
+
+/// Linux: whether Steam is installed, the shortcut to fefw.exe exists, and it is out of date with the settings.
 #[tauri::command]
 async fn steam_status(app: AppHandle) -> steam::State {
     // off the main thread: it reads the dump folder and walks /proc
-    let none = steam::State { available: false, running: false, added: false };
     if !cfg!(target_os = "linux") {
-        return none;
+        return steam::State::default();
     }
-    tauri::async_runtime::spawn_blocking(move || match paths(&load_config(&app)) {
-        Ok(p) => steam::state(&p.exe()),
-        Err(_) => steam::State { available: false, running: false, added: false },
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_config(&app);
+        match paths(&cfg) {
+            // LSFG-VK on but unusable: compare with what it would be without it (Add to Steam then says why it cannot add it)
+            Ok(p) => {
+                let vars = steam_vars(&cfg, &p).unwrap_or_else(|_| steam_vars(&Config { lsfg: false, ..cfg.clone() }, &p).unwrap_or_default());
+                steam::state(&p.exe(), &vars)
+            }
+            Err(_) => steam::State::default(),
+        }
     })
     .await
-    .unwrap_or(none)
+    .unwrap_or_default()
 }
 
 /// Linux: adds fefw.exe to Steam as a non-Steam game. Steam has to be closed for that: when it runs, the player is asked first.
@@ -555,7 +612,8 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     if !exe.is_file() {
         return Err("fefw.exe is not built yet. Run Set up first.".into());
     }
-    let close = if steam::state(&exe).running {
+    let vars = steam_vars(&cfg, &p)?;
+    let close = if steam::state(&exe, &vars).running {
         app.dialog()
             .message("Steam saves its game list when it closes, so it has to close while the launcher adds the game. It is started again right after.")
             .title("Add to Steam")
@@ -565,16 +623,14 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     } else {
         false
     };
-    if steam::state(&exe).running && !close {
+    if steam::state(&exe, &vars).running && !close {
         return Err("Not added: Steam is still running.".into());
     }
-    // the upscaler DLLs next to the launcher: fefw.exe finds them by itself when the run folder is the install folder
-    let launcher_dir = (p.game_dir != exe_dir()).then(|| dump::game_path(&exe_dir()));
     let game_dir = p.game_dir.clone();
     // what fefw.ini points the game at, for Flatpak Steam's sandbox
     let mut reads = vec![p.game_dir.clone(), p.romfs.clone(), p.plain_exefs(), exe_dir()];
     reads.extend(p.dlc.clone());
-    tauri::async_runtime::spawn_blocking(move || steam::add(&exe, &game_dir, launcher_dir.as_deref(), &reads, close)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || steam::add(&exe, &game_dir, &vars, &reads, close)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -863,6 +919,9 @@ fn main() {
             start_setup,
             cancel_setup,
             play,
+            platform,
+            lsfg_status,
+            open_lsfg_install,
             game_status,
             steam_status,
             add_to_steam,
