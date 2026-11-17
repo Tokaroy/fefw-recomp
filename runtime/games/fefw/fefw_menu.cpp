@@ -912,9 +912,9 @@ void audio_page(UiHost& host, Menu& m) {
         row(m, "Master volume", When::Live, "Everything the game plays.");
         double pct = a.volume * 100.0;
         bool drag = false;
-        const bool commit = slider(m, "##vol", &pct, 0, 100, 5, "%.0f%%", &drag);
+        const bool commit = slider(m, "##vol", &pct, 0, 200, 5, "%.0f%%", &drag);   // 0 to audio::kMaxVolume (200%)
         if (drag || commit) {
-            a.volume = std::clamp(pct / 100.0, 0.0, 1.0);
+            a.volume = std::clamp(pct / 100.0, 0.0, 2.0);
             audio::set_master_volume(static_cast<float>(a.volume));   // heard while dragged
         }
         if (commit) apply(host, m);
