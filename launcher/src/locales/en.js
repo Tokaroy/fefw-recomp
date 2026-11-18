@@ -174,7 +174,7 @@ export const en = {
     'settings.sec.preset': "Preset",
     'settings.preset.label': "Graphics preset",
     'settings.preset.short': "Sets render scale, shadows, quality and detail together.",
-    'settings.preset.hint': "Sets Render scale, Shadow map size, Quality and the four detail settings together. Low: 50% render, 1024 shadows, handheld effects, reduced reflections, no ambient occlusion, simpler crowds and scenery, for a slower GPU, an integrated GPU or a handheld PC. Medium: the console's picture (the defaults). High: 67% render, 4096 shadows, docked effects. Ultra: native render (DLAA), 8192 shadows, docked effects, about 1.3 GB more video memory. Changing one of them afterwards shows Custom. Output size and the upscaler are not changed. The same presets are in the game's F1 menu.",
+    'settings.preset.hint': "Sets Render scale, Shadow map size, Quality and the four detail settings together. Low: 50% render, 1024 shadows, handheld effects, reduced reflections, no ambient occlusion, simpler crowds and scenery, for a slower GPU, an integrated GPU or a handheld PC. Medium: the console's picture (the defaults). High: 67% render, 4096 shadows, docked effects. Ultra: native render (DLAA), 8192 shadows, docked effects, about 1.3 GB more video memory. Changing one of them afterwards shows Custom. Output size and the upscaler are not changed; a fixed render size ([fefw] render) is cleared on Save. The same presets are in the game's F1 menu.",
     'settings.preset.low': "Low",
     'settings.preset.medium': "Medium (console)",
     'settings.preset.high': "High",

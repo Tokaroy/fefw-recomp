@@ -432,8 +432,9 @@ While a sink is active, a line `sink <name>: queue avg A ms (min..max ms), under
 ## Fortune's Weave graphics presets (`fefw.ini`, `[fefw]`)
 
 A preset is not a key of its own. Picking one (launcher **Graphics > Preset**, or F1 **Graphics > Graphics preset**) writes the seven keys
-below; the preset shown is the one whose values the file holds, **Custom** when none matches. Output size, the upscaler and frame
-generation are left alone. The table is `games/fefw/fefw_presets.h`; the launcher keeps a copy (`launcher/src/pages/settings.js` `PRESETS`).
+below and clears `render` (a fixed render size wins over `render_ratio`); the preset shown is the one whose values the file holds,
+**Custom** when none matches or `render` is set. Output size, the upscaler and frame generation are left alone. When `render` or one of
+the seven keys is set by an environment variable, the F1 preset row is locked and names it. The table is `games/fefw/fefw_presets.h`; the launcher keeps a copy (`launcher/src/pages/settings.js` `PRESETS`).
 
 | Key | Low | Medium (the console's picture, the defaults) | High | Ultra |
 |---|---|---|---|---|
