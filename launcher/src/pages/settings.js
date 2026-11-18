@@ -237,11 +237,15 @@ const fwd = (s) => String(s).trim().replace(/\\/g, '/');
 const optName = (label) => (Array.isArray(label) ? `${optName(label[0])} (${optName(label[1])})` : String(label).includes('.') ? t(label) : label);
 
 export async function render(el, ctx) {
+  const visit = el.dataset.visit; // this render is still the page on show (main.js go); read before the first await
+  const live = () => el.dataset.visit === visit;
   const [cfg, status, gpu] = await Promise.all([api('get_config'), api('game_status'), api('gpu_info').catch(() => ({ known: false }))]);
   // NVIDIA-only choices: shown with an NVIDIA GPU, and also when the probe found no GPU at all (better shown than wrongly hidden)
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
+  let lsfgHere = false; // installLsfg's install has not returned yet
+  let lsfgTimer = 0;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
   const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
@@ -490,6 +494,7 @@ export async function render(el, ctx) {
     if (!note) return;
     const was = fieldCtx.lsfgReady;
     const r = await api('lsfg_status').catch(() => null);
+    if (!live()) return;
     if (!r) { note.textContent = ''; return; }
     lsfgSt = r;
     if (fieldCtx.lsfgReady !== was) { draw(); return; }
@@ -498,14 +503,41 @@ export async function render(el, ctx) {
       r.dll ? t('settings.lsfg.dllFound', { path: r.dll }) : t(r.wrong_branch ? 'settings.lsfg.wrongBranch' : 'settings.lsfg.dllMissing'),
     ].join(' ');
     if (!r.layer) {
-      // the layer is the one part the launcher cannot set up: link to its install instructions
-      const b = document.createElement('button');
-      b.className = 'btn quiet';
-      b.style.marginTop = 'var(--space-2)';
-      b.textContent = t('settings.lsfg.installLink');
-      b.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
-      note.append(document.createElement('br'), b);
+      // the layer is installed on request (lsfg.rs install): CachyOS's package through Shelly, else LSFG-VK's build into ~/.local
+      const how = document.createElement('span');
+      how.textContent = t(r.install === 'shelly' ? 'settings.lsfg.install.shelly' : 'settings.lsfg.install.local');
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginTop = 'var(--space-2)';
+      const go = document.createElement('button');
+      go.className = 'btn';
+      const busy = r.installing || lsfgHere;
+      go.disabled = busy;
+      go.textContent = t(busy ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
+      go.addEventListener('click', (ev) => { ev.preventDefault(); installLsfg(); });
+      const link = document.createElement('button');
+      link.className = 'btn quiet';
+      link.textContent = t('settings.lsfg.installLink');
+      link.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
+      row.append(go, link);
+      note.append(document.createElement('br'), how, row);
+      // an install started from an earlier visit of this page: follow it until it ends
+      clearTimeout(lsfgTimer);
+      if (r.installing && !lsfgHere) lsfgTimer = setTimeout(checkLsfg, 1000);
     }
+  }
+  async function installLsfg() {
+    if (lsfgHere) return;
+    lsfgHere = true;
+    const done = api('install_lsfg');
+    checkLsfg();
+    try {
+      toast(await done, 'ok');
+    } catch (e) {
+      toast(errText(e), 'error');
+    }
+    lsfgHere = false;
+    if (live()) checkLsfg();
   }
   let checkTimer = 0;
 
@@ -698,6 +730,7 @@ export async function render(el, ctx) {
     }
   }
 
+  if (!live()) return; // another page was opened while this one was loading
   draw();
   pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }
