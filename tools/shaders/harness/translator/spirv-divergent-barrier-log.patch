@@ -1,0 +1,32 @@
+Ryujinx shader translator: also log a barrier on a potentially divergent block when it is kept (GitHub issue #45).
+
+Upstream logs such a barrier only when SupportsShaderBarrierDivergence is false, which its Vulkan backend answers on
+Intel ("Vendor != Vendor.Intel"), and then removes it. The harness answers true unless --no-divergent-barriers is
+given, so without this the summary could not say whether the game has any. The emitted SPIR-V does not change.
+
+--- a/CodeGen/Spirv/Instructions.cs	2026-11-18 10:21:07
++++ b/CodeGen/Spirv/Instructions.cs	2026-11-18 10:21:07
+@@ -241,14 +241,21 @@
+         {
+             // Barrier on divergent control flow paths may cause the GPU to hang,
+             // so skip emitting the barrier for those cases.
+-            if (!context.HostCapabilities.SupportsShaderBarrierDivergence &&
+-                (context.CurrentBlock.Type != AstBlockType.Main || context.MayHaveReturned || !context.IsMainFunction))
++            bool divergent = context.CurrentBlock.Type != AstBlockType.Main || context.MayHaveReturned || !context.IsMainFunction;
++
++            if (!context.HostCapabilities.SupportsShaderBarrierDivergence && divergent)
+             {
+                 context.Logger.Log("Shader has barrier on potentially divergent block, the barrier will be removed.");
+ 
+                 return OperationResult.Invalid;
+             }
+ 
++            // fefw: report the kept ones too, so a translation for every GPU says whether any shader has one (GitHub issue #45)
++            if (divergent)
++            {
++                context.Logger.Log("Shader has barrier on potentially divergent block, the barrier is kept.");
++            }
++
+             context.ControlBarrier(
+                 context.Constant(context.TypeU32(), Scope.Workgroup),
+                 context.Constant(context.TypeU32(), Scope.Workgroup),

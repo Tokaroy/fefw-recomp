@@ -305,6 +305,19 @@ fn shaders_ok(p: &Paths) -> bool {
         && v["complete"].as_bool() == Some(true)
         && v["translator_version"].as_u64() == Some(SHADER_TRANSLATOR_VERSION as u64)
         && v["romfs"].as_str() == Some(crate::dump::fwd(&p.romfs).as_str())
+        && v["no_float64"].as_bool().unwrap_or(false) == no_float64()
+}
+
+/// The shaders are translated without 64-bit floats (the harness's --no-float64, as Ryujinx does on such GPUs) when this PC has an
+/// Intel GPU: the Arc A770 has no shaderFloat64 and lost the device on the first shader that used them (GitHub issue #45). Only the
+/// rounding of the game's few 64-bit integer conversions changes, so a PC that also has another GPU is translated this way too.
+/// FEFW_NO_FLOAT64=1 forces it on any GPU, =0 off. A stamp made the other way is not current, so Set up translates the shaders again.
+fn no_float64() -> bool {
+    match std::env::var("FEFW_NO_FLOAT64").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => crate::gpu::get().intel,
+    }
 }
 
 /// The shader preparation has finished for some GPU and driver (the runtime's prepare.state says "complete: 1"), or was given up on.
@@ -705,6 +718,13 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
         }
         fs::write(&marker, want.to_string()).map_err(|e| e.to_string())?;
     }
+    let lower64 = no_float64();
+    if lower64 {
+        r.log(vec!["An Intel GPU was found: the shaders are translated without 64-bit floats, which Intel Arc A-series cards cannot run (GitHub issue #45).".into()]);
+    }
+    // the shaders the preparation compiled are about to change; it runs again after the translation
+    let _ = fs::remove_file(p.prepare_file("prepare.state"));
+    let _ = fs::remove_file(p.prepare_file("prepare.skipped"));
     let harness = |jobs: usize| {
         let mut c = if p.package.is_some() {
             Command::new(p.harness())
@@ -714,6 +734,11 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
             c
         };
         c.arg("--batch").arg(p.corpus()).arg("--out").arg(p.spirv()).args(["--jobs", &jobs.to_string()]);
+        // the harness also reads FEFW_NO_FLOAT64 itself; =0 has to win over an Intel GPU, so the variable is not passed on
+        c.env_remove("FEFW_NO_FLOAT64");
+        if lower64 {
+            c.arg("--no-float64");
+        }
         // SPIR-V validation needs spirv-val from the Vulkan SDK, which players do not have (the release package never validates)
         if p.package.is_some() || (std::env::var_os("VULKAN_SDK").is_none() && which("spirv-val.exe").is_none()) {
             c.arg("--no-val");
@@ -737,7 +762,7 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
         r.log(vec![format!("{crashed} shaders crashed the translator and were left out; the game draws without them (status \"crash\" in {}).",
                            crate::dump::fwd(&p.spirv().join("results.tsv")))]);
     }
-    let stamp = serde_json::json!({ "complete": true, "translator_version": SHADER_TRANSLATOR_VERSION, "romfs": crate::dump::fwd(&p.romfs), "crashed": crashed });
+    let stamp = serde_json::json!({ "complete": true, "translator_version": SHADER_TRANSLATOR_VERSION, "romfs": crate::dump::fwd(&p.romfs), "crashed": crashed, "no_float64": lower64 });
     fs::write(p.shader_stamp(), stamp.to_string()).map_err(|e| e.to_string())?;
     // the corpus is only the extractor's output for the translator: several GB the game never reads
     let _ = fs::remove_dir_all(p.corpus());
