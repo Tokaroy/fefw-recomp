@@ -355,12 +355,7 @@ fn files_in(dirs: &[PathBuf], sets: &[&[&str]], what: &str) -> FeatureFiles {
 }
 
 #[tauri::command]
-fn upscaler_files(
-    app: AppHandle,
-    fsr_dir: String,
-    dlss_dir: String,
-    xess_dir: Option<String>,
-) -> Result<UpscalerFiles, String> {
+fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>) -> Result<UpscalerFiles, String> {
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let game = game_dir_of(&cfg, &repo);
