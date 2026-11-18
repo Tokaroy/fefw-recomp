@@ -754,6 +754,9 @@ impl Runner<'_> {
         self.log(vec![format!("> {:?}", cmd)]);
         cmd.current_dir(cwd);
         cmd.env("PYTHONUNBUFFERED", "1").env("NINJA_STATUS", "[%f/%t] ");
+        // A PYTHONPATH / PYTHONHOME left by another Python install is inherited by every Python this step starts, tools/.venv's
+        // included, and can make it import an extension built for another version (EmblemWeave issue 43). Only this child loses them.
+        cmd.env_remove("PYTHONPATH").env_remove("PYTHONHOME").env("PYTHONNOUSERSITE", "1");
         quiet(&mut cmd);
         let mut child = cmd
             .stdin(Stdio::null())
