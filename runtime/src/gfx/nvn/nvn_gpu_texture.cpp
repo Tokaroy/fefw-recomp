@@ -145,6 +145,14 @@ namespace gpu {
 namespace {
 
 constexpr const char* kTag = "nvn.tex";
+// [gfx] float16_scene = auto | on | off: R11G11B10F render targets kept as RGBA16F (texture creation). auto: while the HDR scene is on.
+bool float16_scene_on() {
+    static const int mode = [] {
+        const std::string v = nxrt::config_get_str("gfx", "float16_scene", "auto");
+        return (v == "on" || v == "true" || v == "1") ? 1 : (v == "off" || v == "false" || v == "0") ? 0 : 2;
+    }();
+    return mode == 1 || (mode == 2 && extras::hdr_scene_active());
+}
 std::atomic<uint64_t> g_live_images{0};
 nxrt::GaugeCounter g_gauge_textures_live("nvn.textures_live");               // TexGpu objects alive (g_live_set)
 nxrt::GaugeCounter g_gauge_texture_snapshots("nvn.texture_snapshots");       // debug snapshots kept (g_snaps; the list never shrinks)
@@ -809,6 +817,22 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
         }
     }
 
+    // [gfx] float16_scene (auto: with the HDR scene): an R11G11B10F render target (the GPU's B10G11R11: 6-bit mantissas for red and green,
+    // 5 for blue) is kept as RGBA16F (10-bit mantissas). Fortune's Weave renders its whole scene, DLSS input and output, and the tone map's
+    // output in R11G11B10F; the console's 8-bit SDR output hides the steps, the HDR output's wider range shows them as banding in the sky
+    // (blue first). Render targets only (compressible or display flags, as the HDR promotion): their bytes in memory are never the image's
+    // (the promotion's rule: they start cleared), and a view of the NVN format reads the image's own (promoted_view_format, the fallback rule).
+    if (g->fmt->nvn == NVN_FORMAT_R11G11B10F && chosen == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && (t->b.flags & 0x9) && float16_scene_on() &&
+        device().image_supported(make_desc(s, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                            base_flags(s, VK_FORMAT_R16G16B16A16_SFLOAT)))) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 12)
+            NXLOG_I(kTag, "texture %u: R11G11B10F %ux%u (flags 0x%x, %u levels) kept as float16 ([gfx] float16_scene)", t->id, s.base.width,
+                    s.base.height, static_cast<unsigned>(t->b.flags), s.levels);
+        chosen = VK_FORMAT_R16G16B16A16_SFLOAT;
+        g->promoted = true;
+    }
+
     g->format = chosen;
     g->transcoded = to_bc7;
     if (to_bc7 && (chosen == VK_FORMAT_R8G8B8A8_UNORM || chosen == VK_FORMAT_R8G8B8A8_SRGB) && astc_quality() == AstcQuality::Uncompressed) note_uncompressed_image(*t);
@@ -1347,6 +1371,7 @@ int dummy_index(VkImageViewType type) {
 struct Shared {
     std::map<uint64_t, std::vector<std::pair<SamplerInfo, VkSampler>>> samplers;
     VkSampler dummy_sampler = VK_NULL_HANDLE;
+    VkSampler reserved_sampler = VK_NULL_HANDLE;   // sampler id 0 of a texel-fetch handle (reserved_sampler())
     Dummy color[6];
     Dummy sint[6], uint[6];
     Dummy depth[6];
@@ -2598,9 +2623,9 @@ VkFormat tex_vk_format(Texture* t) {
     return g ? g->format : VK_FORMAT_UNDEFINED;
 }
 
-bool tex_hdr_promoted(Texture* t) {
+bool tex_hdr_promoted(Texture* t) {   // the 8-bit window-kind targets only, not [gfx] float16_scene's R11G11B10F ones
     TexGpu* g = tex_or_null(t);
-    return g && g->promoted;
+    return g && g->promoted && g->fmt && g->fmt->srgb;
 }
 
 VkImageAspectFlags tex_aspect(Texture* t) {
@@ -2858,6 +2883,23 @@ VkSampler dummy_sampler() {
     return g_sh.dummy_sampler;
 }
 
+// Sampler id 0 is in the driver's reserved range ([nvn] device info: 256 reserved sampler descriptors), so the game never registers it. Its
+// texel-fetch handles (nvnDeviceGetTexelFetchHandle: sampler id 0) are still sampled with filtering by some shaders: Fortune's Weave's sky
+// samples its cloud texture through one. On the console that read uses the driver's descriptor 0 and the clouds are smooth; the nearest
+// dummy drew them as blocks of 7 to 9 pixels. This is the dummy with linear filtering (one level, clamped: what was tested).
+VkSampler reserved_sampler() {
+    if (g_sh.reserved_sampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        ci.magFilter = ci.minFilter = VK_FILTER_LINEAR;
+        ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        if (vkCreateSampler(vkdev(), &ci, nullptr, &g_sh.reserved_sampler) != VK_SUCCESS) g_sh.reserved_sampler = VK_NULL_HANDLE;
+        else vk_gauge_samplers().add(1);
+    }
+    return g_sh.reserved_sampler ? g_sh.reserved_sampler : dummy_sampler();
+}
+
 // The sampler as the display settings want it (nxrt/gfx_tuning.h): more anisotropy on filtering samplers, a LOD bias on every sampler
 // that samples colour. Nearest-filtered samplers, shadow comparison samplers and clamped single-level samplers are left as the game set them.
 SamplerInfo tuned_sampler(const SamplerInfo& in) {
@@ -3054,6 +3096,7 @@ void tex_shutdown() {
     g_sh.samplers.clear();
     for (SamplerLast& l : g_sampler_last) l = SamplerLast();
     if (g_sh.dummy_sampler != VK_NULL_HANDLE) { vkDestroySampler(vkdev(), g_sh.dummy_sampler, nullptr); vk_gauge_samplers().sub(1); }
+    if (g_sh.reserved_sampler != VK_NULL_HANDLE) { vkDestroySampler(vkdev(), g_sh.reserved_sampler, nullptr); vk_gauge_samplers().sub(1); }
     for (auto& kv : g_sh.storage) {
         if (kv.second.view != VK_NULL_HANDLE) { vkDestroyImageView(vkdev(), kv.second.view, nullptr); vk_gauge_image_views().sub(1); }
         device().destroy_image(kv.second.img);
