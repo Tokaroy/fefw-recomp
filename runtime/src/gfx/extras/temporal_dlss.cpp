@@ -190,10 +190,13 @@ public:
         // retry time; the next try starts from no history (the caller's sdk_valid is cleared by the frames the built-in upscaler ran).
         if (retry_pending_) {
             const auto now = std::chrono::steady_clock::now();
-            // DLSS's memory goes back half a second after the failure, when no frame in flight can still use it (frames_in_flight is 2):
-            // holding it while the built-in upscaler stands in kept an 8 GB card at 15-30 fps (Fortune's Eden v1.6.7.3).
+            // DLSS's memory goes back half a second after the failure, so the failing frame is behind us and a VRAM shortage has had a
+            // moment to settle. Streamline requires the command list a pending evaluation is on to be flushed before its resources are freed
+            // (sl_core_api.h), and the render thread records ahead of the GPU, so the timer proves nothing on its own: drain the device first.
+            // Holding this memory while the built-in upscaler stands in kept an 8 GB card at 15-30 fps (Fortune's Eden v1.6.7.3).
             if (free_pending_ && now >= free_at_) {
                 free_pending_ = false;
+                dev_->wait_idle();
                 if (s.free_resources && s.free_resources(sl::kFeatureDLSS, vp) == sl::Result::eOk) NXLOG_I(kTag, "DLSS's memory released until the retry");
             }
             if (now < retry_at_) return false;
