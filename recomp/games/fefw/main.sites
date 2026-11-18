@@ -70,3 +70,7 @@ inline 0x71016bdfbc
 # (vtable + 0x110); the midhook draws, puts the viewport back and returns
 inline 0x7101904b5c
 midhook 0x7101904c20
+# unit detail page crash (0x1702420, the page builder): for a unit with a mount whose class has no dismounted class (e.g. Io), the class's
+# exclusive-item count was read through a null class pointer (address 0x80). `csel x8, xzr, x22, eq` -> `mov x8, x22`: x8 is never null.
+# From xinthefreefallxai/ObeliskChamber patches/unitinfo_animal_crashfix.
+patch 0x7101703498 9a9603e8 aa1603e8
