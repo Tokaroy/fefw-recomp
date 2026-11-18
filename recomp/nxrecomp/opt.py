@@ -64,6 +64,7 @@ TOK = re.compile(r'''
 |(?P<other>\b\w+\(c[,)]|>\(c[,)])
 ''', re.X)
 GOTO = re.compile(r'\bgoto (L_\w+);')
+GOTO_STMT = re.compile(r'goto L_\w+;')
 # 'vstore': `vzero(&V); V.f[0] = t;` (a scalar result into element 0, the rest cleared) as one whole-register store (cxx.h lane0_*)
 VSTORE = re.compile(r'\bvzero\(&c->v\[(\d+)\]\); c->v\[\1\]\.(f|df|w|d)\[0\] = t;')
 VSTORE_REP = r'c->v[\1] = nx::lane0_\2(t);'
@@ -152,7 +153,11 @@ class Func:
             return False
         if t.startswith('goto '):
             return True
-        return bool(re.search(r'(?:^|; |\{ )return;(?: \})*$', t) or re.search(r'(?:^|; |\{ )goto L_\w+;(?: \})*$', t))
+        while t.endswith(' }'):
+            t = t[:-2]
+        i = max(t.rfind('; '), t.rfind('{ '))
+        stmt = t[i + 2:] if i >= 0 else t
+        return stmt == 'return;' or bool(GOTO_STMT.fullmatch(stmt))
 
 
 def _uses(func):
