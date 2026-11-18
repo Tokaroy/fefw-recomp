@@ -237,12 +237,12 @@ const fwd = (s) => String(s).trim().replace(/\\/g, '/');
 const optName = (label) => (Array.isArray(label) ? `${optName(label[0])} (${optName(label[1])})` : String(label).includes('.') ? t(label) : label);
 
 export async function render(el, ctx) {
+  const visit = el.dataset.visit; // this render is still the page on show (main.js go); read before the first await
+  const live = () => el.dataset.visit === visit;
   const [cfg, status, gpu] = await Promise.all([api('get_config'), api('game_status'), api('gpu_info').catch(() => ({ known: false }))]);
   // NVIDIA-only choices: shown with an NVIDIA GPU, and also when the probe found no GPU at all (better shown than wrongly hidden)
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
-  const visit = el.dataset.visit; // this render is still the page on show (main.js go); read before the first await
-  const live = () => el.dataset.visit === visit;
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
   let lsfgHere = false; // installLsfg's install has not returned yet
   let lsfgTimer = 0;
@@ -527,6 +527,7 @@ export async function render(el, ctx) {
     }
   }
   async function installLsfg() {
+    if (lsfgHere) return;
     lsfgHere = true;
     const done = api('install_lsfg');
     checkLsfg();
@@ -729,6 +730,7 @@ export async function render(el, ctx) {
     }
   }
 
+  if (!live()) return; // another page was opened while this one was loading
   draw();
   pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }
