@@ -106,6 +106,7 @@ constexpr IniKey kIni[] = {
     {"fefw", "clock_log", "10", Norm::Number, false, "game clock log"},
     {"dlss", "upscaler", "taau", Norm::Text, true, "upscaler"},
     {"dlss", "frame_gen", "0", Norm::Text, true, "frame generation"},
+    {"dlss", "preset", "default", Norm::Text, false, "DLSS model"},
     {"dlss", "sharpness", "0", Norm::Number, true, "FSR 3 sharpening"},
     {"dlss", "history_weight", "12", Norm::Number, true, "TAAU history"},
     {"media", "movies", "host", Norm::Text, true, "movies"},
@@ -638,6 +639,17 @@ void upscaler_group(Menu& m) {
                       "missing file. Choosing DLSS or XeSS (or Auto with the DLLs present) takes effect at the next start.",
                       kUpscalerNames, kUpscalerVals, 6);
         const std::string u = lower(ini_now(up));
+        if (u == "dlss" || u == "auto") {
+            const IniKey& pk = *ini_key("dlss", "preset");
+            ini_combo_row(m, pk, "DLSS model",
+                          "The neural network DLSS runs. The transformer models (K, J, L, M) look best; L and M are the second generation, M the faster "
+                          "of them. Default lets the DLSS file decide (K at full render size). A DLSS file without the chosen model uses its default. "
+                          "Applies at once.",
+                          std::array<const char*, 5>{"Default (the DLSS file decides)", "K (transformer)", "J (transformer)", "L (transformer, 2nd generation)",
+                                                     "M (transformer, 2nd generation, faster)"}.data(),
+                          std::array<const char*, 5>{"default", "k", "j", "l", "m"}.data(), 5);
+            extras::set_dlss_preset(std::max(0, extras::dlss_preset_from_word(ini_now(pk))));
+        }
         if (u == "fsr3")
             ini_combo_row(m, *ini_key("dlss", "sharpness"), "FSR 3 sharpening", nullptr,
                           std::array<const char*, 5>{"Off", "0.25", "0.5", "0.75", "1 (sharpest)"}.data(),
@@ -1016,6 +1028,16 @@ void audio_page(UiHost& host, Menu& m) {
             apply(host, m);
         }
         pending_note(a.device != m.boot.audio.device, m.boot.audio.device);
+        row(m, "Speakers", When::Restart,
+            "Stereo, or 5.1 surround (front left and right, centre, LFE, rear left and right). Windows downmixes 5.1 on a stereo device, so pick 5.1 "
+            "only for a 5.1 or 7.1 output. [audio] channels in fefw.ini or NXRT_AUDIO_CHANNELS wins over this.");
+        const char* const kSpeakerNames[] = {"Stereo", "5.1 surround"};
+        int spk = a.channels == 6 ? 1 : 0;
+        if (combo(m, "##spk", &spk, kSpeakerNames, 2)) {
+            a.channels = spk == 1 ? 6 : 2;
+            apply(host, m);
+        }
+        pending_note(a.channels != m.boot.audio.channels, m.boot.audio.channels == 6 ? "5.1 surround" : "Stereo");
         end_rows();
     }
 }
@@ -1463,6 +1485,7 @@ std::string pending_list(Menu& m) {
     if (e.extras.latency.mode != b.extras.latency.mode) add("low latency");
     if (e.extras.latency.log_timings != b.extras.latency.log_timings) add("latency log");
     if (e.audio.device != b.audio.device) add("audio device");
+    if (e.audio.channels != b.audio.channels) add("speakers");
     return s;
 }
 

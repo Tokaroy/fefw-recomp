@@ -49,8 +49,9 @@ const TABS = [
       {
         title: 'settings.sec.frameRate', icon: 'gauge', file: 'game',
         fields: [
-          { id: 'fps60', type: 'toggle', label: 'settings.fps60.label', sec: 'fefw', key: 'fps60', def: '0', hint: 'settings.fps60.hint' },
-          { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
+          // one choice over the game's two switches ([fefw] fps60 and fps120; 120 wins when both are on)
+          { id: 'fps_target', type: 'rate', label: 'settings.fpsTarget.label', sec: 'fefw', keys: ['fps60', 'fps120'],
+            options: [['30', 'settings.fpsTarget.30'], ['60', 'settings.fpsTarget.60'], ['120', 'settings.fpsTarget.120']], hint: 'settings.fpsTarget.hint' },
           { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
           { id: 'fps_limit', type: 'autonum', label: 'settings.fpsLimit.label', file: 'controls', sec: 'display', key: 'fps_limit', def: 'auto',
             min: 0, max: 1000, numDefault: 60, unit: 'settings.fpsLimit.unit', autoLabel: 'settings.fpsLimit.auto', hint: 'settings.fpsLimit.hint' },
@@ -148,6 +149,9 @@ const TABS = [
         fields: [
           { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', max: 2, unit: 'settings.volume.unit' },
           { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
+          // [audio] channels of controls.ini: the game's mix, stereo or 5.1 (runtime/src/gfx/play/play.cpp hands it to the audio services at start)
+          { id: 'audio_channels', type: 'select', label: 'settings.audioChannels.label', sec: 'audio', key: 'channels', def: '2',
+            options: [['2', 'settings.audioChannels.stereo'], ['6', 'settings.audioChannels.surround']], hint: 'settings.audioChannels.hint', restart: true },
         ],
       },
       {
@@ -299,6 +303,7 @@ export async function render(el, ctx) {
     select: (f) => { const v = get(f, f.key, f.def); return f.unsupported?.includes(v) ? f.def : v; },
     toggle: (f) => (f.off !== undefined ? ![f.off, '0', 'false', 'no'].includes(String(get(f, f.key, f.def)).trim().toLowerCase()) : truthy(get(f, f.key, f.def))),
     size: (f) => ({ w: get(f, f.keys[0], f.def[0]), h: get(f, f.keys[1], f.def[1]) }),
+    rate: (f) => (truthy(get(f, f.keys[1], '0')) ? '120' : truthy(get(f, f.keys[0], '0')) ? '60' : '30'),
     autonum: (f) => {
       const v = String(get(f, f.key, f.def));
       return v.toLowerCase() === 'auto' ? { auto: true, num: String(f.numDefault) } : { auto: false, num: v };
@@ -312,6 +317,7 @@ export async function render(el, ctx) {
   };
   const WRITE = {
     select: (f, x) => [[f.sec, f.key, x]],
+    rate: (f, x) => [[f.sec, f.keys[0], x === '60' ? '1' : '0'], [f.sec, f.keys[1], x === '120' ? '1' : '0']],
     toggle: (f, x) => [[f.sec, f.key, x ? (f.on ?? '1') : (f.off ?? '0')]],
     size: (f, x) => [
       [f.sec, f.keys[0], String(clamp(parseInt(x.w, 10) || 1280, 320, 16384))],
@@ -350,6 +356,7 @@ export async function render(el, ctx) {
       const opts = avail.some(([v]) => String(v) === String(x)) ? avail : [...avail, [x, x]];
       return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
     },
+    rate: (f, x) => CONTROL.select(f, x),
     toggle: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
     size: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
     autonum: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,

@@ -518,6 +518,25 @@ NXTEST(menu_touch_legacy_key_is_ignored) {
     CHECK(format_settings(s).find("menu_touch") == std::string::npos);
 }
 
+NXTEST(audio_channels_parse_and_round_trip) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings s;
+    CHECK_EQ(s.audio.channels, 2);   // stereo is the default
+    std::string err;
+    REQUIRE_MSG(parse_settings("[audio]\nchannels = 6\n", &s, &err), err);
+    CHECK_EQ(s.audio.channels, 6);
+    const std::string text = format_settings(s);
+    CHECK(text.find("channels = 6") != std::string::npos);
+    Settings r;
+    REQUIRE_MSG(parse_settings(text, &r, &err), err);
+    CHECK_EQ(r.audio.channels, 6);
+    REQUIRE_MSG(parse_settings("[audio]\nchannels = stereo\n", &r, &err), err);
+    CHECK_EQ(r.audio.channels, 2);
+    Settings bad;
+    CHECK(!parse_settings("[audio]\nchannels = 4\n", &bad, &err));
+    CHECK_EQ(bad.audio.channels, 2);
+}
+
 NXTEST(menu_cursor_parses_and_round_trips) {
     const nxrt::play::test::PlayTestGame play_game;
     Settings s;
