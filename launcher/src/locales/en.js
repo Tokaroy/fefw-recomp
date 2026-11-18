@@ -107,6 +107,7 @@ export const en = {
     'setup.toolsMissingMany': '{count} missing: install them, then come back.',
     'setup.toolsAllFound': 'Everything was found.',
     'setup.checkAgain': 'Check again',
+    'setup.stepDetail.modSites': 'new hook sites from {mods}: Set up recompiles the game with them',
     'setup.continueSetup': 'Continue setup',
     'setup.setUp': 'Set up',
     'setup.progressDone': '{done} of {total}. ',
