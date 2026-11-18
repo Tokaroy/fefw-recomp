@@ -87,6 +87,9 @@ namespace SpirvHarness
             string[] keyed = ["--no-val", "--no-retry", "--debug-mode"];
             string[] valued = ["--target-env", "--host", "--texture-pool", "--sampler-pool", "--reflect"];
             string opts = string.Join(" ", keyed.Where(args.Contains).Concat(valued.Where(v => Opt(args, v, null) != null).Select(v => $"{v}={Opt(args, v, null)}")));
+            // the flag or FEFW_NO_DIVERGENT_BARRIERS: a journal of the other answer is not resumed
+            if (StaticGpuAccessor.NoDivergentBarriers) opts = (opts + " --no-divergent-barriers").Trim();
+            if (StaticGpuAccessor.NoFloat64) opts = (opts + " --no-float64").Trim();
             return $"# spirv_harness journal\t{TranslatorVersion}\t{build}\t{opts}";
         }
 
@@ -319,6 +322,7 @@ namespace SpirvHarness
             all = all.OrderBy(r => r.Group).ThenBy(r => r.Hash).ToList();
             WriteResults(Path.Combine(c.OutDir, "results.tsv"), all);
             string summary = Summarize(all, total.Elapsed, c.TargetEnv);
+            summary = Float64Line(c.OutDir, all) + summary;
             int crashes = all.Count(r => r.Status == "crash");
             if (crashes > 0) summary = $"crash: {crashes} blocks crashed the translator process; they have no SPIR-V and the game draws without them\n" + summary;
             File.WriteAllText(Path.Combine(c.OutDir, "summary.txt"), summary);
@@ -327,6 +331,30 @@ namespace SpirvHarness
         }
 
         static string ExitText(int code) => code < 0 || code > 0xffff ? $"0x{code:X8}" : code.ToString();
+
+        // GitHub issue #45: the blocks whose SPIR-V still has a 64-bit float type (OpTypeFloat 64), which GPUs without shaderFloat64
+        // (Intel Arc A-series) cannot run. The runtime names the same shaders in fefw.log when it makes their modules on such a GPU.
+        static string Float64Line(string outDir, List<Result> all)
+        {
+            List<string> uses = new();
+            foreach (Result r in all)
+            {
+                string path = Path.Combine(outDir, r.Hash + ".spv");
+                if (!File.Exists(path)) continue;
+                byte[] b = File.ReadAllBytes(path);
+                for (int i = 5 * 4; i + 12 <= b.Length;)
+                {
+                    uint w0 = BitConverter.ToUInt32(b, i), n = w0 >> 16, op = w0 & 0xffff;
+                    if (n == 0) break;
+                    if (op == 22 && n >= 3 && BitConverter.ToUInt32(b, i + 8) == 64) { uses.Add(r.Hash); break; }   // OpTypeFloat 64
+                    if (op == 54) break;   // OpFunction: the types are declared before the first one
+                    i += (int)n * 4;
+                }
+            }
+            string mode = StaticGpuAccessor.NoFloat64 ? "this run: --no-float64" : "this run: kept";
+            string list = uses.Count == 0 ? "" : ": " + string.Join(" ", uses.Take(20)) + (uses.Count > 20 ? $" ... {uses.Count - 20} more" : "");
+            return $"64-bit floats: {uses.Count} blocks use them ({mode}){list}\n";
+        }
 
         // A new journal: none of the .spv files or the preload pack the runtime built from them can be trusted.
         static void StartOver(string outDir)

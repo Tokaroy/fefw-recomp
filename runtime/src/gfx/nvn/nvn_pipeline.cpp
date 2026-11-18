@@ -236,6 +236,15 @@ static VkShaderModule create_module(const std::vector<uint32_t>& words, const ch
             fixed = w;
             fixed.erase(fixed.begin() + static_cast<std::ptrdiff_t>(cap_at), fixed.begin() + static_cast<std::ptrdiff_t>(cap_at) + 2);
             code = &fixed;
+        } else if (uses64 && !device().features().shader_float64) {
+            // GitHub issue #45: the Arc A770 has no shaderFloat64 and lost the device right after such a module was made. The shader
+            // translator lowers 64-bit floats to 32-bit with --no-float64 (or FEFW_NO_FLOAT64=1 during setup); name the shader once.
+            static std::mutex mu;
+            static std::unordered_set<std::string> warned;
+            std::lock_guard<std::mutex> lk(mu);
+            if (warned.size() < 32 && warned.insert(what).second)
+                NXLOG_W(kTag, "shader %s uses 64-bit floats, which this GPU does not support (no shaderFloat64); it may hang the GPU. "
+                              "Translating the shaders again with FEFW_NO_FLOAT64=1 set lowers them to 32-bit", what);
         }
     }
     // Every Location output of a vertex / tessellation evaluation / geometry shader starts at (0,0,0,1) as on the console: a component the
