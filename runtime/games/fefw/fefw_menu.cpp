@@ -102,9 +102,11 @@ constexpr IniKey kIni[] = {
     {"fefw", "fps60", "0", Norm::Bool, true, "60 fps"},
     {"fefw", "fps120", "0", Norm::Bool, true, "120 fps"},
     {"fefw", "smooth_step", "auto", Norm::Text, true, "smooth time step"},
+    {"fefw", "frame_fixes", "1", Norm::Bool, false, "frame-rate fixes"},
     {"fefw", "clock_log", "10", Norm::Number, false, "game clock log"},
     {"dlss", "upscaler", "taau", Norm::Text, true, "upscaler"},
     {"dlss", "frame_gen", "0", Norm::Text, true, "frame generation"},
+    {"dlss", "preset", "default", Norm::Text, false, "DLSS model"},
     {"dlss", "sharpness", "0", Norm::Number, true, "FSR 3 sharpening"},
     {"dlss", "history_weight", "12", Norm::Number, true, "TAAU history"},
     {"media", "movies", "host", Norm::Text, true, "movies"},
@@ -637,6 +639,17 @@ void upscaler_group(Menu& m) {
                       "missing file. Choosing DLSS or XeSS (or Auto with the DLLs present) takes effect at the next start.",
                       kUpscalerNames, kUpscalerVals, 6);
         const std::string u = lower(ini_now(up));
+        if (u == "dlss" || u == "auto") {
+            const IniKey& pk = *ini_key("dlss", "preset");
+            ini_combo_row(m, pk, "DLSS model",
+                          "The neural network DLSS runs. The transformer models (K, J, L, M) look best; L and M are the second generation, M the faster "
+                          "of them. Default lets the DLSS file decide (K at full render size). A DLSS file without the chosen model uses its default. "
+                          "Applies at once.",
+                          std::array<const char*, 5>{"Default (the DLSS file decides)", "K (transformer)", "J (transformer)", "L (transformer, 2nd generation)",
+                                                     "M (transformer, 2nd generation, faster)"}.data(),
+                          std::array<const char*, 5>{"default", "k", "j", "l", "m"}.data(), 5);
+            extras::set_dlss_preset(std::max(0, extras::dlss_preset_from_word(ini_now(pk))));
+        }
         if (u == "fsr3")
             ini_combo_row(m, *ini_key("dlss", "sharpness"), "FSR 3 sharpening", nullptr,
                           std::array<const char*, 5>{"Off", "0.25", "0.5", "0.75", "1 (sharpest)"}.data(),
@@ -893,8 +906,8 @@ void framerate_page(UiHost& host, Menu& m, const play::LiveStatus& live, gfx::Ov
         const IniKey& k60 = *ini_key("fefw", "fps60");
         const IniKey& k120 = *ini_key("fefw", "fps120");
         row(m, "Gameplay frame rate", When::Restart,
-            "30 is the game's own. 60 runs gameplay at 60 at the right speed (dialogue text types twice as fast). 120 needs a frame limit of 120 "
-            "or more and a fast PC; frame-counted effects such as the dialogue typing run 4 times as fast.");
+            "30 is the game's own. 60 runs gameplay at 60 at the right speed. 120 needs a frame limit of 120 or more and a fast PC. "
+            "Frame-rate fixes below keep frame-counted effects at their 30 fps speed.");
         if (!(ini_env(k60) || ini_env(k120))) {
             const auto is_on = [](const IniKey& k) { return normalized(k, ini_now(k)) == "1"; };
             int idx = is_on(k120) ? 2 : is_on(k60) ? 1 : 0;
@@ -916,6 +929,18 @@ void framerate_page(UiHost& host, Menu& m, const play::LiveStatus& live, gfx::Ov
         ini_combo_row(m, *ini_key("fefw", "smooth_step"), "Smooth time step",
                       "Keeps the game clock exact when frames are uneven: the game's step plus a quarter of the time it still owes.", kSmooth,
                       kSmoothVals, 3);
+        const IniKey& kfix = *ini_key("fefw", "frame_fixes");
+        row(m, "Frame-rate fixes", When::Live,
+            "At 60 and 120 fps: physics, capes and hair, cutscene shakes, map markers, menu animations and dialogue typing that count frames move at "
+            "their 30 fps speed. [fefw] frame_fixes_skip in the ini turns single groups off.");
+        if (!env_locked(kfix)) {
+            constexpr const char* kFix[] = {"On", "Off"};
+            int fidx = normalized(kfix, ini_now(kfix)) == "1" ? 0 : 1;
+            if (combo(m, "##fix", &fidx, kFix, 2)) {
+                frame_set_enabled(fidx == 0);   // applies at once (fefw_frame.cpp)
+                ini_put(m, kfix, fidx == 0 ? "1" : "0");
+            }
+        }
         end_rows();
     }
     if (ck.valid)
@@ -1003,6 +1028,16 @@ void audio_page(UiHost& host, Menu& m) {
             apply(host, m);
         }
         pending_note(a.device != m.boot.audio.device, m.boot.audio.device);
+        row(m, "Speakers", When::Restart,
+            "Stereo, or 5.1 surround (front left and right, centre, LFE, rear left and right). Windows downmixes 5.1 on a stereo device, so pick 5.1 "
+            "only for a 5.1 or 7.1 output. [audio] channels in fefw.ini or NXRT_AUDIO_CHANNELS wins over this.");
+        const char* const kSpeakerNames[] = {"Stereo", "5.1 surround"};
+        int spk = a.channels == 6 ? 1 : 0;
+        if (combo(m, "##spk", &spk, kSpeakerNames, 2)) {
+            a.channels = spk == 1 ? 6 : 2;
+            apply(host, m);
+        }
+        pending_note(a.channels != m.boot.audio.channels, m.boot.audio.channels == 6 ? "5.1 surround" : "Stereo");
         end_rows();
     }
 }
@@ -1450,6 +1485,7 @@ std::string pending_list(Menu& m) {
     if (e.extras.latency.mode != b.extras.latency.mode) add("low latency");
     if (e.extras.latency.log_timings != b.extras.latency.log_timings) add("latency log");
     if (e.audio.device != b.audio.device) add("audio device");
+    if (e.audio.channels != b.audio.channels) add("speakers");
     return s;
 }
 

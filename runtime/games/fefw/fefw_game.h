@@ -47,6 +47,21 @@ struct ClockInfo {
 ClockInfo clock_info();
 void set_clock_log(int period_s);   // live
 
+// fefw_frame.cpp: per-frame amounts kept at their real speed at 60 and 120 fps ([fefw] frame_fixes, frame_fixes_skip)
+void frame_install(uint64_t base);
+void frame_step(float step, int target);   // once per frame (the time manager's step, frames of 1/59.94 s; the target frame rate)
+void frame_set_enabled(bool on);           // live
+struct FrameFixInfo {
+    bool installed = false, on = false, quake = false;
+    float scale = 1.0f;                    // the frame's share of a 1/30 s step (1 = the game's own values)
+    int native = 0;                        // the target the game asked for last (30 gameplay, 60 menus; 0 none seen)
+    static constexpr int kGroups = 9;
+    uint64_t applied[kGroups] = {};        // values changed, per group (frame_group_name)
+    uint64_t quake_held = 0;               // quake blocks held to 30 Hz
+};
+FrameFixInfo frame_info();
+const char* frame_group_name(int g);
+
 // fefw_menu.cpp: the F1 menu (GamePlay::settings_menu)
 void settings_menu(play::UiHost& host, gfx::Overlay& overlay);
 

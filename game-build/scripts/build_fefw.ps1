@@ -57,7 +57,10 @@ if ($sccache) {
     $sccache = $sccache.Replace('\', '/')
     $cfg += " -DCMAKE_C_COMPILER_LAUNCHER=`"$sccache`" -DCMAKE_CXX_COMPILER_LAUNCHER=`"$sccache`""
 }
-if ($LibDir) { $cfg += " -DFEFW_LIB_DIR=`"$LibDir`"" }
+# Default the library folder and always pass it, so a CMakeCache.txt from a moved checkout does not keep a stale path.
+if (-not $LibDir) { $LibDir = Join-Path $root "..\work\build\fefw" }
+$LibDir = $LibDir.Replace('\', '/')
+$cfg += " -DFEFW_LIB_DIR=`"$LibDir`""
 if ($CMakeArgs) { $cfg += " $CMakeArgs" }
 $tgt = if ($Target -eq "fefw_obj") { "CMakeFiles/fefw.dir/src/fefw_main.cpp.obj" } else { $Target }
 # What the cache says after the configure, which is what the build actually uses. A configure that ended in the middle of a cache

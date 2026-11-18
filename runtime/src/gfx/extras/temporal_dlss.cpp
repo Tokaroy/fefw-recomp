@@ -207,7 +207,8 @@ public:
         // The mode: kept while the input size stays in its dynamic range (the game may change its render size per frame), else the one
         // whose scale is nearest the actual ratio and whose range holds the input (DLAA at the same size).
         const bool same_out = f.out.width == last_out_.width && f.out.height == last_out_.height;
-        if (!same_out || !in_range(range_, f.render)) {
+        const int preset = extras::dlss_preset();   // the F1 menu changes it live
+        if (!same_out || !in_range(range_, f.render) || preset != last_preset_) {
             sl::DLSSMode m = sl::DLSSMode::eDLAA;
             Range rg{f.out.width, f.out.height, f.out.width, f.out.height};
             const double r = static_cast<double>(f.out.width) / static_cast<double>(f.render.width);
@@ -230,7 +231,8 @@ public:
                     }
                 }
             }
-            if ((m != last_mode_ || !same_out) && s.set_options(vp, options(m, f.out)) != sl::Result::eOk) return fail("slDLSSSetOptions");
+            const bool new_opts = m != last_mode_ || !same_out || preset != last_preset_;
+            if (new_opts && s.set_options(vp, options(m, f.out)) != sl::Result::eOk) return fail("slDLSSSetOptions");
             {
                 static bool modules_logged = false;
                 if (!modules_logged) {
@@ -238,9 +240,10 @@ public:
                     log_streamline_modules("at the first DLSS mode");
                 }
             }
-            if (m != last_mode_ || !same_out)
-                NXLOG_I(kTag, "%s: mode %s, %ux%u -> %ux%u (input range %ux%u .. %ux%u)", name(), mode_name(m), f.render.width, f.render.height, f.out.width,
-                        f.out.height, rg.min_w, rg.min_h, rg.max_w, rg.max_h);
+            if (new_opts)
+                NXLOG_I(kTag, "%s: mode %s, model preset %s, %ux%u -> %ux%u (input range %ux%u .. %ux%u)", name(), mode_name(m), extras::dlss_preset_word(preset),
+                        f.render.width, f.render.height, f.out.width, f.out.height, rg.min_w, rg.min_h, rg.max_w, rg.max_h);
+            last_preset_ = preset;
             if (!in_range(rg, f.render) && !same_out)
                 NXLOG_W(kTag, "%s: input %ux%u is outside every mode's range for %ux%u", name(), f.render.width, f.render.height, f.out.width, f.out.height);
             last_mode_ = m;
@@ -298,28 +301,12 @@ private:
         return e.width >= r.min_w && e.height >= r.min_h && e.width <= r.max_w && e.height <= r.max_h && r.max_w;
     }
     // [dlss] preset: the DLSS model for every mode (DLAA included): default (the driver's / an override's choice), or a letter j, k, l or m
-    // (sl_dlss.h DLSSPreset; the older letters were removed or revert to the default). Read once.
-    static sl::DLSSPreset preset() {
-        static const sl::DLSSPreset p = [] {
-            std::string v = nxrt::config_get_str("dlss", "preset", "default");
-            for (char& ch : v) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            if (v.rfind("preset", 0) == 0) v = v.substr(6);
-            while (!v.empty() && (v[0] == ' ' || v[0] == '_')) v.erase(0, 1);
-            sl::DLSSPreset r = sl::DLSSPreset::eDefault;
-            if (v == "j") r = sl::DLSSPreset::ePresetJ;
-            else if (v == "k") r = sl::DLSSPreset::ePresetK;
-            else if (v == "l") r = sl::DLSSPreset::ePresetL;
-            else if (v == "m") r = sl::DLSSPreset::ePresetM;
-            else if (v != "default" && !v.empty()) NXLOG_W("dlss", "[dlss] preset = %s is not one of default, j, k, l, m: default", v.c_str());
-            if (r != sl::DLSSPreset::eDefault) NXLOG_I("dlss", "[dlss] preset = %s: every DLSS mode uses preset %c", v.c_str(), static_cast<char>(std::toupper(v[0])));
-            return r;
-        }();
-        return p;
-    }
+    // (sl_dlss.h DLSSPreset; the older letters were removed or revert to the default). Live: extras::dlss_preset() (the F1 menu changes it);
+    // evaluate() sets the options again when it differs from last_preset_, and after a failed frame (last_out_ cleared) at the retry.
     static sl::DLSSOptions options(sl::DLSSMode m, VkExtent2D out) {
         sl::DLSSOptions o;
         o.mode = m;
-        const sl::DLSSPreset p = preset();
+        const sl::DLSSPreset p = static_cast<sl::DLSSPreset>(extras::dlss_preset());
         o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = o.ultraQualityPreset = p;
         o.outputWidth = out.width;
         o.outputHeight = out.height;
@@ -394,6 +381,7 @@ private:
     std::chrono::steady_clock::time_point retry_at_{}, free_at_{}, first_eval_{};
     char failure_[96] = {};
     sl::DLSSMode last_mode_ = sl::DLSSMode::eCount;
+    int last_preset_ = -1;
     VkExtent2D last_out_ = {};
     Range range_;
 };
