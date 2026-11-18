@@ -823,10 +823,21 @@ void preset_group(Menu& m) {
     if (!begin_rows("preset")) return;
     row(m, "Graphics preset", When::Restart,
         "Sets Render scale, Shadow resolution, Quality and the four detail settings together. Low is for a slower GPU or a handheld PC; "
-        "Medium is the console's picture (the defaults); High and Ultra render sharper. Output size and the upscaler are not changed.");
+        "Medium is the console's picture (the defaults); High and Ultra render sharper. Output size and the upscaler are not changed; a fixed "
+        "render size is cleared.");
     int idx = graphics_preset_current();
-    if (combo(m, "##preset", &idx, kPresetNames, kGraphicsPresetCount)) {
+    const IniKey& fixed = *ini_key("fefw", "render");
+    // a key set by an environment variable wins over the file: a preset could not apply, so the row is locked and says which one
+    const IniKey* locked = ini_env(fixed) ? &fixed : nullptr;
+    for (int k = 0; k < kPresetKeyCount && !locked; ++k)
+        if (ini_env(*ini_key("fefw", kPresetKeys[k]))) locked = ini_key("fefw", kPresetKeys[k]);
+    if (locked) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled(tr("%s ([fefw] %s is set by %s)"), tr(idx >= 0 ? kPresetNames[idx] : "Custom"), locked->key,
+                            config_env_name(locked->sec, locked->key).c_str());
+    } else if (combo(m, "##preset", &idx, kPresetNames, kGraphicsPresetCount)) {
         const GraphicsPreset& p = kGraphicsPresets[idx];
+        if (!ini_now(fixed).empty()) ini_put(m, fixed, "");
         for (int k = 0; k < kPresetKeyCount; ++k) {
             const IniKey& key = *ini_key("fefw", kPresetKeys[k]);
             if (normalized(key, ini_now(key)) != normalized(key, p.values[k])) ini_put(m, key, p.values[k]);

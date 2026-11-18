@@ -16,6 +16,8 @@
 //   Low      reduced (8 rays)      0                    reduced         reduced
 //   others   full                  1                    full            full
 //
+// Picking a preset also clears [fefw] render (a fixed render size wins over render_ratio).
+//
 // The launcher has the same table (launcher/src/pages/settings.js PRESETS) and runtime/docs/CONFIG.md describes it: keep the three in step.
 #pragma once
 
@@ -61,8 +63,10 @@ inline bool same(int key, const std::string& have, const char* want) {
 }
 }  // namespace preset_detail
 
-// The preset fefw.ini holds now, -1 for none (Custom).
+// The preset fefw.ini holds now, -1 for none (Custom). A fixed [fefw] render size wins over render_ratio, so with one set no preset is in
+// force; picking a preset clears it.
 inline int graphics_preset_current() {
+    if (!config_get_str("fefw", "render", "").empty()) return -1;
     std::string have[kPresetKeyCount];
     for (int k = 0; k < kPresetKeyCount; ++k) have[k] = config_get_str("fefw", kPresetKeys[k], kPresetDefaults[k]);
     for (int i = 0; i < kGraphicsPresetCount; ++i) {

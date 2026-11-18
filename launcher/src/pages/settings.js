@@ -253,8 +253,10 @@ const PRESETS = [
 ];
 const lowerOf = (x) => String(x).trim().toLowerCase();
 const switchOn = (x) => !['0', 'false', 'off', 'no'].includes(lowerOf(x));
-/** The preset the fields hold now ('' = Custom), compared by meaning as the runtime reads them. */
-const presetOf = (m) => {
+/** The preset the fields hold now ('' = Custom), compared by meaning as the runtime reads them. A fixed [fefw] render size (fixed) wins over
+ *  render_ratio, so with one in the file no preset is in force until a picked preset clears it on Save. */
+const presetOf = (m, fixed) => {
+  if (fixed && !m.preset) return '';
   const hit = PRESETS.find(([, , v]) => Number(m.render_ratio) === Number(v.render_ratio) && Number(m.shadow_size) === Number(v.shadow_size)
     && ['quality', 'reflections', 'crowd_detail', 'scenery_detail'].every((k) => lowerOf(m[k]) === v[k])
     && switchOn(m.ambient_occlusion) === switchOn(v.ambient_occlusion));
@@ -290,6 +292,7 @@ export async function render(el, ctx) {
   const exists = { game: true, controls: data.controls_exists, config: true };
   const keyOf = (f, k) => (f.file === 'config' ? k : `${f.sec}.${k}`);
   const get = (f, k, def) => files[f.file][keyOf(f, k)] ?? def;
+  const fixedRender = String(files.game['fefw.render'] ?? '').trim() !== '';
 
   // ----- model: one UI value per field -----
   const READ = {
@@ -320,7 +323,7 @@ export async function render(el, ctx) {
     text: (f, x) => [[f.sec, f.key, String(x).trim()]],
     number: (f, x) => [[f.sec, f.key, String(clamp(parseInt(x, 10) || 0, f.min, f.max))]],
     language: () => [],
-    preset: () => [],
+    preset: () => (fixedRender ? [['fefw', 'render', '']] : []), // a preset was picked: the fixed render size would win over it
   };
 
   // Every field, with its file filled in from the group. A hidden NVIDIA-only field stays in the model: it is never dirty, so never written.
@@ -335,7 +338,8 @@ export async function render(el, ctx) {
     // a stored value this platform cannot use shows as the default and counts as changed, so the next Save replaces it
     orig[f.id] = f.unsupported?.includes(get(f, f.key, f.def)) ? JSON.stringify(get(f, f.key, f.def)) : JSON.stringify(model[f.id]);
   }
-  const dirtyFields = () => all.filter((f) => JSON.stringify(model[f.id]) !== orig[f.id]);
+  // the preset row counts only when picking it has to clear a fixed render size; otherwise the fields it set are the changes
+  const dirtyFields = () => all.filter((f) => (f.type !== 'preset' || fixedRender) && JSON.stringify(model[f.id]) !== orig[f.id]);
 
   // ----- markup -----
   const dis = (f) => (exists[f.file] ? '' : 'disabled');
@@ -354,7 +358,7 @@ export async function render(el, ctx) {
     number: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
     path: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
     preset: (f) => {
-      const cur = presetOf(model);
+      const cur = presetOf(model, fixedRender);
       const custom = cur ? '' : `<option value="" selected disabled>${esc(t('settings.preset.custom'))}</option>`;
       return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${custom}${PRESETS.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${esc(t(l))}</option>`).join('')}</select>`;
     },
@@ -700,7 +704,7 @@ export async function render(el, ctx) {
         const v = input.type === 'checkbox' ? input.checked : input.value;
         if (f.type === 'preset') {
           const p = PRESETS.find(([id]) => id === v);
-          if (p) Object.assign(model, p[2]);
+          if (p) Object.assign(model, p[2], { preset: v });
           draw();
           return;
         }
