@@ -702,8 +702,17 @@ void hitch_scene(const char* label, bool begin) {
         return;
     }
     sc.open = false;
-    // the intervals of the frames presented inside the window (the first one is measured from the frame before the begin)
+    // the intervals of the frames presented inside the window (the first one is measured from the frame before the begin).
+    // A scene longer than the ring (kRing frames, ~9 min at 120 fps) lost its oldest intervals to the wrap-around: the frame
+    // statistics then cover only the tail while the phase totals still span the whole scene, so say so and divide the phases
+    // by the scene's whole frame count, not by the retained one.
+    const uint64_t total = n - sc.first;
     const uint64_t first = std::max<uint64_t>(sc.first, n > kRing - 1 ? n - (kRing - 1) : 0);
+    const bool overflowed = first > sc.first;
+    if (overflowed)
+        NXLOG_W("hitch", "scene '%s': %llu frames is more than the %zu-frame ring kept: the frame statistics below cover the last %llu "
+                         "frames only; keep scenes under ~%zu frames (~9 min at 120 fps) for an exact A/B",
+                sc.label.c_str(), static_cast<unsigned long long>(total), kRing, static_cast<unsigned long long>(n - first), kRing);
     std::vector<double> dt;
     dt.reserve(static_cast<size_t>(n - first));
     uint64_t prev = first > 0 ? g_ring[(first - 1) % kRing].load(std::memory_order_relaxed) : 0;
@@ -718,12 +727,13 @@ void hitch_scene(const char* label, bool begin) {
         if (d > 50.0) over50++;
     }
     const FrameStats st = stats_of(dt);
-    const double frames = st.frames ? static_cast<double>(st.frames) : 1.0;
+    const double frames = total ? static_cast<double>(total) : 1.0;
     auto per_frame = [&](int ph) { return (hitch_phase_total_ms(ph) - sc.phase0[ph]) / frames; };
-    NXLOG_I("hitch", "scene '%s': %zu frames in %.1f s: mean %.1f fps, 1%% low %.1f fps, worst %.1f ms, %zu over 25 ms, %zu over 50 ms, "
+    NXLOG_I("hitch", "scene '%s': %zu frames in %.1f s%s: mean %.1f fps, 1%% low %.1f fps, worst %.1f ms, %zu over 25 ms, %zu over 50 ms, "
                      "%zu over 2x the median (%.2f ms); render thread ms/frame: replay %.2f, present %.2f (limiter %.2f), idle %.2f",
-            sc.label.c_str(), st.frames, st.span_s, st.mean_fps, st.low1_fps, st.worst_ms, over25, over50, st.over2x, st.median_ms,
-            per_frame(kHpRenderReplay), per_frame(kHpRenderPresent), per_frame(kHpRenderLimiter), per_frame(kHpRenderIdle));
+            sc.label.c_str(), st.frames, st.span_s, overflowed ? " (tail of a longer scene)" : "", st.mean_fps, st.low1_fps, st.worst_ms,
+            over25, over50, st.over2x, st.median_ms, per_frame(kHpRenderReplay), per_frame(kHpRenderPresent), per_frame(kHpRenderLimiter),
+            per_frame(kHpRenderIdle));
 }
 
 size_t frame_times_recent(float* ms, size_t n) {

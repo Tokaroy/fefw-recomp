@@ -88,6 +88,7 @@ def main():
     events = []     # (ms, order, text)
     prev = (0, 0, 0, 0, 0)
     down_at = {}    # button bit -> ms it went down
+    spans = {i: [] for i in range(len(BUTTONS))}    # button bit -> [(down_ms, up_ms)]
     stick_sent = {'left': (0.0, 0.0), 'right': (0.0, 0.0)}
     stick_last = {'left': -1e9, 'right': -1e9}
     stick_pending = {'left': None, 'right': None}
@@ -97,8 +98,8 @@ def main():
         up = pb & ~b
         down = b & ~pb
         for i in range(len(BUTTONS)):
-            if up >> i & 1:   # released no sooner than min_hold after it went down
-                events.append((max(t, down_at.pop(i, t) + a.min_hold_ms), 0, 'release ' + BUTTONS[i]))
+            if up >> i & 1:
+                spans[i].append((down_at.pop(i, t), t))
         if down:
             for i in range(len(BUTTONS)):
                 if down >> i & 1:
@@ -108,6 +109,8 @@ def main():
             v = (q(x), q(y))
             if v != stick_sent[name]:
                 stick_pending[name] = (t, v)
+            else:
+                stick_pending[name] = None   # back to the sent value: a change pending in between is superseded; EOF must not emit it
         for name in ('left', 'right'):   # a pending change goes out when 25 ms have passed since the last one (or it is a return to 0)
             if stick_pending[name] and (stick_pending[name][0] - stick_last[name] >= 25.0 or stick_pending[name][1] == (0.0, 0.0)):
                 tt, v = stick_pending[name]
@@ -116,6 +119,18 @@ def main():
                 stick_last[name] = tt
                 stick_pending[name] = None
         prev = (b, lx, ly, rx, ry)
+    # Releases, after every span is known: held at least min_hold (a quick tap can fall between two game updates and be missed),
+    # but always before the same button's next press. The runner holds by OR-ing masks, so a release extended past the next
+    # press would clear it and the tap after it would be lost.
+    for i in range(len(BUTTONS)):
+        if i in down_at:    # still down when the recording ends
+            spans[i].append((down_at[i], at(last_f)))
+        sp = sorted(spans[i])
+        for k, (d, u) in enumerate(sp):
+            rel = max(u, d + a.min_hold_ms)
+            if k + 1 < len(sp):
+                rel = min(rel, max(u, sp[k + 1][0] - 1.0))
+            events.append((rel, 0, 'release ' + BUTTONS[i]))
     for name in ('left', 'right'):
         if stick_pending[name]:
             tt, v = stick_pending[name]

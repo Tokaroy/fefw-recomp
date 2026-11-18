@@ -30,6 +30,7 @@ foreach ($p in @($Exe, $Ini, $Route)) { if (-not (Test-Path $p)) { throw "not fo
 $Route = (Resolve-Path $Route).Path
 $Ini = (Resolve-Path $Ini).Path
 New-Item -ItemType Directory -Force $Out | Out-Null
+$Out = (Resolve-Path $Out).Path      # absolute: the child process resolves relative paths against $runDir, not this shell
 $runDir = Split-Path -Parent $Ini
 
 function Parse-Vars([string]$spec) {
@@ -62,11 +63,12 @@ for ($r = 1; $r -le $Runs; $r++) {
         $log = Join-Path $Out ("{0}_{1}.log" -f $name, $r)
         $shots = Join-Path $Out ("shots_{0}_{1}" -f $name, $r)
         $saved = @{}
-        foreach ($n in $allNames + @("NXRT_TEST_SCRIPT", "NXRT_TEST_OUT", "NXRT_TEST_SHOT_DIR")) { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
+        foreach ($n in $allNames + @("NXRT_LOG", "NXRT_TEST_SCRIPT", "NXRT_TEST_OUT", "NXRT_TEST_SHOT_DIR")) { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
         try {
             foreach ($n in $allNames) { [Environment]::SetEnvironmentVariable($n, $null) }
             $tag = "{0}-{1}-{2}" -f $name, $r, (Get-Date -Format "HHmmssfff")
             foreach ($kv in $vars[$v].GetEnumerator()) { [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value.Replace("{run}", $tag)) }
+            [Environment]::SetEnvironmentVariable("NXRT_LOG", $log)   # the environment beats the ini's [log] path; --log alone would lose to it
             [Environment]::SetEnvironmentVariable("NXRT_TEST_SCRIPT", $Route)
             [Environment]::SetEnvironmentVariable("NXRT_TEST_OUT", (Join-Path $Out ("tt_{0}_{1}" -f $name, $r)))
             [Environment]::SetEnvironmentVariable("NXRT_TEST_SHOT_DIR", $shots)
