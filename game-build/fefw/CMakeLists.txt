@@ -118,6 +118,18 @@ target_link_libraries(fefw PRIVATE ${FEFW_LIBS} nxrt_game_fefw nxrt_gfx nxrt)
 target_link_options(fefw PRIVATE /MAP /STACK:134217728 /HIGHENTROPYVA:NO /DEBUG /MANIFEST:NO)
 
 # The shared-font fallback (runtime src/services/pl.cpp looks in fonts\ next to the exe) and the ASTC decoder DLLs when the transcoder is in.
+# The processor features this build's lifted libraries need (recomp/games/fefw/CMakeLists.txt FEFW_CPU_VARIANT): fefw_main.cpp checks the
+# processor against them before the first game instruction (fefw_cpu.h). The launcher names the variant in FEFW_CPU_VARIANT
+# (launcher/src-tauri/src/cpu.rs): fma (FMA3 + AVX, the default) or compat (SSE4.2 + POPCNT).
+set(FEFW_CPU_VARIANT "fma" CACHE STRING "processor target of the lifted code: fma (FMA3 + AVX) or compat (SSE4.2 + POPCNT)")
+if(DEFINED ENV{FEFW_CPU_VARIANT} AND NOT "$ENV{FEFW_CPU_VARIANT}" STREQUAL "")
+    set(FEFW_CPU_VARIANT "$ENV{FEFW_CPU_VARIANT}" CACHE STRING "processor target of the lifted code" FORCE)
+endif()
+if(FEFW_CPU_VARIANT STREQUAL "compat")
+    target_compile_definitions(fefw PRIVATE FEFW_CPU_NEEDS=FEFW_CPU_NEEDS_COMPAT_BUILD)
+else()
+    target_compile_definitions(fefw PRIVATE FEFW_CPU_NEEDS=FEFW_CPU_NEEDS_FMA_BUILD)
+endif()
 # The font and the site list are copied when the build is configured, not in a POST_BUILD step: CMake wraps that step in cmd.exe's
 # `cd /D "<build dir>"`, and an & in the checkout path splits the command (EmblemWeave issue 38).
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fonts")

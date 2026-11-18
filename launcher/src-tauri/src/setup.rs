@@ -279,12 +279,18 @@ fn exefs_ok(p: &Paths) -> bool {
         && stamp.lines().next().map(|l| l.trim()) == Some(crate::dump::fwd(&p.exefs).as_str())
 }
 
+/// The processor target (cpu.rs: "fma" or "compat") the libraries in `libs` were compiled for, kept beside them by the lift step. A
+/// folder without the file was built before the compatible variant existed, so it is the FMA3 build.
+fn lift_variant_ok(libs: &Path, want: &str) -> bool {
+    fs::read_to_string(libs.join("cpu_variant.txt")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "fma".into()) == want
+}
+
 fn libs_ok(p: &Paths) -> bool {
     let main = mtime(&p.plain_exefs().join("main"));
     MODULES.iter().all(|m| {
         let lib = p.libs().join(format!("fefw_{m}.lib"));
         lib.is_file() && mtime(&lib) >= main
-    })
+    }) && lift_variant_ok(&p.libs(), crate::cpu::build_variant().unwrap_or("fma"))
 }
 
 fn exe_ok(p: &Paths) -> bool {
@@ -864,9 +870,13 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     if !libs_ok(p) {
         let mut c = Command::new("cmd.exe");
         c.args(["/d", "/c", "recomp\\scripts\\build_game.cmd", "fefw"]).env("NX_JOBS", jobs.to_string());
+        // the build for this processor (cpu.rs): FMA3 code only where the CPU has FMA3 (recomp/games/fefw/CMakeLists.txt FEFW_CPU_VARIANT)
+        let variant = crate::cpu::build_variant().unwrap_or("fma");
+        c.env("FEFW_CPU_VARIANT", variant);
         if !r.run("lift", "Recompiling the game code (an hour or more the first time)", c, repo)? {
             return Ok(false);
         }
+        fs::write(p.libs().join("cpu_variant.txt"), variant).map_err(|e| e.to_string())?;
     }
     if !textures_ok(p) {
         let mut c = Command::new(powershell());
@@ -878,6 +888,7 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     if !exe_ok(p) {
         let mut c = Command::new(powershell());
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "game-build\\scripts\\build_fefw.ps1", "-Jobs", &jobs.to_string()]);
+        c.env("FEFW_CPU_VARIANT", crate::cpu::build_variant().unwrap_or("fma"));
         if !r.run("exe", "Building fefw.exe", c, repo)? {
             return Ok(false);
         }
@@ -985,6 +996,19 @@ mod tests {
         assert_eq!(tool_progress("prepare: 4900 9943"), Some((4900, 9943)));
         assert_eq!(tool_progress("prepare: ready"), None);
         assert_eq!(tool_progress("prepare: done programs=9943 prepared=9943 failed=0 seconds=42.0"), None);
+    }
+
+    #[test]
+    fn lift_variant_stamp() {
+        let dir = std::env::temp_dir().join(format!("fefw_lift_variant_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(lift_variant_ok(&dir, "fma"), "a folder without a stamp is the FMA3 build");
+        assert!(!lift_variant_ok(&dir, "compat"));
+        fs::write(dir.join("cpu_variant.txt"), "compat").unwrap();
+        assert!(lift_variant_ok(&dir, "compat"));
+        assert!(!lift_variant_ok(&dir, "fma"), "switching variant is a new build");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
