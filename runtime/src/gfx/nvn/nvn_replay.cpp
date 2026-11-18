@@ -2441,6 +2441,13 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                 if (shader_fmt != VK_FORMAT_UNDEFINED) q.format = shader_fmt;
                 q.format = tex_storage_format(r.tex, q.format);   // an sRGB image is stored to through its UNORM view (raw bits, as on the console)
                 ii.imageView = tex_sampled_view(r.tex, q);
+                // A storage image declared r11f_g11f_b10f over an R11G11B10F image kept as RGBA16F (the format's fallback, or [gfx] float16_scene):
+                // the view is RGBA16F, which Vulkan does not allow for a declared format other than its own. Fortune's Weave declares none.
+                if (ii.imageView && shader_fmt == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && tex_vk_format(r.tex) == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                    first_time_id(4, d.shader, static_cast<uint64_t>(d.index), r.tex->id))
+                    NXLOG_W(kTag, "storage image: %s binding %s declares r11f_g11f_b10f, texture %u is RGBA16F (float16_scene or the format's fallback): "
+                                  "the store's results are undefined; set [gfx] float16_scene = off if this shader's output looks wrong",
+                            d.shader->hash.c_str(), b.name.c_str(), r.tex->id);
             }
             if (!ii.imageView) {
                 if (r.tex) NXLOG_W(kTag, "storage image: texture %u (%s %dx%dx%d) has no storage view (gpu %d, storage usage %d)", r.tex->id, r.tex->fmt ? r.tex->fmt->name : "?",
