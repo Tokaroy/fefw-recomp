@@ -151,11 +151,16 @@ jobs:
           cmd /c "call runtime\scripts\env.cmd && $cfg && cmake --build build --target nxrt_tests mpr_launcher_tests -j 4"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      # every CTest entry except the groups of nxrt_gfx_tests, read from their sources the way runtime/cmake/gfx.cmake does
+      # every CTest entry except the groups of nxrt_gfx_tests, read from their sources the way runtime/cmake/gfx.cmake does. The groups
+      # whose checks depend on timing (write_watch: writer threads racing 3000 region rebuilds; watchdog: frames counted while it
+      # ticks) run afterwards on their own: beside the parallel groups on a 4-core runner they time out or miss their frame counts.
       - name: Tests
         run: |
           $gfx = Get-ChildItem runtime\tests\gfx\*.cpp, runtime\games\*\tests\*.cpp |
                  Select-String '^NXTEST_GROUP\(([a-z0-9_]+)\)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
           if (-not $gfx) { throw 'no graphics test groups found' }
-          ctest --test-dir build --output-on-failure -j 4 -E "^($($gfx -join '|'))$"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $serial = 'write_watch', 'watchdog'
+          ctest --test-dir build --output-on-failure -j 4 -E "^($(($gfx + $serial) -join '|'))$"
+          $parallel = $LASTEXITCODE
+          ctest --test-dir build --output-on-failure -R "^($($serial -join '|'))$"
+          if ($parallel -or $LASTEXITCODE) { exit 1 }
