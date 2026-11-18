@@ -162,7 +162,7 @@ fn mods_fingerprint(mods: &Path) -> u64 {
                 }
                 continue;
             }
-            let in_exefs = dir.file_name().map_or(false, |n| n.eq_ignore_ascii_case("exefs"));
+            let in_exefs = dir.file_name().is_some_and(|n| n.eq_ignore_ascii_case("exefs"));
             let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
             if in_exefs && matches!(ext.as_str(), "ips" | "pchtxt" | "sites") {
                 let m = e.metadata().ok();
@@ -275,7 +275,7 @@ fn exefs_ok(p: &Paths) -> bool {
     let dir = p.plain_exefs();
     let stamp = fs::read_to_string(dir.join("source.txt")).unwrap_or_default();
     MODULES.iter().all(|m| dir.join(m).is_file())
-        && nso_flags(&dir.join("main")).map_or(false, |f| f & 0x87 == 0)
+        && nso_flags(&dir.join("main")).is_some_and(|f| f & 0x87 == 0)
         && stamp.lines().next().map(|l| l.trim()) == Some(crate::dump::fwd(&p.exefs).as_str())
 }
 
@@ -330,12 +330,17 @@ pub fn steps(p: &Paths, running: Option<&str>) -> Vec<StepState> {
         "prepare" => prepare_ok(p),
         _ => false,
     };
-    list
-        .iter()
+    list.iter()
         .map(|(id, title)| StepState {
             id: id.to_string(),
             title: title.to_string(),
-            state: if running == Some(*id) { "running".into() } else if done(id) { "done".into() } else { "todo".into() },
+            state: if running == Some(*id) {
+                "running".into()
+            } else if done(id) {
+                "done".into()
+            } else {
+                "todo".into()
+            },
             detail: String::new(),
         })
         .collect()
@@ -604,7 +609,12 @@ pub fn check_tools(package: bool) -> Vec<Tool> {
     ];
     items
         .into_iter()
-        .map(|(name, p, hint)| Tool { name: name.into(), ok: p.is_some(), found: p.map(|p| crate::dump::fwd(&p)).unwrap_or_default(), hint: hint.into() })
+        .map(|(name, p, hint)| Tool {
+            name: name.into(),
+            ok: p.is_some(),
+            found: p.map(|p| crate::dump::fwd(&p)).unwrap_or_default(),
+            hint: hint.into(),
+        })
         .collect()
 }
 
@@ -618,7 +628,10 @@ fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize) -> Result
     let game = &p.game_dir;
     fs::create_dir_all(game).map_err(|e| format!("cannot create {}: {}", game.display(), e))?;
     if !p.python().is_file() {
-        return Err(format!("The bundled Python is missing ({}). Extract the release zip again so tools/ is complete.", crate::dump::fwd(&p.python())));
+        return Err(format!(
+            "The bundled Python is missing ({}). Extract the release zip again so tools/ is complete.",
+            crate::dump::fwd(&p.python())
+        ));
     }
     if !package_build_ok(p) {
         let mut c = Command::new(p.python());
@@ -670,12 +683,7 @@ fn corpus_marker(p: &Paths) -> serde_json::Value {
 
 /// Blocks the harness set aside because they crashed the translator (status "crash" in results.tsv).
 fn crashed_shaders(p: &Paths) -> usize {
-    fs::read_to_string(p.spirv().join("results.tsv"))
-        .unwrap_or_default()
-        .lines()
-        .skip(1)
-        .filter(|l| l.split('\t').nth(4) == Some("crash"))
-        .count()
+    fs::read_to_string(p.spirv().join("results.tsv")).unwrap_or_default().lines().skip(1).filter(|l| l.split('\t').nth(4) == Some("crash")).count()
 }
 
 /// Finds the shaders in the romfs and main and translates them to SPIR-V (both modes).
@@ -726,7 +734,10 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
         Ok(true) => {}
         Ok(false) => return Ok(false),
         Err(e) => {
-            r.log(vec![format!("The shader translation failed ({}); trying again with one job, from where it stopped.", e.lines().next().unwrap_or(""))]);
+            r.log(vec![format!(
+                "The shader translation failed ({}); trying again with one job, from where it stopped.",
+                e.lines().next().unwrap_or("")
+            )]);
             if !r.run("shaders", "Translating the shaders to SPIR-V (again, one at a time)", harness(1), cwd)? {
                 return Ok(false);
             }
@@ -734,8 +745,10 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
     }
     let crashed = crashed_shaders(p);
     if crashed > 0 {
-        r.log(vec![format!("{crashed} shaders crashed the translator and were left out; the game draws without them (status \"crash\" in {}).",
-                           crate::dump::fwd(&p.spirv().join("results.tsv")))]);
+        r.log(vec![format!(
+            "{crashed} shaders crashed the translator and were left out; the game draws without them (status \"crash\" in {}).",
+            crate::dump::fwd(&p.spirv().join("results.tsv"))
+        )]);
     }
     let stamp = serde_json::json!({ "complete": true, "translator_version": SHADER_TRANSLATOR_VERSION, "romfs": crate::dump::fwd(&p.romfs), "crashed": crashed });
     fs::write(p.shader_stamp(), stamp.to_string()).map_err(|e| e.to_string())?;
@@ -795,7 +808,8 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     let repo = &p.repo;
     let py = p.python();
     if !python_ok(p) {
-        let uv = find_tool(&["uv.exe"], &[local_appdata(r"Microsoft\WinGet\Links\uv.exe")]).ok_or("uv was not found. Install it (winget install astral-sh.uv) and press Set up again.")?;
+        let uv = find_tool(&["uv.exe"], &[local_appdata(r"Microsoft\WinGet\Links\uv.exe")])
+            .ok_or("uv was not found. Install it (winget install astral-sh.uv) and press Set up again.")?;
         if !py.is_file() {
             let mut c = Command::new(&uv);
             c.args(["venv", "tools/.venv", "--python", "3.13"]);
@@ -950,7 +964,7 @@ mod tests {
         fs::create_dir_all(&exefs).unwrap();
         let empty = mods_fingerprint(&dir);
         fs::write(exefs.join("readme.txt"), "x").unwrap();
-        fs::write(dir.join("fps").join("note.ips"), "x").unwrap();   // not in exefs/
+        fs::write(dir.join("fps").join("note.ips"), "x").unwrap(); // not in exefs/
         assert_eq!(mods_fingerprint(&dir), empty, "files the build does not read");
         fs::write(exefs.join("60fps.pchtxt"), "@nsobid-00").unwrap();
         let one = mods_fingerprint(&dir);
