@@ -247,6 +247,11 @@ void clock_thread() {
             continue;
         }
         if (have && ++since_log < period_s) continue;
+        static bool detail_logged = false;
+        if (!detail_logged && have) {
+            detail_logged = true;
+            if (const std::string d = detail_summary(); !d.empty()) NXLOG_I(kTag, "%s", d.c_str());
+        }
         if (have && real > real0) {
             const double rate = static_cast<double>(game - game0) / static_cast<double>(real - real0);
             NXLOG_I(kTag, "game clock: %.3fx real time over %d s (target %d fps, display %d, last step %.2f frames)", rate, period_s,
@@ -295,6 +300,7 @@ void play_install(uint64_t base, play::GameHost*, const play::Settings&) {
     if (write_profile != &nxrt_no_profile_write) tt::set_exit_handler(&exit_writing_profile);
     s.base = base;
     res_install(base);
+    detail_install();   // before the game's file system is set up: the graphics settings files are edited as the RomFS is laid out
     twprobe_start(base);
     s.fps60 = config_get_bool("fefw", "fps60", false);
     s.fps120 = config_get_bool("fefw", "fps120", false);
