@@ -728,7 +728,10 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
     }
     let lower64 = no_float64();
     if lower64 {
-        r.log(vec!["An Intel GPU was found: the shaders are translated without 64-bit floats, which Intel Arc A-series cards cannot run (GitHub issue #45).".into()]);
+        r.log(vec![
+            "An Intel GPU was found: the shaders are translated without 64-bit floats, which Intel Arc A-series cards cannot run (GitHub issue #45)."
+                .into(),
+        ]);
     }
     // the shaders the preparation compiled are about to change; it runs again after the translation
     let _ = fs::remove_file(p.prepare_file("prepare.state"));
