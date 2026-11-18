@@ -1027,7 +1027,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         q.intel_integrated = q.intel && props_.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
         q.budget_detail = quirk_key("budget_detail", q.intel);
         q.pressure_detail = quirk_key("pressure_detail", q.intel) && x_membudget;   // needs the OS's figures, not VMA's estimate
-        q.igpu_compat = quirk_key("igpu_compat", q.intel_integrated);                 // #5, #18
+        q.igpu_compat = quirk_key("igpu_compat", q.intel);                            // #5, #18; Arc A770 and B580 too (#45)
         g_quirks = q;
         VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
         vmaGetHeapBudgets(vma_, b);

@@ -55,7 +55,8 @@ on potentially divergent blocks are left out of the SPIR-V (they can hang Intel 
 of `summary.txt` counts the blocks with such barriers, kept or removed, in either mode
 (`spirv-divergent-barrier-log.patch` logs the kept ones; the SPIR-V without the option is unchanged).
 
-`--no-float64` (or `FEFW_NO_FLOAT64=1`) answers `QueryHostSupportsShaderFloat64` with false, as Ryujinx does on a GPU
+`--no-float64` (or `FEFW_NO_FLOAT64=1`; the launcher's Set up passes it when the PC has an Intel GPU, and
+`FEFW_NO_FLOAT64=0` / `=1` there turns that off / on for any GPU) answers `QueryHostSupportsShaderFloat64` with false, as Ryujinx does on a GPU
 without `shaderFloat64` (Intel Arc A-series): its `DoubleToFloat` pass lowers 64-bit floats to 32-bit and no module
 declares `Float64`. In FEFW the doubles come from the Ampere front end's 64-bit integer conversions (`F2I.U64`,
 `I2F.U64/S64` in `AmpereEmit.cs`), which then round once more and lose the `.RP/.RM/.RZ` correction. The first line of
