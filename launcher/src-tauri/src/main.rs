@@ -360,7 +360,6 @@ fn upscaler_files(
     fsr_dir: String,
     dlss_dir: String,
     xess_dir: Option<String>,
-    frame_gen_dlss: Option<bool>,
 ) -> Result<UpscalerFiles, String> {
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
@@ -392,20 +391,12 @@ fn upscaler_files(
         "NvLowLatencyVk.dll",
     ];
     // Files of the Streamline SDK the game never asks for. Streamline skips the plugins, but NVIDIA's NGX still loads a stray nvngx_*.dll it finds
-    // there (nvngx_deepdvc.dll). sl.pcl.dll stays: the game's Streamline needs it. The frame generation files count as unused while it is off.
+    // there (nvngx_deepdvc.dll). sl.pcl.dll stays: the game's Streamline needs it. The frame generation files are never listed: removing them
+    // while frame generation is off breaks it the next time it is turned on.
     const DLSS_UNUSED: [&str; 7] =
         ["sl.deepdvc.dll", "sl.directsr.dll", "sl.dlss_d.dll", "sl.nis.dll", "sl.nvperf.dll", "nvngx_deepdvc.dll", "nvngx_dlssd.dll"];
-    const DLSS_UNUSED_NO_FG: [&str; 4] = ["sl.dlss_g.dll", "sl.reflex.dll", "nvngx_dlssg.dll", "NvLowLatencyVk.dll"];
     let dlss_unused: Vec<String> = match sl_pick.iter().find(|d| d.join("sl.interposer.dll").is_file()) {
-        Some(d) => {
-            let fg = frame_gen_dlss.unwrap_or(false);
-            DLSS_UNUSED
-                .iter()
-                .chain(if fg { [].iter() } else { DLSS_UNUSED_NO_FG.iter() })
-                .filter(|f| d.join(f).is_file())
-                .map(|f| f.to_string())
-                .collect()
-        }
+        Some(d) => DLSS_UNUSED.iter().filter(|f| d.join(f).is_file()).map(|f| f.to_string()).collect(),
         None => Vec::new(),
     };
     Ok(UpscalerFiles {
