@@ -9,11 +9,11 @@
 
 #include "test_framework.h"
 
+NXTEST_GROUP(media_vdec)   // outside the #if: CMake registers the group from this line whether or not dav1d is built
+
 #if __has_include(<dav1d/dav1d.h>)
 #include <dav1d/dav1d.h>
 extern "C" void (*dav1d_nxrt_thread_hook)(int begin);
-
-NXTEST_GROUP(media_vdec)
 
 namespace {
 std::atomic<int> g_begins{0}, g_ends{0}, g_prio_ok{0};
@@ -68,4 +68,6 @@ NXTEST(dav1d_without_hook_still_opens) {
     dav1d_close(&c);
     CHECK(c == nullptr);
 }
+#else   // built with -DNXRT_DAV1D=OFF: one skipped case, so `nxrt_tests media_vdec` still finds a test
+NXTEST(dav1d_thread_hook_runs_on_each_task_thread) { nxtest::skip("built without dav1d (NXRT_DAV1D=OFF)"); }
 #endif
