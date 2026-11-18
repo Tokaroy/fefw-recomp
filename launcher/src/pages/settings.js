@@ -241,9 +241,11 @@ export async function render(el, ctx) {
   // NVIDIA-only choices: shown with an NVIDIA GPU, and also when the probe found no GPU at all (better shown than wrongly hidden)
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
-  let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
-  const visit = el.dataset.visit; // this render is still the page on show (main.js go)
+  const visit = el.dataset.visit; // this render is still the page on show (main.js go); read before the first await
   const live = () => el.dataset.visit === visit;
+  let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
+  let lsfgHere = false; // installLsfg's install has not returned yet
+  let lsfgTimer = 0;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
   const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
@@ -509,8 +511,9 @@ export async function render(el, ctx) {
       row.style.marginTop = 'var(--space-2)';
       const go = document.createElement('button');
       go.className = 'btn';
-      go.disabled = r.installing;
-      go.textContent = t(r.installing ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
+      const busy = r.installing || lsfgHere;
+      go.disabled = busy;
+      go.textContent = t(busy ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
       go.addEventListener('click', (ev) => { ev.preventDefault(); installLsfg(); });
       const link = document.createElement('button');
       link.className = 'btn quiet';
@@ -519,10 +522,12 @@ export async function render(el, ctx) {
       row.append(go, link);
       note.append(document.createElement('br'), how, row);
       // an install started from an earlier visit of this page: follow it until it ends
-      if (r.installing) setTimeout(checkLsfg, 1000);
+      clearTimeout(lsfgTimer);
+      if (r.installing && !lsfgHere) lsfgTimer = setTimeout(checkLsfg, 1000);
     }
   }
   async function installLsfg() {
+    lsfgHere = true;
     const done = api('install_lsfg');
     checkLsfg();
     try {
@@ -530,6 +535,7 @@ export async function render(el, ctx) {
     } catch (e) {
       toast(errText(e), 'error');
     }
+    lsfgHere = false;
     if (live()) checkLsfg();
   }
   let checkTimer = 0;
