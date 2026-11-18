@@ -5,7 +5,7 @@ import { fileDetail } from '../rusttext.js';
 /*
  * Settings schema. Every key is described in runtime/docs/CONFIG.md.
  *   file: "game" (fefw.ini), "controls" (controls.ini, written by the game on its first start) or "config" (the launcher's own options)
- * Types: select, toggle, size, autonum, range, path, text, number, language. A toggle with `on` / `off` writes those words
+ * Types: select, toggle, size, autonum, range (0 to `max`, default 1, shown as a percentage), path, text, number, language. A toggle with `on` / `off` writes those words
  * instead of 1 / 0 (`off`, 0, false or no read as off, anything else as on).
  * Text is a key into src/locales: `label` and `hint` are always translated, and an option name that contains a dot is a key
  * too (a plain name such as "720p" or "DLAA" is shown as it is).
@@ -128,7 +128,7 @@ const TABS = [
       {
         title: 'settings.sec.sound', icon: 'volume-2', file: 'controls',
         fields: [
-          { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', unit: 'settings.volume.unit' },
+          { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', max: 2, unit: 'settings.volume.unit' },
           { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
         ],
       },
@@ -259,7 +259,7 @@ export async function render(el, ctx) {
       const v = String(get(f, f.key, f.def));
       return v.toLowerCase() === 'auto' ? { auto: true, num: String(f.numDefault) } : { auto: false, num: v };
     },
-    range: (f) => Math.round(clamp(parseFloat(get(f, f.key, f.def)) || 0, 0, 1) * 100),
+    range: (f) => Math.round(clamp(parseFloat(get(f, f.key, f.def)) || 0, 0, f.max ?? 1) * 100),
     path: (f) => get(f, f.key, f.def),
     text: (f) => get(f, f.key, f.def),
     number: (f) => String(get(f, f.key, f.def)),
@@ -306,7 +306,7 @@ export async function render(el, ctx) {
     toggle: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
     size: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
     autonum: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
-    range: (f, x) => `<input type="range" id="f-${f.id}" data-f="${f.id}" min="0" max="100" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 3.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
+    range: (f, x) => `<input type="range" id="f-${f.id}" data-f="${f.id}" min="0" max="${Math.round((f.max ?? 1) * 100)}" step="1" value="${x}" ${dis(f)}><span class="unit" data-readout="${f.id}" style="min-width: 4.5ch; text-align: right">${x}${esc(optName(f.unit || '%'))}</span>`,
     text: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
     number: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
     path: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
