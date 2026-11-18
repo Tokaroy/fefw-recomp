@@ -106,6 +106,7 @@ export const zh = {
     'setup.toolsMissingMany': '缺 {count} 项：安装后回来。',
     'setup.toolsAllFound': '全部已找到。',
     'setup.checkAgain': '重新检查',
+    'setup.stepDetail.modSites': '{mods} 带来了新的挂钩点：Set up 会带上它们重新编译游戏',
     'setup.continueSetup': '继续构建',
     'setup.setUp': '开始构建',
     'setup.progressDone': '{done} / {total}。',
