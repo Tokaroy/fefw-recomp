@@ -256,7 +256,10 @@ namespace SpirvHarness
         public bool QueryHostSupportsGeometryShader() => DesktopHost;
         public bool QueryHostSupportsGeometryShaderPassthrough() => false;
         public bool QueryHostSupportsTransformFeedback() => false;
-        public bool QueryHostSupportsShaderFloat64() => DesktopHost;
+        // --no-float64: what Ryujinx answers on a GPU without shaderFloat64 (Intel Arc A-series), so its DoubleToFloat pass lowers
+        // 64-bit floats to 32-bit and the module declares no Float64 (GitHub issue #45).
+        public static bool NoFloat64;
+        public bool QueryHostSupportsShaderFloat64() => DesktopHost && !NoFloat64;
         public bool QueryHostSupportsShaderBallot() => false;
         public bool QueryHostSupportsViewportMask() => false;
         public bool QueryHostSupportsNonConstantTextureOffset() => false;

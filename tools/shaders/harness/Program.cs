@@ -3,7 +3,7 @@
 //   spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl]
 //       one stage: code block + NVN control section as written by containers.py --extract
 //       (--glsl: Vulkan GLSL text instead of SPIR-V, to read what the translator made or compare backends)
-//   spirv_harness --batch <extracted dir> --out <dir> [--jobs 2] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env vulkan1.3] [--host desktop|moltenvk] [--no-divergent-barriers]
+//   spirv_harness --batch <extracted dir> --out <dir> [--jobs 2] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env vulkan1.3] [--host desktop|moltenvk] [--no-divergent-barriers] [--no-float64]
 //       every distinct code block named in any manifest.tsv under <extracted dir>; writes <hash>.spv, results.tsv
 //       (one line per block) and summary.txt (counts, exceptions and translator messages grouped by text).
 //       The translation runs in a child process (--worker, Batch.cs) that journals each block to <out>/journal.tsv, so a
@@ -65,6 +65,8 @@ namespace SpirvHarness
             // --no-divergent-barriers (or FEFW_NO_DIVERGENT_BARRIERS=1 in the environment, which the launcher's setup inherits): answer what Ryujinx's
             // Vulkan backend answers on Intel GPUs, so barriers on potentially divergent blocks are left out (GitHub issue #45)
             StaticGpuAccessor.NoDivergentBarriers = args.Contains("--no-divergent-barriers") || Environment.GetEnvironmentVariable("FEFW_NO_DIVERGENT_BARRIERS") == "1";
+            // --no-float64 (or FEFW_NO_FLOAT64=1): lower 64-bit floats to 32-bit, for GPUs without shaderFloat64 (GitHub issue #45)
+            StaticGpuAccessor.NoFloat64 = args.Contains("--no-float64") || Environment.GetEnvironmentVariable("FEFW_NO_FLOAT64") == "1";
             try
             {
                 if (args.Length >= 2 && args[0] == "--warp-tests") return WarpTests.Run(args[1]);
@@ -77,7 +79,7 @@ namespace SpirvHarness
                 Console.Error.WriteLine(e.Message);
             }
             Console.Error.WriteLine("usage: spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl] [--glslc <GLSLC output, NVN2>]\n" +
-                                    "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>] [--crash-budget N] [--no-divergent-barriers]");
+                                    "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>] [--crash-budget N] [--no-divergent-barriers] [--no-float64]");
             return 2;
         }
 
