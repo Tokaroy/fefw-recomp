@@ -873,6 +873,9 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
         // the build for this processor (cpu.rs): FMA3 code only where the CPU has FMA3 (recomp/games/fefw/CMakeLists.txt FEFW_CPU_VARIANT)
         let variant = crate::cpu::build_variant().unwrap_or("fma");
         c.env("FEFW_CPU_VARIANT", variant);
+        // not a variant while the libraries are being replaced: an interrupted build must not leave the old stamp vouching for a mix
+        fs::create_dir_all(p.libs()).map_err(|e| e.to_string())?;
+        fs::write(p.libs().join("cpu_variant.txt"), "building").map_err(|e| e.to_string())?;
         if !r.run("lift", "Recompiling the game code (an hour or more the first time)", c, repo)? {
             return Ok(false);
         }
@@ -1008,6 +1011,8 @@ mod tests {
         fs::write(dir.join("cpu_variant.txt"), "compat").unwrap();
         assert!(lift_variant_ok(&dir, "compat"));
         assert!(!lift_variant_ok(&dir, "fma"), "switching variant is a new build");
+        fs::write(dir.join("cpu_variant.txt"), "building").unwrap();
+        assert!(!lift_variant_ok(&dir, "compat") && !lift_variant_ok(&dir, "fma"), "an unfinished build matches no variant");
         let _ = fs::remove_dir_all(&dir);
     }
 
