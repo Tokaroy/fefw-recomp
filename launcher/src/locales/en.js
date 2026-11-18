@@ -246,7 +246,7 @@ export const en = {
     'settings.files.frameGen': "Frame generation",
     'settings.files.dlss': "DLSS",
     'settings.files.dlssFrameGen': "DLSS frame generation",
-    'settings.files.dlssUnused': "This game does not use these files in the folder: {files}. You can delete them from the folder (if no other program uses it); NVIDIA's NGX loads some of them anyway.",
+    'settings.files.dlssUnused': "Optional tidy-up: this game never uses these Streamline SDK files in the folder: {files}. NVIDIA's NGX may still load some of them, so you can remove them if no other program uses the folder. Keep every other file; frame generation needs its own.",
     'settings.files.xess': "XeSS",
     'settings.textureDetail.label': "Texture detail",
     'settings.textureDetail.short': 'Half saves about 2 GB of video memory.',

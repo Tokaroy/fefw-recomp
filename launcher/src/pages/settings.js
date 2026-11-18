@@ -464,18 +464,18 @@ export async function render(el, ctx) {
   let checkSeq = 0;
   async function checkFiles() {
     const seq = ++checkSeq;
-    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || ''), frameGenDlss: model.frame_gen === 'dlss' })
+    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || '') })
       .catch(() => null);
     if (seq !== checkSeq || !r) return;
     const line = (name, x) => `${t(name)}: ${x.found ? t('settings.files.found', { detail: x.detail }) : t('settings.files.notFound', { detail: fileDetail(x.detail) })}`;
-    // `warn`: a sentence appended in red and bold (the files of the Streamline folder the game does not use)
-    const put = (which, text, warn) =>
+    // `note`: a sentence appended in its own span (the Streamline SDK files the game does not use)
+    const put = (which, text, note) =>
       el.querySelectorAll(`[data-status="${which}"]`).forEach((n) => {
         n.textContent = text;
-        if (warn) {
+        if (note) {
           const w = document.createElement('span');
-          w.className = 'status-warn';
-          w.textContent = ` ${warn}`;
+          w.className = 'status-note';
+          w.textContent = ` ${note}`;
           n.appendChild(w);
         }
       });
