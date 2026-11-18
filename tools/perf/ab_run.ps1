@@ -16,14 +16,14 @@ param(
     [string[]]$Names = @("A", "B"),
     [int]$Runs = 3,
     [string]$Exe = "",
-    [string]$Ini = "C:\ObeliskChamber-run\ObeliskChamber.ini",
+    [string]$Ini = "C:\fefw-run\fefw.ini",
     [string]$Route = "",
     [string]$Out = "",
     [int]$TimeoutS = 600
 )
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-if (-not $Exe) { $Exe = Join-Path $root "game-build\fefw\build\release\ObeliskChamber.exe" }
+if (-not $Exe) { $Exe = Join-Path $root "game-build\fefw\build\release\fefw.exe" }
 if (-not $Route) { $Route = Join-Path $PSScriptRoot "routes\fefw_map.tt" }
 if (-not $Out) { $Out = Join-Path $root ("work\perf\" + (Get-Date -Format "yyyyMMdd-HHmmss")) }
 foreach ($p in @($Exe, $Ini, $Route)) { if (-not (Test-Path $p)) { throw "not found: $p" } }

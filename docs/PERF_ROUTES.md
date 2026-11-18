@@ -21,9 +21,9 @@ Waits are in host time (`@sleep`), not frames, so the route covers the same game
 run the route by hand and watch it:
 
 ```
-set NXRT_TEST_SCRIPT=C:\ObeliskChamber-src\tools\perf\routes\fefw_map.tt
-set NXRT_TEST_SHOT_DIR=C:\ObeliskChamber-src\work\perf\shots
-game-build\fefw\build\release\ObeliskChamber.exe --ini C:\ObeliskChamber-run\ObeliskChamber.ini
+set NXRT_TEST_SCRIPT=C:\fefw-src\tools\perf\routes\fefw_map.tt
+set NXRT_TEST_SHOT_DIR=C:\fefw-src\work\perf\shots
+game-build\fefw\build\release\fefw.exe --ini C:\fefw-run\fefw.ini
 set NXRT_TEST_SCRIPT=
 ```
 
@@ -39,9 +39,9 @@ If the menus need other presses than the template's, play the route yourself onc
 controller (mouse movement is not carried over), and start from the launch so the recording includes the menus:
 
 ```
-set NXRT_TEST_RECORD=C:\ObeliskChamber-src\work\perf\rec\input.nxin
-set NXRT_TEST_OUT=C:\ObeliskChamber-src\work\perf\rec
-game-build\fefw\build\release\ObeliskChamber.exe --ini C:\ObeliskChamber-run\ObeliskChamber.ini
+set NXRT_TEST_RECORD=C:\fefw-src\work\perf\rec\input.nxin
+set NXRT_TEST_OUT=C:\fefw-src\work\perf\rec
+game-build\fefw\build\release\fefw.exe --ini C:\fefw-run\fefw.ini
 set NXRT_TEST_RECORD=
 set NXRT_TEST_OUT=
 ```
@@ -101,7 +101,7 @@ a build without the newest log lines, a route that failed.
 The report also works on any logs, scripted or not:
 
 ```
-python -I tools\perf\perf_report.py ObeliskChamber.log
+python -I tools\perf\perf_report.py fefw.log
 python -I tools\perf\perf_report.py --a a1.log a2.log --b b1.log b2.log --names off on
 ```
 

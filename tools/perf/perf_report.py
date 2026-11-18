@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Performance summary of ObeliskChamber.log files, and an A/B comparison of two sets of runs.
+"""Performance summary of fefw.log files, and an A/B comparison of two sets of runs.
 
     python -I tools/perf/perf_report.py run.log [run2.log ...]                  one summary per log
     python -I tools/perf/perf_report.py --a a1.log a2.log --b b1.log b2.log     A against B (median of each side's runs)
@@ -31,7 +31,7 @@ GPU = re.compile(r"nvn\.gpustats: \d+ frames: GPU ms/frame avg ([0-9.]+) p50 ([0
 SETUP = [
     ('build', re.compile(r'host symbols: 0 from the linker map \(no map'), lambda m: 'no linker map (a packaged build?)'),
     ('build', re.compile(r'host symbols: \d+ from the linker map (.*)$'), lambda m: m.group(1).strip()),
-    ('cpu build', re.compile(r'boot: ObeliskChamber\.exe build: (\S+)'), lambda m: m.group(1)),
+    ('cpu build', re.compile(r'boot: fefw\.exe build: (\S+)'), lambda m: m.group(1)),
     ('output', re.compile(r'fefw: render config 0: output (\d+x\d+) from (\d+x\d+)'), lambda m: f'{m.group(1)} from {m.group(2)}'),
     ('hdr', re.compile(r'gfx: HDR: mode (\d+), scene (\w+), wanted output (\w+)'), lambda m: f'{m.group(3)} (scene {m.group(2)})'),
     ('upscaler', re.compile(r'nvn\.dlss: network \d+: first evaluation, ([^:]+):'), lambda m: m.group(1).strip()),
