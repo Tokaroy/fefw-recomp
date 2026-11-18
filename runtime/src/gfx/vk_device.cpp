@@ -120,14 +120,17 @@ std::string lower(std::string s) {
 }
 
 /// The driver version as its vendor numbers it: NVIDIA packs major, minor,
-/// third and build into 10/8/8/6 bits; everyone else follows the Vulkan
-/// variant, major, minor, patch layout. Printed with the raw value, so a report
-/// can be matched against a vendor's release notes without guessing.
+/// third and build into 10/8/8/6 bits, Intel's Windows driver two components
+/// into 14/14 bits; everyone else follows the Vulkan variant, major, minor,
+/// patch layout. Printed with the raw value, so a report can be matched
+/// against a vendor's release notes without guessing.
 std::string driver_text(const VkPhysicalDeviceProperties& p) {
     char b[64];
     if (p.vendorID == 0x10de)
         std::snprintf(b, sizeof b, "%u.%u.%u.%u", (p.driverVersion >> 22) & 0x3ff, (p.driverVersion >> 14) & 0xff, (p.driverVersion >> 6) & 0xff,
                       p.driverVersion & 0x3f);
+    else if (p.vendorID == 0x8086)
+        std::snprintf(b, sizeof b, "%u.%u", p.driverVersion >> 14, p.driverVersion & 0x3fff);
     else
         std::snprintf(b, sizeof b, "%u.%u.%u", VK_API_VERSION_MAJOR(p.driverVersion), VK_API_VERSION_MINOR(p.driverVersion), VK_API_VERSION_PATCH(p.driverVersion));
     return b;
@@ -315,12 +318,16 @@ uint32_t device_local_heap(VmaAllocator a) {
     return best;
 }
 
-std::mutex g_guard_mu;                 // the memguard thread reads these through gpu_bytes_for_guard; the device destructor clears them
+// Timed, not plain: the watchdog's freeze report reads these through memguard_video / memguard_footprint_host, and a budget
+// query stalled in VMA or the driver during a GPU freeze must not keep the report from being written. A read that cannot take
+// the lock within 200 ms reports zero / nothing instead.
+std::timed_mutex g_guard_mu;           // the memguard thread reads these through gpu_bytes_for_guard; the device destructor clears them
 VmaAllocator g_guard_vma = nullptr;
 int g_guard_heap = -1;                 // -1: nothing to subtract
 uint64_t gpu_bytes_for_guard() {      // the device's dedicated memory in use by this process, for the memory guard (nxrt/memguard.h)
     // Held across the query: unregister_vma_gauges takes the same lock before the allocator is destroyed.
-    std::lock_guard<std::mutex> lk(g_guard_mu);
+    std::unique_lock<std::timed_mutex> lk(g_guard_mu, std::defer_lock);
+    if (!lk.try_lock_for(std::chrono::milliseconds(200))) return 0;
     if (!g_guard_vma || g_guard_heap < 0) return 0;
     VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
     vmaGetHeapBudgets(g_guard_vma, b);
@@ -330,7 +337,8 @@ uint64_t gpu_bytes_for_guard() {      // the device's dedicated memory in use by
 bool g_budget_exact = false;           // VK_EXT_memory_budget is on: heap usage and budget are the driver's figures
 int g_video_heap = -1;                 // the largest device-local heap (guarded by g_guard_mu, as the allocator pointer)
 void video_for_guard(nxrt::MemGuardVideo* out) {
-    std::lock_guard<std::mutex> lk(g_guard_mu);
+    std::unique_lock<std::timed_mutex> lk(g_guard_mu, std::defer_lock);
+    if (!lk.try_lock_for(std::chrono::milliseconds(200))) return;   // the freeze report gets no video line rather than a blocked thread
     if (!g_guard_vma || g_video_heap < 0) return;
     VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
     vmaGetHeapBudgets(g_guard_vma, b);
@@ -348,7 +356,7 @@ void register_vma_gauges(VmaAllocator a, VkPhysicalDeviceType type) {
     {
         const VkPhysicalDeviceMemoryProperties* mp = nullptr;
         vmaGetMemoryProperties(a, &mp);
-        std::lock_guard<std::mutex> lk(g_guard_mu);
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);
         g_guard_heap = mp ? vk_guard_discount_heap(*mp, type) : -1;
         g_guard_vma = a;
         g_video_heap = static_cast<int>(heap);
@@ -376,7 +384,7 @@ void unregister_vma_gauges() {
     nxrt::memguard_set_discount(nullptr);
     nxrt::memguard_set_video(nullptr);
     {
-        std::lock_guard<std::mutex> lk(g_guard_mu);   // waits for a guard read in flight; later reads see a null allocator
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);   // waits for a guard read in flight; later reads see a null allocator
         g_guard_vma = nullptr;
         g_video_heap = -1;
         g_guard_heap = -1;
@@ -425,7 +433,7 @@ bool quirk_key(const char* key, bool dflt) {
 const GpuQuirks& gpu_quirks() { return g_quirks; }
 
 uint64_t video_budget_bytes() {
-    std::lock_guard<std::mutex> lk(g_guard_mu);
+    std::lock_guard<std::timed_mutex> lk(g_guard_mu);
     if (!g_guard_vma || g_video_heap < 0) return 0;
     VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
     vmaGetHeapBudgets(g_guard_vma, b);
@@ -442,7 +450,7 @@ bool video_memory_pressure() {
     if (now < due || !next_ms.compare_exchange_strong(due, now + 250, std::memory_order_relaxed)) return tight.load(std::memory_order_relaxed);
     uint64_t usage = 0, budget = 0;
     {
-        std::lock_guard<std::mutex> lk(g_guard_mu);
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);
         if (!g_guard_vma || g_video_heap < 0) return false;
         VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
         vmaGetHeapBudgets(g_guard_vma, b);
@@ -469,7 +477,7 @@ int video_usage_percent() {
     if (now < due || !next_ms.compare_exchange_strong(due, now + 250, std::memory_order_relaxed)) return last.load(std::memory_order_relaxed);
     int pct = -1;
     {
-        std::lock_guard<std::mutex> lk(g_guard_mu);
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);
         if (g_guard_vma && g_video_heap >= 0) {
             VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
             vmaGetHeapBudgets(g_guard_vma, b);
@@ -490,7 +498,7 @@ int video_live_percent() {
     if (now < due || !next_ms.compare_exchange_strong(due, now + 250, std::memory_order_relaxed)) return last.load(std::memory_order_relaxed);
     int pct = -1;
     {
-        std::lock_guard<std::mutex> lk(g_guard_mu);
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);
         if (g_guard_vma && g_video_heap >= 0) {
             VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
             vmaGetHeapBudgets(g_guard_vma, b);
