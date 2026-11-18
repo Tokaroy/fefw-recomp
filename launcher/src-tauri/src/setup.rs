@@ -355,6 +355,7 @@ fn lift_sites_file(p: &Paths) -> Result<PathBuf, String> {
     let own_path = p.repo.join("recomp").join("games").join("fefw").join("main.sites");
     let extra = mod_sites(p)?;
     if extra.is_empty() {
+        let _ = fs::remove_file(p.libs().join("main_with_mods.sites")); // a list from mods that are gone must not stand for this lift
         return Ok(own_path);
     }
     let own = fs::read_to_string(&own_path).map_err(|e| format!("cannot read {}: {e}", own_path.display()))?;
@@ -1393,6 +1394,11 @@ mod tests {
         nso[0x18..0x1C].copy_from_slice(&0x1000u32.to_le_bytes());
         fs::write(p.plain_exefs().join("main"), &nso).unwrap();
         check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x7100002000\n", "0x7100002000 is outside main's code");
+        // no mod adds sites any more: the stale combined list is removed, so it cannot stand for a lift made without them
+        fs::remove_dir_all(game.join("mods")).unwrap();
+        assert!(p.libs().join("main_with_mods.sites").is_file());
+        assert_eq!(lift_sites_file(&p).unwrap(), own);
+        assert!(!p.libs().join("main_with_mods.sites").exists());
         let _ = fs::remove_dir_all(&root);
     }
 }
