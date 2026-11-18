@@ -86,6 +86,9 @@ if(NXRT_BUILD_TESTS)
         add_test(NAME ${g} COMMAND nxrt_tests ${g} WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
         set_tests_properties(${g} PROPERTIES TIMEOUT 120)
     endforeach()
+    if(TEST write_watch)
+        set_tests_properties(write_watch PROPERTIES TIMEOUT 300)   # 3000 region rebuilds under four faulting writers: 90-110 s on 4 cores
+    endif()
     message(STATUS "nxrt test groups: ${NXRT_GROUPS}")
 
     # Lifted-code integration tests (tests/lift): need the recompiler, its Python environment and the AArch64 clang.
@@ -106,20 +109,10 @@ if(NXRT_BUILD_GAMES)
         add_subdirectory(games/${_game})
     endforeach()
 endif()
-# The launcher's branding and factory settings: the data part of one game module and its launcher.rc (version info, manifest). Without that
-# module the launcher builds unbranded, with no resources.
-if(TARGET mpr_launcher AND TARGET nxrt_game_${NXRT_LAUNCHER_GAME}_data)
-    target_sources(mpr_launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/games/${NXRT_LAUNCHER_GAME}/launcher.rc")
-    target_link_libraries(mpr_launcher PRIVATE nxrt_game_${NXRT_LAUNCHER_GAME}_data)
-    target_compile_definitions(mpr_launcher PRIVATE NXRT_LAUNCHER_GAME_REGISTER=nxrt_register_game_${NXRT_LAUNCHER_GAME}_data)
-    target_link_options(mpr_launcher PRIVATE /MANIFEST:NO)   # launcher.rc carries the manifest
-endif()
-# Each test executable registers the most of the test game it links: the data part (launcher tests), the core part (runtime tests), the whole
-# module (graphics tests). tests/test_main.cpp calls NXRT_TEST_GAME_REGISTER before the first test.
+# Each test executable registers the most of the test game it links: the core part (runtime tests), the whole module (graphics tests). tests/test_main.cpp calls NXRT_TEST_GAME_REGISTER before the first test.
 if(NXRT_BUILD_TESTS AND NXRT_TEST_GAME)
     set(_g "${NXRT_TEST_GAME}")
-    foreach(pair "nxrt_tests;nxrt_game_${_g}_core;nxrt_register_game_${_g}_core" "nxrt_gfx_tests;nxrt_game_${_g};nxrt_register_game_${_g}"
-                 "mpr_launcher_tests;nxrt_game_${_g}_data;nxrt_register_game_${_g}_data")
+    foreach(pair "nxrt_tests;nxrt_game_${_g}_core;nxrt_register_game_${_g}_core" "nxrt_gfx_tests;nxrt_game_${_g};nxrt_register_game_${_g}")
         list(GET pair 0 exe)
         list(GET pair 1 lib)
         list(GET pair 2 fn)

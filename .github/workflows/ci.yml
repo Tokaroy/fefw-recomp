@@ -2,8 +2,8 @@
 #
 #   oracle-lock  recomp/oracle/SHA256SUMS still matches the locked oracle files (recomp/oracle/LOCKED, scripts/oracle_sums.py)
 #   linux        launcher: cargo fmt, clippy, cargo test, the frontend build; Python: every .py under recomp/ and tools/ compiles
-#   runtime      Windows, only when runtime/, recomp/include, tools/tiling or tools/textures change: nxrt_tests and
-#                mpr_launcher_tests under CTest. The graphics groups (nxrt_gfx_tests) need a Vulkan GPU and the lift tests the
+#   runtime      Windows, only when runtime/, recomp/include, tools/tiling or tools/textures change: nxrt_tests under
+#                CTest. The graphics groups (nxrt_gfx_tests) need a Vulkan GPU and the lift tests the
 #                recomp toolchain and Unicorn venv, so neither runs here.
 #
 # Pull requests from forks run with a read-only token and no secrets; none of these jobs needs one.
@@ -148,7 +148,7 @@ jobs:
           $cfg = "cmake -S runtime -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl " +
                  "-DCMAKE_C_COMPILER_LAUNCHER=$sccache -DCMAKE_CXX_COMPILER_LAUNCHER=$sccache " +
                  "-DNXRT_BUILD_LIFT_TESTS=OFF -DNXRT_ASTC2BC7=OFF -DNXRT_DEPS_DIR=`"$env:NXRT_DEPS_DIR`""
-          cmd /c "call runtime\scripts\env.cmd && $cfg && cmake --build build --target nxrt_tests mpr_launcher_tests -j 4"
+          cmd /c "call runtime\scripts\env.cmd && $cfg && cmake --build build --target nxrt_tests -j 4"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # every CTest entry except the groups of nxrt_gfx_tests, read from their sources the way runtime/cmake/gfx.cmake does. The groups
