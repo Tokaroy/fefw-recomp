@@ -102,6 +102,7 @@ constexpr IniKey kIni[] = {
     {"fefw", "fps60", "0", Norm::Bool, true, "60 fps"},
     {"fefw", "fps120", "0", Norm::Bool, true, "120 fps"},
     {"fefw", "smooth_step", "auto", Norm::Text, true, "smooth time step"},
+    {"fefw", "frame_fixes", "1", Norm::Bool, false, "frame-rate fixes"},
     {"fefw", "clock_log", "10", Norm::Number, false, "game clock log"},
     {"dlss", "upscaler", "taau", Norm::Text, true, "upscaler"},
     {"dlss", "frame_gen", "0", Norm::Text, true, "frame generation"},
@@ -893,8 +894,8 @@ void framerate_page(UiHost& host, Menu& m, const play::LiveStatus& live, gfx::Ov
         const IniKey& k60 = *ini_key("fefw", "fps60");
         const IniKey& k120 = *ini_key("fefw", "fps120");
         row(m, "Gameplay frame rate", When::Restart,
-            "30 is the game's own. 60 runs gameplay at 60 at the right speed (dialogue text types twice as fast). 120 needs a frame limit of 120 "
-            "or more and a fast PC; frame-counted effects such as the dialogue typing run 4 times as fast.");
+            "30 is the game's own. 60 runs gameplay at 60 at the right speed. 120 needs a frame limit of 120 or more and a fast PC. "
+            "Frame-rate fixes below keep frame-counted effects at their 30 fps speed.");
         if (!(ini_env(k60) || ini_env(k120))) {
             const auto is_on = [](const IniKey& k) { return normalized(k, ini_now(k)) == "1"; };
             int idx = is_on(k120) ? 2 : is_on(k60) ? 1 : 0;
@@ -916,6 +917,18 @@ void framerate_page(UiHost& host, Menu& m, const play::LiveStatus& live, gfx::Ov
         ini_combo_row(m, *ini_key("fefw", "smooth_step"), "Smooth time step",
                       "Keeps the game clock exact when frames are uneven: the game's step plus a quarter of the time it still owes.", kSmooth,
                       kSmoothVals, 3);
+        const IniKey& kfix = *ini_key("fefw", "frame_fixes");
+        row(m, "Frame-rate fixes", When::Live,
+            "At 60 and 120 fps: physics, capes and hair, cutscene shakes, map markers, menu animations and dialogue typing that count frames move at "
+            "their 30 fps speed. [fefw] frame_fixes_skip in the ini turns single groups off.");
+        if (!env_locked(kfix)) {
+            constexpr const char* kFix[] = {"On", "Off"};
+            int fidx = normalized(kfix, ini_now(kfix)) == "1" ? 0 : 1;
+            if (combo(m, "##fix", &fidx, kFix, 2)) {
+                frame_set_enabled(fidx == 0);   // applies at once (fefw_frame.cpp)
+                ini_put(m, kfix, fidx == 0 ? "1" : "0");
+            }
+        }
         end_rows();
     }
     if (ck.valid)
