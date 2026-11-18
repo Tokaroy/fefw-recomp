@@ -52,6 +52,11 @@ void settings_menu(play::UiHost& host, gfx::Overlay& overlay);
 
 // fefw_res.cpp: [fefw] output / render_ratio / render / shadow_size / quality (the render configs, notes/resolution.md)
 void res_install(uint64_t base);
+
+// fefw_detail.cpp: [fefw] reflections / ambient_occlusion / crowd_detail / scenery_detail, the game's graphics settings files edited as
+// they load. Install before the game's file system is set up.
+void detail_install();
+std::string detail_summary();      // "" when nothing is changed
 // The render-target pool's allocator was given room past the pool ([fefw] rt_pool_overflow_mb): renders above half of a 2160p output fit.
 bool res_rt_pool_extended();
 

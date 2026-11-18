@@ -63,6 +63,14 @@ const TABS = [
     id: 'graphics', title: 'settings.tab.graphics', icon: 'sparkles',
     groups: [
       {
+        // Low / Medium / High / Ultra: render scale, shadow map size, quality and the four detail keys together (PRESETS below). Not a key of
+        // its own: it shows the preset those seven hold, Custom when they hold anything else, as the F1 menu does (games/fefw/fefw_presets.h).
+        title: 'settings.sec.preset', icon: 'sliders-horizontal', file: 'game',
+        fields: [
+          { id: 'preset', type: 'preset', label: 'settings.preset.label', hint: 'settings.preset.hint' },
+        ],
+      },
+      {
         title: 'settings.sec.upscaling', icon: 'image-upscale', file: 'game', gpuNote: true,
         fields: [
           { id: 'upscaler', type: 'select', label: 'settings.upscaler.label', sec: 'dlss', key: 'upscaler', def: 'taau',
@@ -97,9 +105,19 @@ const TABS = [
         title: 'settings.sec.detail', icon: 'layers', file: 'game',
         fields: [
           { id: 'quality', type: 'select', label: 'settings.quality.label', sec: 'fefw', key: 'quality', def: 'console',
-            options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked']] },
+            options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked'], ['handheld', 'settings.quality.handheld']] },
           { id: 'shadow_size', type: 'select', label: 'settings.shadowSize.label', sec: 'fefw', key: 'shadow_size', def: '0',
-            options: [['0', 'settings.shadowSize.game'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
+            options: [['0', 'settings.shadowSize.game'], ['1024', '1024'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
+          // the game's own graphics data, edited as it loads (games/fefw/fefw_detail.cpp): applies at the next start
+          { id: 'reflections', type: 'select', label: 'settings.reflections.label', sec: 'fefw', key: 'reflections', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.reflections.reduced'], ['off', 'settings.detail.off']],
+            hint: 'settings.reflections.hint', restart: true },
+          { id: 'ambient_occlusion', type: 'select', label: 'settings.ao.label', sec: 'fefw', key: 'ambient_occlusion', def: '1',
+            options: [['1', 'settings.detail.on'], ['0', 'settings.detail.off']], hint: 'settings.ao.hint', restart: true },
+          { id: 'crowd_detail', type: 'select', label: 'settings.crowdDetail.label', sec: 'fefw', key: 'crowd_detail', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.detail.reduced']], hint: 'settings.crowdDetail.hint', restart: true },
+          { id: 'scenery_detail', type: 'select', label: 'settings.sceneryDetail.label', sec: 'fefw', key: 'scenery_detail', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.detail.reduced']], hint: 'settings.sceneryDetail.hint', restart: true },
           { id: 'texture_detail', type: 'select', label: 'settings.textureDetail.label', sec: 'gfx', key: 'texture_detail', def: 'auto',
             options: [['auto', 'settings.textureDetail.auto'], ['full', 'settings.textureDetail.full'], ['half', 'settings.textureDetail.half']],
             hint: 'settings.textureDetail.hint', restart: true },
@@ -224,6 +242,25 @@ const TABS = [
   },
 ];
 
+// The graphics presets: the same table as runtime/games/fefw/fefw_presets.h (and runtime/docs/CONFIG.md). A preset sets these fields.
+const DETAIL_FULL = { reflections: 'full', ambient_occlusion: '1', crowd_detail: 'full', scenery_detail: 'full' };
+const PRESETS = [
+  ['low', 'settings.preset.low', { render_ratio: '0.5', shadow_size: '1024', quality: 'handheld',
+    reflections: 'reduced', ambient_occlusion: '0', crowd_detail: 'reduced', scenery_detail: 'reduced' }],
+  ['medium', 'settings.preset.medium', { render_ratio: '0', shadow_size: '0', quality: 'console', ...DETAIL_FULL }],
+  ['high', 'settings.preset.high', { render_ratio: '0.67', shadow_size: '4096', quality: 'docked', ...DETAIL_FULL }],
+  ['ultra', 'settings.preset.ultra', { render_ratio: '1.0', shadow_size: '8192', quality: 'docked', ...DETAIL_FULL }],
+];
+const lowerOf = (x) => String(x).trim().toLowerCase();
+const switchOn = (x) => !['0', 'false', 'off', 'no'].includes(lowerOf(x));
+/** The preset the fields hold now ('' = Custom), compared by meaning as the runtime reads them. */
+const presetOf = (m) => {
+  const hit = PRESETS.find(([, , v]) => Number(m.render_ratio) === Number(v.render_ratio) && Number(m.shadow_size) === Number(v.shadow_size)
+    && ['quality', 'reflections', 'crowd_detail', 'scenery_detail'].every((k) => lowerOf(m[k]) === v[k])
+    && switchOn(m.ambient_occlusion) === switchOn(v.ambient_occlusion));
+  return hit ? hit[0] : '';
+};
+
 // The open tab, kept while the launcher runs (saving re-renders the page; it should come back on the same tab)
 let activeTab = TABS[0].id;
 // The fields whose full description is open, kept across redraws like the tab
@@ -268,6 +305,7 @@ export async function render(el, ctx) {
     text: (f) => get(f, f.key, f.def),
     number: (f) => String(get(f, f.key, f.def)),
     language: () => getLang(),
+    preset: () => '', // shown from the fields it sets (presetOf), never stored
   };
   const WRITE = {
     select: (f, x) => [[f.sec, f.key, x]],
@@ -282,6 +320,7 @@ export async function render(el, ctx) {
     text: (f, x) => [[f.sec, f.key, String(x).trim()]],
     number: (f, x) => [[f.sec, f.key, String(clamp(parseInt(x, 10) || 0, f.min, f.max))]],
     language: () => [],
+    preset: () => [],
   };
 
   // Every field, with its file filled in from the group. A hidden NVIDIA-only field stays in the model: it is never dirty, so never written.
@@ -314,6 +353,11 @@ export async function render(el, ctx) {
     text: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
     number: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
     path: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
+    preset: (f) => {
+      const cur = presetOf(model);
+      const custom = cur ? '' : `<option value="" selected disabled>${esc(t('settings.preset.custom'))}</option>`;
+      return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${custom}${PRESETS.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${esc(t(l))}</option>`).join('')}</select>`;
+    },
     language: (f, x) => `<select id="f-${f.id}" data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
   };
 
@@ -419,7 +463,7 @@ export async function render(el, ctx) {
       } else if (f.type === 'toggle') {
         const c = el.querySelector(`[data-f="${f.id}"]`);
         if (c) c.checked = !!x;
-      } else {
+      } else if (f.type !== 'preset') {
         const c = el.querySelector(`[data-f="${f.id}"]`);
         if (c) c.value = x;
       }
@@ -654,6 +698,12 @@ export async function render(el, ctx) {
       const part = input.dataset.part;
       const onChange = () => {
         const v = input.type === 'checkbox' ? input.checked : input.value;
+        if (f.type === 'preset') {
+          const p = PRESETS.find(([id]) => id === v);
+          if (p) Object.assign(model, p[2]);
+          draw();
+          return;
+        }
         if (part) model[f.id] = { ...model[f.id], [part]: v };
         else model[f.id] = f.type === 'range' ? parseInt(v, 10) : v;
         if (f.type === 'language') {

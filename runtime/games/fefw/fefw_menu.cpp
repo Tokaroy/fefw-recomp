@@ -16,6 +16,7 @@
 // frame generation are set up once, the frame-rate hooks are installed at start) says "restart", and the row shows the value in force until
 // then; nothing pretends to be live. A key set by an environment variable (NXRT_...) wins over the file: the row says so and is locked.
 #include "fefw_game.h"
+#include "fefw_presets.h"
 
 #include <algorithm>
 #include <array>
@@ -94,6 +95,10 @@ constexpr IniKey kIni[] = {
     {"fefw", "render", "", Norm::Text, true, "fixed render size"},
     {"fefw", "shadow_size", "0", Norm::Number, true, "shadow resolution"},
     {"fefw", "quality", "console", Norm::Text, true, "quality"},
+    {"fefw", "reflections", "full", Norm::Text, true, "reflections"},
+    {"fefw", "ambient_occlusion", "1", Norm::Bool, true, "ambient occlusion"},
+    {"fefw", "crowd_detail", "full", Norm::Text, true, "crowd detail"},
+    {"fefw", "scenery_detail", "full", Norm::Text, true, "scenery detail"},
     {"fefw", "fps60", "0", Norm::Bool, true, "60 fps"},
     {"fefw", "fps120", "0", Norm::Bool, true, "120 fps"},
     {"fefw", "smooth_step", "auto", Norm::Text, true, "smooth time step"},
@@ -505,8 +510,17 @@ constexpr const char* kRatioNames[] = {"Game default (half per side)", "33% (ult
 constexpr const char* kRatioVals[] = {"0", "0.33", "0.5", "0.59", "0.67", "0.75", "0.85", "1.0"};
 constexpr const char* kShadowNames[] = {"Game default (2048 docked)", "1024", "1536", "2048", "3072", "4096", "6144", "8192"};
 constexpr const char* kShadowVals[] = {"0", "1024", "1536", "2048", "3072", "4096", "6144", "8192"};
-constexpr const char* kQualityNames[] = {"Console (handheld configs keep their cuts)", "Docked quality in every config"};
-constexpr const char* kQualityVals[] = {"console", "docked"};
+constexpr const char* kQualityNames[] = {"Console (handheld configs keep their cuts)", "Docked quality in every config",
+                                        "Handheld quality in every config (lighter)"};
+constexpr const char* kQualityVals[] = {"console", "docked", "handheld"};
+constexpr const char* kReflectionNames[] = {"Full", "Reduced (8 rays, a little grainier)", "Off"};
+constexpr const char* kReflectionVals[] = {"full", "reduced", "off"};
+constexpr const char* kDetailOnOffNames[] = {"On", "Off"};
+constexpr const char* kDetailOnOffVals[] = {"1", "0"};
+constexpr const char* kDetailLevelNames[] = {"Full", "Reduced"};
+constexpr const char* kDetailLevelVals[] = {"full", "reduced"};
+constexpr const char* kPresetNames[] = {"Low", "Medium (console)", "High", "Ultra"};
+static_assert(std::size(kPresetNames) == kGraphicsPresetCount);
 constexpr const char* kUpscalerNames[] = {"TAAU (built in, temporal)", "DLSS (NVIDIA RTX, through Streamline)", "FSR 3 (AMD FidelityFX)",
                                           "XeSS (Intel, any GPU with DP4a)", "Bilinear (no anti-aliasing)", "Auto (DLSS, else XeSS, else FSR 3, else TAAU)"};
 constexpr const char* kUpscalerVals[] = {"taau", "dlss", "fsr3", "xess", "bilinear", "auto"};
@@ -586,8 +600,9 @@ void resolution_group(Menu& m) {
         ini_combo_row(m, *ini_key("fefw", "shadow_size"), "Shadow resolution", "The shadow map's base size. Larger is sharper and costs GPU time and memory (8192: about 1.3 GB more).",
                       kShadowNames, kShadowVals, 8);
         ini_combo_row(m, *ini_key("fefw", "quality"), "Quality",
-                      "Docked gives every render configuration the docked one's shadows and effects, so a handheld or 1080p answer keeps them.",
-                      kQualityNames, kQualityVals, 2);
+                      "Docked gives every render configuration the docked one's shadows and effects, so a handheld or 1080p answer keeps them. "
+                      "Handheld gives every one the handheld configuration's lighter shadows and effects, for a slower GPU.",
+                      kQualityNames, kQualityVals, 3);
         end_rows();
     }
     // what the chosen sizes mean
@@ -802,8 +817,47 @@ void live_status_group() {
     if (s.fg_dlss && s.status) ImGui::TextDisabled(tr("Streamline status %u"), s.status);
 }
 
+// Graphics preset: the seven keys of fefw_presets.h together; Custom when they hold anything else.
+void preset_group(Menu& m) {
+    section("Preset");
+    if (!begin_rows("preset")) return;
+    row(m, "Graphics preset", When::Restart,
+        "Sets Render scale, Shadow resolution, Quality and the four detail settings together. Low is for a slower GPU or a handheld PC; "
+        "Medium is the console's picture (the defaults); High and Ultra render sharper. Output size and the upscaler are not changed.");
+    int idx = graphics_preset_current();
+    if (combo(m, "##preset", &idx, kPresetNames, kGraphicsPresetCount)) {
+        const GraphicsPreset& p = kGraphicsPresets[idx];
+        for (int k = 0; k < kPresetKeyCount; ++k) {
+            const IniKey& key = *ini_key("fefw", kPresetKeys[k]);
+            if (normalized(key, ini_now(key)) != normalized(key, p.values[k])) ini_put(m, key, p.values[k]);
+        }
+        NXLOG_I(kTag, "graphics preset %s", p.name);
+    }
+    end_rows();
+}
+
+void detail_group(Menu& m) {
+    section("Graphics detail");
+    ImGui::TextWrapped(tr("The game's own graphics settings files, edited as they load: these apply on restart."));
+    if (!begin_rows("detail")) return;
+    ini_combo_row(m, *ini_key("fefw", "reflections"), "Reflections",
+                  "Screen-space reflections on floors and water. Reduced takes 8 rays instead of 32 and mostly helps in the hubs.",
+                  kReflectionNames, kReflectionVals, 3);
+    ini_combo_row(m, *ini_key("fefw", "ambient_occlusion"), "Ambient occlusion",
+                  "The soft shading in corners. Off saves GPU time everywhere, with flatter lighting.", kDetailOnOffNames, kDetailOnOffVals, 2);
+    ini_combo_row(m, *ini_key("fefw", "crowd_detail"), "Crowd detail",
+                  "Reduced: crowd characters switch to their simpler models twice as soon, lightening busy towns and battles.",
+                  kDetailLevelNames, kDetailLevelVals, 2);
+    ini_combo_row(m, *ini_key("fefw", "scenery_detail"), "Scenery detail",
+                  "Reduced: scenery switches to its simpler versions at 60% of the distance (50 m becomes 30 m).", kDetailLevelNames,
+                  kDetailLevelVals, 2);
+    end_rows();
+}
+
 void graphics_page(UiHost& host, Menu& m) {
+    preset_group(m);
     resolution_group(m);
+    detail_group(m);
     upscaler_group(m);
     live_status_group();
     hdr_group(host, m);
