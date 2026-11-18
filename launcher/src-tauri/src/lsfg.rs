@@ -11,6 +11,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// LSFG-VK's install instructions, for doing it by hand
 pub const INSTALL_URL: &str = "https://lsfg-vk.dev/docs/installation/";
@@ -18,6 +19,11 @@ pub const INSTALL_URL: &str = "https://lsfg-vk.dev/docs/installation/";
 /// LSFG-VK's own build of its 2.0.0 release (layer, 32-bit layer, lsfg-vk-cli and lsfg-vk-ui), as published on builds.lsfg-vk.dev
 const BUILD_URL: &str = "https://builds.lsfg-vk.dev/lsfg-vk-2.0.0.tar.xz";
 const BUILD_SHA256: &str = "08bdbdf373a111022df87dac7aa87e3b564bb841f961552e3ca85fea12b5aa74";
+/// the manifests in that build, whose library_path is relative to them (../../../lib)
+const MANIFESTS: [&str; 2] = ["VkLayer_LSFGVK_frame_generation.json", "VkLayer_LSFGVK_frame_generation.x86.json"];
+
+/// an install is running: one at a time, whichever Settings page started it
+static INSTALLING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Serialize, Clone, Default)]
 pub struct Status {
@@ -29,6 +35,8 @@ pub struct Status {
     pub wrong_branch: bool,
     /// how `install` would install the layer here: "shelly" (CachyOS's package) or "local" (LSFG-VK's build into ~/.local)
     pub install: String,
+    /// `install` is running
+    pub installing: bool,
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -73,6 +81,7 @@ pub fn status() -> Status {
         wrong_branch: dll.is_none() && dirs.iter().any(|d| d.join("Lossless.dll").is_file()),
         dll: dll.map(|p| crate::dump::fwd(&p)).unwrap_or_default(),
         install: if shelly().is_some() { "shelly" } else { "local" }.into(),
+        installing: INSTALLING.load(Ordering::SeqCst),
     }
 }
 
@@ -98,6 +107,16 @@ pub fn install() -> Result<String, String> {
     if !cfg!(target_os = "linux") {
         return Err("LSFG-VK is only for Linux.".into());
     }
+    if INSTALLING.swap(true, Ordering::SeqCst) {
+        return Err("LSFG-VK is already being installed.".into());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            INSTALLING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done;
     if has_layer() {
         return Ok("The LSFG-VK layer is already installed.".into());
     }
@@ -140,7 +159,36 @@ fn install_local() -> Result<String, String> {
     let res = download_and_unpack(&archive, &prefix);
     let _ = std::fs::remove_file(&archive);
     res?;
+    copy_manifests(&prefix)?;
     Ok(format!("Installed LSFG-VK 2.0.0 from builds.lsfg-vk.dev into {}.", prefix.display()))
+}
+
+/// The Vulkan loader looks for the player's layers in XDG_DATA_HOME when it is set, not in ~/.local/share: the manifests go there
+/// too (as `data_dirs` searches), pointing at the libraries in ~/.local/lib.
+fn copy_manifests(prefix: &Path) -> Result<(), String> {
+    let Some(data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()) else { return Ok(()) };
+    let from = prefix.join("share/vulkan/implicit_layer.d");
+    let to = data.join("vulkan/implicit_layer.d");
+    if std::fs::canonicalize(&from).ok() == std::fs::canonicalize(&to).ok() && to.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&to).map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+    for name in MANIFESTS {
+        let src = from.join(name);
+        let text = std::fs::read_to_string(&src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let dst = to.join(name);
+        std::fs::write(&dst, with_library_dir(&text, &prefix.join("lib"))?).map_err(|e| format!("cannot write {}: {e}", dst.display()))?;
+    }
+    Ok(())
+}
+
+/// A layer manifest whose library_path is the same library file in `lib`.
+fn with_library_dir(manifest: &str, lib: &Path) -> Result<String, String> {
+    let mut v: serde_json::Value = serde_json::from_str(manifest).map_err(|e| format!("LSFG-VK's layer manifest cannot be read: {e}"))?;
+    let path = v.pointer_mut("/layer/library_path").ok_or("LSFG-VK's layer manifest has no library_path.")?;
+    let file = path.as_str().and_then(|p| Path::new(p).file_name()).ok_or("LSFG-VK's layer manifest has no library file.")?;
+    *path = lib.join(file).to_string_lossy().into_owned().into();
+    serde_json::to_string_pretty(&v).map_err(|e| e.to_string())
 }
 
 fn download_and_unpack(archive: &Path, prefix: &Path) -> Result<(), String> {
@@ -222,6 +270,15 @@ mod tests {
         let s = Status { layer: true, wrong_branch: true, ..Default::default() };
         assert!(problem(&s).unwrap().contains("Betas"));
         assert!(problem(&Status { layer: true, dll: "/a".into(), ..Default::default() }).is_none());
+    }
+
+    #[test]
+    fn copied_manifests_point_at_the_library_by_full_path() {
+        let m = r#"{"file_format_version":"1.1.0","layer":{"name":"VK_LAYER_LSFGVK_frame_generation","library_path":"../../../lib/liblsfg-vk-layer.so"}}"#;
+        let out: serde_json::Value = serde_json::from_str(&with_library_dir(m, Path::new("/home/p/.local/lib")).unwrap()).unwrap();
+        assert_eq!(out["layer"]["library_path"], "/home/p/.local/lib/liblsfg-vk-layer.so");
+        assert_eq!(out["layer"]["name"], "VK_LAYER_LSFGVK_frame_generation");
+        assert!(with_library_dir("{}", Path::new("/l")).is_err());
     }
 
     #[test]

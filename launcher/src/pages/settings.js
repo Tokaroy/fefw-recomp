@@ -242,7 +242,8 @@ export async function render(el, ctx) {
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
-  let lsfgInstalling = false; // the Install LSFG-VK button runs (installLsfg)
+  const visit = el.dataset.visit; // this render is still the page on show (main.js go)
+  const live = () => el.dataset.visit === visit;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
   const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
@@ -491,6 +492,7 @@ export async function render(el, ctx) {
     if (!note) return;
     const was = fieldCtx.lsfgReady;
     const r = await api('lsfg_status').catch(() => null);
+    if (!live()) return;
     if (!r) { note.textContent = ''; return; }
     lsfgSt = r;
     if (fieldCtx.lsfgReady !== was) { draw(); return; }
@@ -507,8 +509,8 @@ export async function render(el, ctx) {
       row.style.marginTop = 'var(--space-2)';
       const go = document.createElement('button');
       go.className = 'btn';
-      go.disabled = lsfgInstalling;
-      go.textContent = t(lsfgInstalling ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
+      go.disabled = r.installing;
+      go.textContent = t(r.installing ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
       go.addEventListener('click', (ev) => { ev.preventDefault(); installLsfg(); });
       const link = document.createElement('button');
       link.className = 'btn quiet';
@@ -516,19 +518,19 @@ export async function render(el, ctx) {
       link.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
       row.append(go, link);
       note.append(document.createElement('br'), how, row);
+      // an install started from an earlier visit of this page: follow it until it ends
+      if (r.installing) setTimeout(checkLsfg, 1000);
     }
   }
   async function installLsfg() {
-    if (lsfgInstalling) return;
-    lsfgInstalling = true;
+    const done = api('install_lsfg');
     checkLsfg();
     try {
-      toast(await api('install_lsfg'), 'ok');
+      toast(await done, 'ok');
     } catch (e) {
       toast(errText(e), 'error');
     }
-    lsfgInstalling = false;
-    checkLsfg();
+    if (live()) checkLsfg();
   }
   let checkTimer = 0;
 
