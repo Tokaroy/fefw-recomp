@@ -187,11 +187,49 @@ fn main_header(p: &Paths) -> Option<(String, u64, u64)> {
     Some((head[0x40..0x60].iter().map(|b| format!("{b:02X}")).collect(), word(0x14), word(0x18)))
 }
 
-/// One site a mod adds: `<mod>/exefs/<file>:<line>`, kind, guest address.
-type ModSite = (String, String, u64);
+/// One site a mod adds: the mod's name (`<folder>` or `<folder>/<subfolder>`), `<mod>/exefs/<file>:<line>`, kind, guest address.
+type ModSite = (String, String, String, u64);
 
 const MAIN_BASE: u64 = 0x71_0000_0000;
 const NEXT_MODULE: u64 = 0x75_0000_0000;
+/// This game's program ID (04007EF01F8AE000): a 16-digit hex mods subfolder that is another title's ID is skipped.
+const PROGRAM_ID: u64 = 0x0400_7EF0_1F8A_E000;
+
+/// The mods as the runtime finds them (runtime/src/services/common.cpp find_mods, game-build/release/fefw_build.py find_mod_dirs):
+/// a folder below mods/ that has romfs/ or exefs/ is a mod; names starting with -, _ or . are off; a 16-digit hex folder that is
+/// another title's program ID is skipped. Sorted by name (lower case), so the mod whose name sorts last wins where two add the
+/// same site.
+fn find_mod_dirs(root: &Path) -> Vec<(String, PathBuf)> {
+    fn walk(d: &Path, name: &str, depth: u32, out: &mut Vec<(String, PathBuf)>) {
+        if depth > 0 && (d.join("romfs").is_dir() || d.join("exefs").is_dir()) {
+            out.push((name.to_string(), d.to_path_buf()));
+            return;
+        }
+        if depth >= 4 {
+            return;
+        }
+        let Ok(rd) = fs::read_dir(d) else { return };
+        let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        subs.sort();
+        for sub in subs {
+            let Some(folder) = sub.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+            if folder.is_empty() || folder.starts_with(['-', '_', '.']) {
+                continue; // switched off
+            }
+            if folder.len() == 16 && folder.chars().all(|c| c.is_ascii_hexdigit()) && u64::from_str_radix(&folder, 16).ok() != Some(PROGRAM_ID) {
+                continue; // another title's mods
+            }
+            let joined = if name.is_empty() { folder } else { format!("{name}/{folder}") };
+            walk(&sub, &joined, depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    if root.is_dir() {
+        walk(root, "", 0, &mut out);
+    }
+    out.sort_by_key(|(name, _)| name.to_lowercase());
+    out
+}
 
 /// The installed mods' sites for this game build, checked as game-build/release/fefw_build.py collect_mod_sites and write_sites
 /// check them, with the same messages: a kind a mod cannot add, a line that is not `<kind> <hex address>`, a file without
@@ -201,11 +239,7 @@ fn mod_sites(p: &Paths) -> Result<Vec<ModSite>, String> {
     let header = main_header(p);
     let bid = header.as_ref().map(|h| h.0.clone()).unwrap_or_default();
     let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(p.mods()) else { return Ok(out) };
-    let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|d| d.join("exefs").is_dir()).collect();
-    dirs.sort_by_key(|d| d.file_name().map(|n| n.to_string_lossy().to_lowercase()));
-    for d in dirs {
-        let name = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    for (name, d) in find_mod_dirs(&p.mods()) {
         let Ok(files) = fs::read_dir(d.join("exefs")) else { continue };
         let mut files: Vec<PathBuf> =
             files.flatten().map(|e| e.path()).filter(|f| f.is_file() && f.extension().is_some_and(|x| x.eq_ignore_ascii_case("sites"))).collect();
@@ -254,16 +288,11 @@ fn mod_sites(p: &Paths) -> Result<Vec<ModSite>, String> {
                         return Err(format!("{where_}:{ln}: 0x{addr:x} is outside main's code"));
                     }
                 }
-                out.push((format!("{where_}:{ln}"), kind, addr));
+                out.push((name.clone(), format!("{where_}:{ln}"), kind, addr));
             }
         }
     }
     Ok(out)
-}
-
-/// The mod folder of a site's `<mod>/exefs/<file>:<line>`.
-fn site_mod(where_: &str) -> &str {
-    where_.split('/').next().unwrap_or(where_)
 }
 
 /// The mods' sites missing from one lifted site list (their names, in mod order).
@@ -271,8 +300,7 @@ fn mods_missing_from(p: &Paths, list: &Path) -> Vec<String> {
     let Some((_, lifted)) = read_site_list(list) else { return vec![] };
     let lifted: std::collections::HashSet<(String, u64)> = lifted.into_iter().collect();
     let mut names: Vec<String> = Vec::new();
-    for (where_, kind, a) in mod_sites(p).unwrap_or_default() {
-        let name = site_mod(&where_).to_string();
+    for (name, _, kind, a) in mod_sites(p).unwrap_or_default() {
         if !lifted.contains(&(kind, a)) && !names.contains(&name) {
             names.push(name);
         }
@@ -280,13 +308,21 @@ fn mods_missing_from(p: &Paths, list: &Path) -> Vec<String> {
     names
 }
 
-/// Mods with a hook site that the lifted module libraries lack (work/build/fefw/main.sites). Empty when all mod sites are in it,
-/// or when a .sites file has an error (reported by mod_sites_problem instead). Before the first lift there is no list beside the
-/// libraries yet, so the comparison is against recomp/games/fefw/main.sites.
+/// The site list the lift uses and the last lift used: work/build/fefw/main_with_mods.sites when Set up wrote one, else
+/// main.sites itself. The configure-time copy beside the libraries (work/build/fefw/main.sites) is not used: CMake writes it
+/// before compiling, so a lift that was paused or failed already looks complete there while the libraries are still the old ones.
+fn lift_sites_path(p: &Paths) -> PathBuf {
+    let combined = p.libs().join("main_with_mods.sites");
+    if combined.is_file() {
+        combined
+    } else {
+        p.repo.join("recomp").join("games").join("fefw").join("main.sites")
+    }
+}
+
+/// Mods with a hook site that the lifted module libraries lack (the lift step's note).
 pub fn mods_missing_lift_sites(p: &Paths) -> Vec<String> {
-    let lifted = p.libs().join("main.sites");
-    let base = p.repo.join("recomp").join("games").join("fefw").join("main.sites");
-    mods_missing_from(p, if lifted.is_file() { &lifted } else { &base })
+    mods_missing_from(p, &lift_sites_path(p))
 }
 
 /// Mods with a hook site that the built fefw.exe was not lifted with (its fefw.sites next to it). Empty when the exe or its list
@@ -301,6 +337,18 @@ fn mod_sites_problem(p: &Paths) -> Option<String> {
     mod_sites(p).err()
 }
 
+/// Whether the lift step has nothing to do: the libraries are newer than the NSO and no mod site is missing from the list they
+/// were lifted with. When Set up wrote a combined list, main's library must also be newer than it: Set up writes the list before
+/// starting the lift (and CMake copies it beside the libraries at configure time, before compiling), so a lift that was paused
+/// or failed is not mistaken for a finished one and Set up lifts again.
+fn lift_done(p: &Paths) -> bool {
+    if !libs_ok(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
+        return false;
+    }
+    let combined = p.libs().join("main_with_mods.sites");
+    !combined.is_file() || mtime(&p.libs().join("fefw_main.lib")) >= mtime(&combined)
+}
+
 /// Checkout: the site list the lift uses, main.sites plus the mods' sites (written only when it changes, since the lift depends on
 /// the file). Without mod sites it is main.sites itself. A problem in a .sites file stops Set up with its message.
 fn lift_sites_file(p: &Paths) -> Result<PathBuf, String> {
@@ -313,7 +361,7 @@ fn lift_sites_file(p: &Paths) -> Result<PathBuf, String> {
     let have: std::collections::HashSet<(String, u64)> = read_site_list(&own_path).map(|(_, s)| s).unwrap_or_default().into_iter().collect();
     let mut text = own.trim_end().to_string() + "\n\n# ---- added by mods (exefs/*.sites)\n";
     let mut seen = std::collections::HashSet::new();
-    for (where_, kind, a) in extra {
+    for (_, where_, kind, a) in extra {
         if have.contains(&(kind.clone(), a)) || !seen.insert((kind.clone(), a)) {
             continue;
         }
@@ -522,7 +570,7 @@ pub fn steps(p: &Paths, running: Option<&str>) -> Vec<StepState> {
         "build" => package_build_ok(p),
         "python" => python_ok(p),
         "exefs" => exefs_ok(p),
-        "lift" => libs_ok(p) && mod_sites_problem(p).is_none() && mods_missing_lift_sites(p).is_empty(),
+        "lift" => lift_done(p),
         "exe" => exe_ok(p),
         "textures" => textures_ok(p),
         "harness" => p.harness().is_file() && shaders_ok(p),
@@ -1059,7 +1107,7 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    if !libs_ok(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
+    if !lift_done(p) {
         let sites = lift_sites_file(p)?;
         let mut c = Command::new("cmd.exe");
         c.args(["/d", "/c", "recomp\\scripts\\build_game.cmd", "fefw"]).env("NX_JOBS", jobs.to_string()).env("FEFW_SITES", &sites);
@@ -1251,17 +1299,32 @@ mod tests {
         let other = game.join("mods").join("Old_Mod").join("exefs");
         fs::create_dir_all(&other).unwrap();
         fs::write(other.join("old.sites"), "@nsobid 45EAC7636FFC32C7\nmidhook 0x7100001000\n").unwrap();
+        // mods are found as the runtime finds them: a switched-off folder (-, _, .) is skipped, another title's 16-digit hex
+        // folder is skipped, this title's is walked through, and a mod may sit in a subfolder
+        let off = game.join("mods").join("-Off_Mod").join("exefs");
+        fs::create_dir_all(&off).unwrap();
+        fs::write(off.join("off.sites"), "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x71016f21f8\n").unwrap();
+        let other_title = game.join("mods").join("contents").join("0100ABCDEF012345").join("Sub_Mod").join("exefs");
+        fs::create_dir_all(&other_title).unwrap();
+        fs::write(other_title.join("sub.sites"), "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x71016f21fc\n").unwrap();
+        let nested = game.join("mods").join("contents").join("04007EF01F8AE000").join("Nested_Mod").join("exefs");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("nested.sites"), "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x71016f2200\n").unwrap();
 
-        assert_eq!(mod_sites(&p).unwrap().len(), 2); // the two midhooks of Some_Mod
-                                                     // no exe list yet: nothing to compare with
+        let sites = mod_sites(&p).unwrap();
+        assert_eq!(sites.len(), 3); // the two midhooks of Some_Mod plus Nested_Mod's
+        assert!(sites.iter().any(|(n, _, _, _)| n == "Some_Mod"));
+        assert!(sites.iter().any(|(n, _, _, _)| n == "contents/04007EF01F8AE000/Nested_Mod"));
+        assert!(!sites.iter().any(|(n, _, _, _)| n.contains("Off_Mod") || n.contains("Sub_Mod")));
+        // no exe list yet: nothing to compare with
         assert!(mods_missing_sites(&p).is_empty());
-        // no lift list yet: compared with base main.sites, missing Some_Mod's new site
-        assert_eq!(mods_missing_lift_sites(&p), vec!["Some_Mod".to_string()]);
-        assert_eq!(missing_sites_detail(&p), "new hook sites from Some_Mod: Set up lifts the game with them");
+        // no lift list yet: compared with base main.sites, missing Some_Mod's and Nested_Mod's new sites
+        assert_eq!(mods_missing_lift_sites(&p), vec!["contents/04007EF01F8AE000/Nested_Mod".to_string(), "Some_Mod".to_string()]);
+        assert_eq!(missing_sites_detail(&p), "new hook sites from contents/04007EF01F8AE000/Nested_Mod, Some_Mod: Set up lifts the game with them");
         let list = p.exe().with_extension("sites");
         fs::create_dir_all(list.parent().unwrap()).unwrap();
         fs::write(&list, fs::read_to_string(&own).unwrap()).unwrap();
-        assert_eq!(mods_missing_sites(&p), vec!["Some_Mod".to_string()]);
+        assert_eq!(mods_missing_sites(&p), vec!["contents/04007EF01F8AE000/Nested_Mod".to_string(), "Some_Mod".to_string()]);
         // an exe and libraries whose times are in order are still not enough while the exe's list lacks a mod's site:
         // without this the exe step is "done", Set up skips build_fefw.ps1 and the lift step asks for a rebuild forever
         fs::create_dir_all(p.libs()).unwrap();
@@ -1270,28 +1333,47 @@ mod tests {
         }
         fs::write(p.exe(), "exe").unwrap();
         assert!(!exe_ok(&p));
-        fs::write(&list, "# hook sites of main\ninline 0x71007bf1c0\nmidhook 0x710188bd30\nmidhook 0x71016f21f4\n").unwrap();
+        // the lift step is not done either: the libraries are older than nothing was lifted with yet
+        assert!(!lift_done(&p));
+        let all = "# hook sites of main\ninline 0x71007bf1c0\nmidhook 0x710188bd30\nmidhook 0x71016f21f4\nmidhook 0x71016f2200\n";
+        fs::write(&list, all).unwrap();
         assert!(exe_ok(&p));
         fs::write(&list, fs::read_to_string(&own).unwrap()).unwrap();
 
+        // the combined list is about to be written; make sure it lands in a later timestamp tick than the libraries so the
+        // freshness comparison below is exact (Linux caches inode timestamps per tick)
+        std::thread::sleep(Duration::from_millis(20));
         let lift = lift_sites_file(&p).unwrap();
+        assert_eq!(lift, p.libs().join("main_with_mods.sites"));
         let text = fs::read_to_string(&lift).unwrap();
         assert!(text.contains("midhook 0x71016f21f4   # Some_Mod/exefs/some.sites:3"));
+        assert!(text.contains("midhook 0x71016f2200   # contents/04007EF01F8AE000/Nested_Mod/exefs/nested.sites:2"));
         assert_eq!(text.matches("0x710188bd30").count(), 1); // not added twice
-        assert!(!text.contains("0x7100001000"));
-        // the file is only rewritten when it changes, so the lift is not started again for nothing
+        assert!(!text.contains("0x7100001000")); // another game build
+        assert!(!text.contains("0x71016f21f8")); // switched off
+        assert!(!text.contains("0x71016f21fc")); // another title's folder
+                                                 // the file is only rewritten when it changes, so the lift is not started again for nothing
         let first = fs::metadata(&lift).unwrap().modified().unwrap();
         assert_eq!(lift_sites_file(&p).unwrap(), lift);
         assert_eq!(fs::metadata(&lift).unwrap().modified().unwrap(), first);
-        // libraries lifted from that list: nothing missing in the lift step any more
-        fs::create_dir_all(p.libs()).unwrap();
-        fs::write(p.libs().join("main.sites"), &text).unwrap();
-        assert!(mods_missing_lift_sites(&p).is_empty());
+        // the combined list was just written and the libraries were not lifted with it yet: the lift step is still todo, and it
+        // stays todo when the lift is paused (Set up writes the list before running the lift)
+        assert!(!lift_done(&p));
+        assert!(mods_missing_lift_sites(&p).is_empty()); // every mod site is in the list ...
+                                                         // ... but the libraries are older than it, so a paused lift is not mistaken for a finished one. A finished lift leaves
+                                                         // newer libraries: touch them and the step is done.
+        std::thread::sleep(Duration::from_millis(20));
+        for m in MODULES {
+            fs::write(p.libs().join(format!("fefw_{m}.lib")), "lib").unwrap();
+        }
+        assert!(lift_done(&p));
         // the exe built from that list: nothing missing there either
         fs::write(&list, &text).unwrap();
         assert!(mods_missing_sites(&p).is_empty());
 
-        // problems are reported with the release script's messages, and they are the lift step's note meanwhile
+        // problems are reported with the release script's messages, and they are the lift step's note meanwhile. Only Some_Mod
+        // is left with sites (Nested_Mod's would be outside the shrunken .text below and sort first).
+        fs::remove_file(nested.join("nested.sites")).unwrap();
         let bad = ex.join("bad.sites");
         let check = |text: &str, want: &str| {
             fs::write(&bad, text).unwrap();
