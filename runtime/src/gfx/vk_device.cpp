@@ -320,18 +320,22 @@ uint32_t device_local_heap(VmaAllocator a) {
 
 // Timed, not plain: the watchdog's freeze report reads these through memguard_video / memguard_footprint_host, and a budget
 // query stalled in VMA or the driver during a GPU freeze must not keep the report from being written. A read that cannot take
-// the lock within 200 ms reports zero / nothing instead.
+// the lock within 200 ms reports the last figure it read (the guard compares footprint minus this with its limit, so a zero would
+// count dedicated VRAM against it and could stop the game).
 std::timed_mutex g_guard_mu;           // the memguard thread reads these through gpu_bytes_for_guard; the device destructor clears them
 VmaAllocator g_guard_vma = nullptr;
 int g_guard_heap = -1;                 // -1: nothing to subtract
+std::atomic<uint64_t> g_guard_last{0};   // the last discount read under the lock
 uint64_t gpu_bytes_for_guard() {      // the device's dedicated memory in use by this process, for the memory guard (nxrt/memguard.h)
     // Held across the query: unregister_vma_gauges takes the same lock before the allocator is destroyed.
     std::unique_lock<std::timed_mutex> lk(g_guard_mu, std::defer_lock);
-    if (!lk.try_lock_for(std::chrono::milliseconds(200))) return 0;
+    if (!lk.try_lock_for(std::chrono::milliseconds(200))) return g_guard_last.load(std::memory_order_relaxed);
     if (!g_guard_vma || g_guard_heap < 0) return 0;
     VmaBudget b[VK_MAX_MEMORY_HEAPS] = {};
     vmaGetHeapBudgets(g_guard_vma, b);
-    return static_cast<uint64_t>(b[g_guard_heap].usage);
+    const uint64_t usage = static_cast<uint64_t>(b[g_guard_heap].usage);
+    g_guard_last.store(usage, std::memory_order_relaxed);
+    return usage;
 }
 
 bool g_budget_exact = false;           // VK_EXT_memory_budget is on: heap usage and budget are the driver's figures
