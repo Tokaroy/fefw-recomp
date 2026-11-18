@@ -875,12 +875,46 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     prepare_step(r, p, jobs)
 }
 
+/// Holds a logind sleep and idle inhibitor while it lives, so the PC does not suspend in the middle of a long setup. The lock belongs
+/// to a systemd-inhibit that waits on its stdin: dropping this ends it, and so does the launcher exiting or crashing (the pipe closes).
+#[cfg(target_os = "linux")]
+struct SleepInhibit(std::process::Child);
+
+#[cfg(target_os = "linux")]
+impl SleepInhibit {
+    fn acquire() -> Option<SleepInhibit> {
+        let mut cmd = Command::new("systemd-inhibit");
+        host_env(&mut cmd);
+        cmd.args(["--what=sleep:idle", "--who=fefw launcher", "--why=Setting up fefw", "--mode=block", "cat"]);
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()?;
+        std::thread::sleep(Duration::from_millis(100));
+        match child.try_wait() {
+            Ok(None) => Some(SleepInhibit(child)),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SleepInhibit {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Runs the whole setup on this thread. Returns the final progress (done, cancelled or error).
 pub fn run(shared: &Arc<Shared>, p: &Paths, jobs: usize, emit: &(dyn Fn(Progress) + Sync), emit_log: &(dyn Fn(Vec<String>) + Sync)) -> Progress {
     let _ = fs::create_dir_all(p.repo.join("work"));
     let file = fs::OpenOptions::new().create(true).append(true).open(p.log()).ok();
     let r = Runner { shared, emit, emit_log, log_file: Mutex::new(file), log_path: p.log() };
     r.log(vec![format!("--- setup: dump exefs {}, romfs {}", crate::dump::fwd(&p.exefs), crate::dump::fwd(&p.romfs))]);
+    #[cfg(target_os = "linux")]
+    let _inhibit = SleepInhibit::acquire();
+    #[cfg(target_os = "linux")]
+    if _inhibit.is_none() {
+        r.log(vec!["note: could not block sleep (systemd-inhibit); keep the PC awake until setup finishes".into()]);
+    }
     let end = match run_steps(&r, p, jobs) {
         Ok(true) => Progress { state: "done".into(), message: "Setup finished. Press Play.".into(), ..Default::default() },
         Ok(false) => Progress { state: "cancelled".into(), message: "Paused. Set up continues where it stopped.".into(), ..Default::default() },
