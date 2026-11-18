@@ -27,8 +27,8 @@ $clang_cl = if (Test-Path (Join-Path $llvm_bin 'clang-cl.exe')) { (Join-Path $ll
 # #25). Nothing in that folder is worth keeping, so it is started over when the compiler it recorded is not the one this run uses.
 $cache = Join-Path $bd 'CMakeCache.txt'
 if (Test-Path $cache) {
-    $recorded = @(Select-String -Path $cache -Pattern '^CMAKE_C(XX)?_COMPILER:[^=]*=(.+)$' | ForEach-Object { $_.Matches[0].Groups[2].Value.Trim() })
-    $stale = @($recorded | Where-Object { $_ -and ((Split-Path -Leaf $_).ToLower() -ne (Split-Path -Leaf $clang_cl).ToLower()) })
+    $recorded = @(Select-String -LiteralPath $cache -Pattern '^CMAKE_C(XX)?_COMPILER:[^=]*=(.+)$' | ForEach-Object { $_.Matches[0].Groups[2].Value.Trim() })
+    $stale = @($recorded | Where-Object { $_ -and ([IO.Path]::GetFileNameWithoutExtension($_).ToLower() -ne [IO.Path]::GetFileNameWithoutExtension($clang_cl).ToLower()) })
     if ($stale.Count -gt 0) {
         Write-Host "this build folder was configured for $($stale -join ', '); starting it over for $(Split-Path -Leaf $clang_cl)"
         Remove-Item -Recurse -Force $bd
@@ -64,13 +64,13 @@ $tgt = if ($Target -eq "fefw_obj") { "CMakeFiles/fefw.dir/src/fefw_main.cpp.obj"
 # reset leaves this folder configured with another compiler or another configuration, and its object files cannot be mixed with
 # this run's, so it is configured once more (the flags are explicit, so the second pass cannot be reset again) and checked again.
 function CacheValue([string]$name) {
-    $line = Select-String -Path (Join-Path $bd 'CMakeCache.txt') -Pattern "^$([regex]::Escape($name)):[^=]*=(.*)$" | Select-Object -First 1
+    $line = Select-String -LiteralPath (Join-Path $bd 'CMakeCache.txt') -Pattern "^$([regex]::Escape($name)):[^=]*=(.*)$" | Select-Object -First 1
     if ($line) { $line.Matches[0].Groups[1].Value.Trim() } else { '' }
 }
 function CacheMatches {
     $c = CacheValue 'CMAKE_C_COMPILER'
     $t = CacheValue 'CMAKE_BUILD_TYPE'
-    ((Split-Path -Leaf $c).ToLower() -eq (Split-Path -Leaf $clang_cl).ToLower()) -and ($t -eq $Config)
+    ([IO.Path]::GetFileNameWithoutExtension($c).ToLower() -eq [IO.Path]::GetFileNameWithoutExtension($clang_cl).ToLower()) -and ($t -eq $Config)
 }
 if ($Target -ne "fefw_obj") {
     cmd /c "call `"$env_cmd`" && $cfg"
