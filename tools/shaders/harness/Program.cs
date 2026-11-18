@@ -3,7 +3,7 @@
 //   spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl]
 //       one stage: code block + NVN control section as written by containers.py --extract
 //       (--glsl: Vulkan GLSL text instead of SPIR-V, to read what the translator made or compare backends)
-//   spirv_harness --batch <extracted dir> --out <dir> [--jobs 2] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env vulkan1.3] [--host desktop|moltenvk]
+//   spirv_harness --batch <extracted dir> --out <dir> [--jobs 2] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env vulkan1.3] [--host desktop|moltenvk] [--no-divergent-barriers]
 //       every distinct code block named in any manifest.tsv under <extracted dir>; writes <hash>.spv, results.tsv
 //       (one line per block) and summary.txt (counts, exceptions and translator messages grouped by text).
 //       The translation runs in a child process (--worker, Batch.cs) that journals each block to <out>/journal.tsv, so a
@@ -62,6 +62,9 @@ namespace SpirvHarness
             StaticGpuAccessor.TexturePoolLength = int.Parse(Opt(args, "--texture-pool", "65536"));
             StaticGpuAccessor.SamplerPoolLength = int.Parse(Opt(args, "--sampler-pool", "4096"));
             Debug = args.Contains("--debug-mode");
+            // --no-divergent-barriers (or FEFW_NO_DIVERGENT_BARRIERS=1 in the environment, which the launcher's setup inherits): answer what Ryujinx's
+            // Vulkan backend answers on Intel GPUs, so barriers on potentially divergent blocks are left out (GitHub issue #45)
+            StaticGpuAccessor.NoDivergentBarriers = args.Contains("--no-divergent-barriers") || Environment.GetEnvironmentVariable("FEFW_NO_DIVERGENT_BARRIERS") == "1";
             try
             {
                 if (args.Length >= 2 && args[0] == "--warp-tests") return WarpTests.Run(args[1]);
@@ -74,7 +77,7 @@ namespace SpirvHarness
                 Console.Error.WriteLine(e.Message);
             }
             Console.Error.WriteLine("usage: spirv_harness <code.bin> <ctrl.bin> [-o out.spv] [--glsl] [--glslc <GLSLC output, NVN2>]\n" +
-                                    "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>] [--crash-budget N]");
+                                    "       spirv_harness --batch <extracted dir> --out <dir> [--jobs N] [--limit N] [--no-val] [--no-retry] [--debug-mode] [--target-env E] [--host desktop|moltenvk] [--spirv-val PATH] [--reflect <Ampere corpus>] [--crash-budget N] [--no-divergent-barriers]");
             return 2;
         }
 
@@ -540,6 +543,10 @@ namespace SpirvHarness
             StringBuilder sb = new();
             int stagesTotal = all.Sum(r => r.Stages);
             sb.AppendLine($"blocks {all.Count} (stages using them: {stagesTotal}), {elapsed.TotalSeconds:F0} s, spirv-val --target-env {targetEnv}");
+            // GitHub issue #45: barriers on potentially divergent blocks hang Intel GPUs; Ryujinx leaves them out there
+            int kept = all.Count(r => r.Messages.Any(m => m.Contains("potentially divergent block, the barrier is kept")));
+            int removed = all.Count(r => r.Messages.Any(m => m.Contains("potentially divergent block, the barrier will be removed")));
+            sb.AppendLine($"divergent barriers: {kept} blocks keep them, {removed} blocks had them removed ({(StaticGpuAccessor.NoDivergentBarriers ? "this run: --no-divergent-barriers" : "this run: kept")})");
             sb.AppendLine();
             sb.AppendLine("status        blocks   stages   (per stage kind)");
             foreach (var g in all.GroupBy(r => r.Status).OrderByDescending(g => g.Count()))

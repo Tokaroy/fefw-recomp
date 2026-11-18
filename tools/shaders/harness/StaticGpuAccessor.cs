@@ -263,6 +263,10 @@ namespace SpirvHarness
         public bool QueryHostSupportsTextureShadowLod() => false;
         public bool QueryHostSupportsFragmentShaderInterlock() => false;   // S4d: no SPV_EXT_fragment_shader_interlock dependency (only the rare ordered-fragment shaders lose their ordering)
         public bool QueryHostSupportsShaderNonUniformIndexing() => true;
+        // Ryujinx's Vulkan backend answers false on Intel GPUs ("Vendor != Vendor.Intel"): barriers on potentially divergent
+        // blocks hang them, so the translator leaves those barriers out. --no-divergent-barriers does the same (GitHub issue #45).
+        public static bool NoDivergentBarriers;
+        public bool QueryHostSupportsShaderBarrierDivergence() => !NoDivergentBarriers;
         // Offline modules run on any Vulkan subgroup size. 128 selects Ryujinx's
         // portable warp paths (four ballot words), not a required hardware size.
         // Lane ID / base / ballot selection fold away on native 32-lane GPUs.

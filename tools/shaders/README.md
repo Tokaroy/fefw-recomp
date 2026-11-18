@@ -49,6 +49,12 @@ terms, translator messages, draw-time queries) and `summary.txt`. The binding sc
 uniform buffers with binding 0 reserved for the support buffer, set 1 storage buffers, set 2 textures, set 3 images; see
 `refs\SuperMarioWonderRecomp\docs\nvn\TRANSLATOR.md`, which also explains the `ok-retry` status).
 
+`--no-divergent-barriers` (or `FEFW_NO_DIVERGENT_BARRIERS=1` in the environment, which the launcher's setup inherits)
+answers `QueryHostSupportsShaderBarrierDivergence` with false, as Ryujinx's Vulkan backend does on Intel GPUs: barriers
+on potentially divergent blocks are left out of the SPIR-V (they can hang Intel GPUs, GitHub issue #45). The second line
+of `summary.txt` counts the blocks with such barriers, kept or removed, in either mode
+(`spirv-divergent-barrier-log.patch` logs the kept ones; the SPIR-V without the option is unchanged).
+
 Stand-in corpus to translator input: `scripts\dksh_to_corpus.py <dksh dir> --out <dir>` (DKSH to the layout above);
 `scripts\corpus_to_mxs.py <corpus> --out <mxs dir>` (layout above to smo's stage files). The oracle does both itself.
 

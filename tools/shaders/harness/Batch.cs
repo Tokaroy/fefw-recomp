@@ -87,6 +87,8 @@ namespace SpirvHarness
             string[] keyed = ["--no-val", "--no-retry", "--debug-mode"];
             string[] valued = ["--target-env", "--host", "--texture-pool", "--sampler-pool", "--reflect"];
             string opts = string.Join(" ", keyed.Where(args.Contains).Concat(valued.Where(v => Opt(args, v, null) != null).Select(v => $"{v}={Opt(args, v, null)}")));
+            // the flag or FEFW_NO_DIVERGENT_BARRIERS: a journal of the other answer is not resumed
+            if (StaticGpuAccessor.NoDivergentBarriers) opts = (opts + " --no-divergent-barriers").Trim();
             return $"# spirv_harness journal\t{TranslatorVersion}\t{build}\t{opts}";
         }
 
