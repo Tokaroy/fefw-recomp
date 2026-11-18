@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "nxrt/config.h"
+#include "nxrt/cpu_info.h"
 #include "nxrt/diag.h"
 #include "nxrt/dispatch.h"
 #include "nxrt/game.h"
@@ -365,6 +366,8 @@ int fefw_run(int argc, char** argv) {
     // base game's RomFS, 221,339 a partial copy); services/fs.cpp names the cause in the crash report. 0 turns the check off.
     if (!nxrt::config_has("fs", "romfs_files")) nxrt::config_set("fs", "romfs_files", "252686");
     NXLOG_I("boot", "fefw.exe build: %s", fefw_cpu::build_name(g_cpu_needs));
+    nxrt::cpu::set_game_build(fefw_cpu::build_name(g_cpu_needs));   // the F1 menu's Debug page shows it
+    NXLOG_I("boot", "CPU: %s", nxrt::cpu::summary_line().c_str());
     NXLOG_I("boot", "%s (update %s): exefs '%s', main '%s', romfs '%s'", nxrt::game::info().title, nxrt::game::info().version, exefs.c_str(),
             main_nso.c_str(), romfs.c_str());
     // a folder, or a .nup package served as the RomFS image; without either the game aborts in its first fs call (issue 142)

@@ -37,12 +37,14 @@
 #include "extras/temporal.h"
 #include "nxrt/audio_sink.h"
 #include "nxrt/config.h"
+#include "nxrt/cpu_info.h"
 #include "nxrt/extras.h"
 #include "nxrt/frame_limiter.h"
 #include "nxrt/gauge.h"
 #include "nxrt/gfx.h"
 #include "nxrt/input_source.h"
 #include "nxrt/jc2_mouse.h"
+#include "nxrt/kernel.h"
 #include "nxrt/log.h"
 #include "nxrt/lowlat.h"
 #include "nxrt/overlay.h"
@@ -164,6 +166,10 @@ struct Menu {
     double phase_prev[kHpCount] = {}, phase_ms[kHpCount] = {};
     uint64_t frames_prev = 0;
     double sample_at = -1, frame_ms_avg = 0;
+    // Debug page, CPU: sampled twice a second while the page is open
+    cpu::Load cpu_load;
+    std::vector<cpu::ThreadLoad> cpu_threads;
+    double cpu_at = -1;
 };
 
 Menu& menu() {
@@ -1310,6 +1316,90 @@ void sample_timings(Menu& m, gfx::Renderer* r) {
     m.sample_at = now;
 }
 
+// Debug > CPU: the processor (read once), the game's console cores on it, and the load twice a second: the process, every program, memory, and
+// the busiest threads (percent of one hardware thread). nxrt/cpu_info.h.
+std::string processor_list(uint64_t mask) {
+    std::string t;
+    for (int b = 0; b < 64; ++b)
+        if (mask >> b & 1) t += (t.empty() ? "" : ", ") + std::to_string(b);
+    return t;
+}
+
+void cpu_log(const Menu& m) {
+    std::string lines = "CPU (F1 menu): " + cpu::summary_line();
+    if (const char* b = cpu::game_build()) lines += std::string("; game code build ") + b;
+    char buf[256];
+    std::snprintf(buf, sizeof buf, "\n  load: process %.1f%% (%.2f threads), all programs %.1f%%; working set %.2f GB, committed %.2f GB, RAM free %.2f GB",
+                  m.cpu_load.process_pct, m.cpu_load.process_threads, m.cpu_load.system_pct, m.cpu_load.working_set / 1073741824.0,
+                  m.cpu_load.committed / 1073741824.0, m.cpu_load.ram_avail / 1073741824.0);
+    lines += buf;
+    for (const cpu::ThreadLoad& t : m.cpu_threads) {
+        std::snprintf(buf, sizeof buf, "\n  %-24s tid %-6u %5.1f%% of a thread, ideal processor %d", t.name.c_str(), t.tid, t.pct, t.ideal);
+        lines += buf;
+    }
+    NXLOG_I(kTag, "%s", lines.c_str());
+}
+
+void cpu_group(Menu& m) {
+    section("CPU");
+    const cpu::Static& c = cpu::info();
+    const double now = ImGui::GetTime();
+    if (m.cpu_at < 0 || now - m.cpu_at >= 0.5) {
+        m.cpu_load = cpu::sample();
+        m.cpu_threads = cpu::thread_loads(10);
+        m.cpu_at = now;
+    }
+    ImGui::TextUnformatted(c.brand.empty() ? tr("Unknown processor") : c.brand.c_str());
+    char split[96] = "";
+    if (c.perf_cores || c.eff_cores)
+        std::snprintf(split, sizeof split, tr(" (%d performance with %d threads, %d efficiency)"), c.perf_cores, c.perf_threads, c.eff_cores);
+    ImGui::TextDisabled(tr("%d cores%s, %d threads; base clock %.2f GHz; L2 %.1f MB, L3 %.1f MB; %.1f GB of memory"), c.cores, split, c.logical,
+                        c.base_mhz / 1000.0, c.l2_kb / 1024.0, c.l3_kb / 1024.0, static_cast<double>(c.ram_total) / 1073741824.0);
+    const char* build = cpu::game_build();
+    ImGui::TextDisabled(tr("Instruction sets: %s. Game code build: %s."), cpu::features_text(c).c_str(), build ? build : tr("not reported"));
+    const kernel::SchedInfo si = kernel::sched_info();
+    if (si.active) {
+        uint64_t used = 0;
+        for (int i = 0; i < si.cores && i < 16; ++i) used |= si.host_masks[i];
+        ImGui::TextDisabled(tr("The game's %d console cores: hardware threads %s (%s)"), si.cores, processor_list(used).c_str(),
+                            si.soft ? tr("preferred, may move") : tr("pinned"));
+    } else {
+        ImGui::TextDisabled("%s", tr("The game's console cores: not pinned (fewer hardware threads than console cores, or [sched] console_cores = 0)."));
+    }
+    const cpu::Load& l = m.cpu_load;
+    if (l.valid) {
+        ImGui::Text(tr("Load: the game %.0f%% of the CPU (%.1f threads busy), all programs %.0f%%"), l.process_pct, l.process_threads, l.system_pct);
+        ImGui::Text(tr("Memory: the game %.2f GB in use, %.2f GB committed; %.1f of %.1f GB free"), l.working_set / 1073741824.0,
+                    l.committed / 1073741824.0, l.ram_avail / 1073741824.0, static_cast<double>(c.ram_total) / 1073741824.0);
+    } else {
+        ImGui::TextDisabled("%s", tr("Load: measuring..."));
+    }
+    if (!m.cpu_threads.empty() &&
+        ImGui::BeginTable("cputhreads", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn(tr("Busiest threads"), ImGuiTableColumnFlags_WidthStretch, 0.56f);
+        ImGui::TableSetupColumn(tr("% of one thread"), ImGuiTableColumnFlags_WidthStretch, 0.22f);
+        ImGui::TableSetupColumn(tr("Ideal processor"), ImGuiTableColumnFlags_WidthStretch, 0.22f);
+        ImGui::TableHeadersRow();
+        for (const cpu::ThreadLoad& t : m.cpu_threads) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(t.name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            if (t.pct >= 90.0) ImGui::TextColored(kOrange, "%.0f%%", t.pct);   // a thread that has a hardware thread to itself and still wants more
+            else ImGui::Text("%.0f%%", t.pct);
+            ImGui::TableSetColumnIndex(2);
+            if (t.ideal >= 0) ImGui::Text("%d", t.ideal);
+            else ImGui::TextDisabled("-");
+        }
+        ImGui::EndTable();
+        ImGui::TextDisabled("%s", tr("A thread near 100% is busy all the time: it sets the frame rate whatever the GPU does."));
+    }
+    if (button(m, "Write the CPU details to the log")) {
+        cpu_log(m);
+        notify(m, "CPU details written to the log.");
+    }
+}
+
 void debug_page(UiHost& host, Menu& m, gfx::Overlay& ov) {
     gfx::Renderer* r = ov.context().renderer;
     section("Frame times");
@@ -1372,6 +1462,8 @@ void debug_page(UiHost& host, Menu& m, gfx::Overlay& ov) {
         NXLOG_I(kTag, "frame times (F1 menu):\n%s", frame_times_summary(30.0).c_str());
         notify(m, "Frame time summary written to the log.");
     }
+
+    cpu_group(m);
 
     section("Game clock");
     const ClockInfo ck = clock_info();
