@@ -3,12 +3,21 @@
 //! do not ship: the layer itself, and `lsfg-vk.dll` from the `lsfg-vk` beta branch of Lossless Scaling on Steam (the default branch only
 //! has the Windows `Lossless.dll`, which the layer cannot read). This finds both and builds the environment the layer is configured
 //! with (`LSFGVK_ENV=1`), so the player's own lsfg-vk config file stays untouched.
+//!
+//! The layer can be installed from Settings (`install`): on CachyOS it is the distribution's `lsfg-vk` package, through Shelly; anywhere
+//! else (SteamOS and Bazzite, whose system is read-only) it is LSFG-VK's own build from builds.lsfg-vk.dev, checked against a pinned
+//! SHA-256 and unpacked into ~/.local as its install instructions say, which needs no root.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-/// LSFG-VK's install instructions (the layer is not something the launcher can install)
+/// LSFG-VK's install instructions, for doing it by hand
 pub const INSTALL_URL: &str = "https://lsfg-vk.dev/docs/installation/";
+
+/// LSFG-VK's own build of its 2.0.0 release (layer, 32-bit layer, lsfg-vk-cli and lsfg-vk-ui), as published on builds.lsfg-vk.dev
+const BUILD_URL: &str = "https://builds.lsfg-vk.dev/lsfg-vk-2.0.0.tar.xz";
+const BUILD_SHA256: &str = "08bdbdf373a111022df87dac7aa87e3b564bb841f961552e3ca85fea12b5aa74";
 
 #[derive(Serialize, Clone, Default)]
 pub struct Status {
@@ -18,6 +27,8 @@ pub struct Status {
     pub dll: String,
     /// Lossless Scaling is installed but only has Lossless.dll: it is on the default branch
     pub wrong_branch: bool,
+    /// how `install` would install the layer here: "shelly" (CachyOS's package) or "local" (LSFG-VK's build into ~/.local)
+    pub install: String,
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -61,13 +72,110 @@ pub fn status() -> Status {
         layer: has_layer(),
         wrong_branch: dll.is_none() && dirs.iter().any(|d| d.join("Lossless.dll").is_file()),
         dll: dll.map(|p| crate::dump::fwd(&p)).unwrap_or_default(),
+        install: if shelly().is_some() { "shelly" } else { "local" }.into(),
     }
+}
+
+fn os_id(os_release: &str) -> String {
+    os_release
+        .lines()
+        .find_map(|l| l.strip_prefix("ID="))
+        .map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Shelly on CachyOS, the one system whose repositories carry an lsfg-vk package the launcher installs.
+fn shelly() -> Option<PathBuf> {
+    let release = std::fs::read_to_string("/etc/os-release").or_else(|_| std::fs::read_to_string("/usr/lib/os-release")).unwrap_or_default();
+    if os_id(&release) != "cachyos" {
+        return None;
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join("shelly")).find(|p| p.is_file())
+}
+
+/// Installs the layer (see the top of this file) and says what was done.
+pub fn install() -> Result<String, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("LSFG-VK is only for Linux.".into());
+    }
+    if has_layer() {
+        return Ok("The LSFG-VK layer is already installed.".into());
+    }
+    let done = match shelly() {
+        Some(shelly) => install_package(&shelly)?,
+        None => install_local()?,
+    };
+    if !has_layer() {
+        return Err(format!("{done} But the LSFG-VK layer is still not found. Install it by hand ({INSTALL_URL})."));
+    }
+    Ok(done)
+}
+
+/// `shelly install standard lsfg-vk` as root through pkexec, which asks for the password in a desktop window (Shelly itself would ask
+/// sudo for it on a terminal the launcher does not have). Shelly finds the player from pkexec's PKEXEC_UID.
+fn install_package(shelly: &Path) -> Result<String, String> {
+    let out = Command::new("pkexec")
+        .arg(shelly)
+        .args(["install", "standard", "--no-confirm", "--needed", "lsfg-vk"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run pkexec to install the lsfg-vk package: {e}. Install it with Shelly yourself (shelly install lsfg-vk)."))?;
+    match out.status.code() {
+        Some(0) => Ok("Installed the lsfg-vk package with Shelly.".into()),
+        Some(126 | 127) => Err("The lsfg-vk package was not installed: the administrator password was not given.".into()),
+        _ => {
+            let text = String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
+            let tail: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            Err(format!("Shelly could not install the lsfg-vk package: {}", tail[tail.len().saturating_sub(3)..].join(" ")))
+        }
+    }
+}
+
+/// LSFG-VK's build, unpacked into ~/.local. Directories already there keep their own permissions (`--no-overwrite-dir`).
+fn install_local() -> Result<String, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|h| h.is_absolute()).ok_or("HOME is not set, so there is no ~/.local to install LSFG-VK into.")?;
+    let prefix = home.join(".local");
+    std::fs::create_dir_all(&prefix).map_err(|e| format!("cannot create {}: {e}", prefix.display()))?;
+    let archive = std::env::temp_dir().join(format!("fefw-lsfg-vk-{}.tar.xz", std::process::id()));
+    let res = download_and_unpack(&archive, &prefix);
+    let _ = std::fs::remove_file(&archive);
+    res?;
+    Ok(format!("Installed LSFG-VK 2.0.0 from builds.lsfg-vk.dev into {}.", prefix.display()))
+}
+
+fn download_and_unpack(archive: &Path, prefix: &Path) -> Result<(), String> {
+    let out = crate::update::curl()
+        .args(["--retry", "3", "--max-time", "300", "--output"])
+        .arg(archive)
+        .arg(BUILD_URL)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run curl: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Could not download LSFG-VK from {BUILD_URL}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let got = crate::update::sha256_file(archive)?;
+    if got != BUILD_SHA256 {
+        return Err(format!("The LSFG-VK download does not match the expected file (SHA-256 {got}). It was not installed."));
+    }
+    let out = Command::new("tar")
+        .args(["-xJf"])
+        .arg(archive)
+        .args(["--no-overwrite-dir", "--no-same-owner", "-C"])
+        .arg(prefix)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run tar: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Could not unpack LSFG-VK into {}: {}", prefix.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(())
 }
 
 /// Why LSFG-VK cannot be used now, for the player.
 pub fn problem(s: &Status) -> Option<String> {
     if !s.layer {
-        return Some(format!("LSFG-VK frame generation is on, but the LSFG-VK Vulkan layer is not installed (see {INSTALL_URL}). Install it or turn the setting off."));
+        return Some("LSFG-VK frame generation is on, but the LSFG-VK Vulkan layer is not installed. Install it in Settings (Install LSFG-VK) or turn the setting off.".into());
     }
     if s.dll.is_empty() {
         return Some(if s.wrong_branch {
@@ -111,8 +219,16 @@ mod tests {
     #[test]
     fn problems_are_named() {
         assert!(problem(&Status::default()).unwrap().contains("layer"));
-        let s = Status { layer: true, dll: String::new(), wrong_branch: true };
+        let s = Status { layer: true, wrong_branch: true, ..Default::default() };
         assert!(problem(&s).unwrap().contains("Betas"));
-        assert!(problem(&Status { layer: true, dll: "/a".into(), wrong_branch: false }).is_none());
+        assert!(problem(&Status { layer: true, dll: "/a".into(), ..Default::default() }).is_none());
+    }
+
+    #[test]
+    fn os_release_id_is_read() {
+        assert_eq!(os_id("NAME=\"CachyOS Linux\"\nID=cachyos\nID_LIKE=arch\n"), "cachyos");
+        assert_eq!(os_id("ID=\"bazzite\"\nID_LIKE=\"fedora\""), "bazzite");
+        assert_eq!(os_id("ID_LIKE=arch\nID=steamos"), "steamos");
+        assert_eq!(os_id("NAME=x"), "");
     }
 }

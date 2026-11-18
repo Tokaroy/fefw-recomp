@@ -552,6 +552,12 @@ fn open_lsfg_install() -> Result<(), String> {
     play::open_with_shell(Path::new(lsfg::INSTALL_URL))
 }
 
+/// Linux: installs the LSFG-VK layer (Settings, when it is missing): CachyOS's package through Shelly, else LSFG-VK's build into ~/.local (lsfg.rs).
+#[tauri::command]
+async fn install_lsfg() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(lsfg::install).await.map_err(|e| e.to_string())?
+}
+
 /// The OS the launcher runs on ("linux", "windows"). The page cannot tell from its user agent: WebKitGTK reports a macOS one.
 #[tauri::command]
 fn platform() -> &'static str {
@@ -932,6 +938,7 @@ fn main() {
             platform,
             lsfg_status,
             open_lsfg_install,
+            install_lsfg,
             game_status,
             steam_status,
             add_to_steam,

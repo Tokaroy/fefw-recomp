@@ -242,6 +242,7 @@ export async function render(el, ctx) {
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
+  let lsfgInstalling = false; // the Install LSFG-VK button runs (installLsfg)
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
   const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
@@ -498,14 +499,36 @@ export async function render(el, ctx) {
       r.dll ? t('settings.lsfg.dllFound', { path: r.dll }) : t(r.wrong_branch ? 'settings.lsfg.wrongBranch' : 'settings.lsfg.dllMissing'),
     ].join(' ');
     if (!r.layer) {
-      // the layer is the one part the launcher cannot set up: link to its install instructions
-      const b = document.createElement('button');
-      b.className = 'btn quiet';
-      b.style.marginTop = 'var(--space-2)';
-      b.textContent = t('settings.lsfg.installLink');
-      b.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
-      note.append(document.createElement('br'), b);
+      // the layer is installed on request (lsfg.rs install): CachyOS's package through Shelly, else LSFG-VK's build into ~/.local
+      const how = document.createElement('span');
+      how.textContent = t(r.install === 'shelly' ? 'settings.lsfg.install.shelly' : 'settings.lsfg.install.local');
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginTop = 'var(--space-2)';
+      const go = document.createElement('button');
+      go.className = 'btn';
+      go.disabled = lsfgInstalling;
+      go.textContent = t(lsfgInstalling ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
+      go.addEventListener('click', (ev) => { ev.preventDefault(); installLsfg(); });
+      const link = document.createElement('button');
+      link.className = 'btn quiet';
+      link.textContent = t('settings.lsfg.installLink');
+      link.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
+      row.append(go, link);
+      note.append(document.createElement('br'), how, row);
     }
+  }
+  async function installLsfg() {
+    if (lsfgInstalling) return;
+    lsfgInstalling = true;
+    checkLsfg();
+    try {
+      toast(await api('install_lsfg'), 'ok');
+    } catch (e) {
+      toast(errText(e), 'error');
+    }
+    lsfgInstalling = false;
+    checkLsfg();
   }
   let checkTimer = 0;
 
