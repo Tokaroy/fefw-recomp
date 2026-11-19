@@ -3247,8 +3247,10 @@ const ProgLayout* alpha_layout_cached(const ProgLayout& base) {
         return sl.alpha;
     }
     const ProgLayout* a = alpha_layout(base);
-    sl.base = &base;
-    sl.alpha = a;
+    if (a != &base) {   // a creation that failed returns base and is tried again on the next draw, as it was without the table
+        sl.base = &base;
+        sl.alpha = a;
+    }
     return a;
 }
 
