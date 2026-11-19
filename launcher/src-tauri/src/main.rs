@@ -19,9 +19,9 @@ mod update;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::io::Write;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
@@ -123,7 +123,9 @@ fn game_dir_of(cfg: &Config, repo: &Path) -> PathBuf {
 }
 
 fn need_repo(cfg: &Config) -> Result<PathBuf, String> {
-    repo_of(cfg).ok_or_else(|| "The repository was not found. Build the launcher inside a checkout of this project, or set the repository folder in Settings.".to_string())
+    repo_of(cfg).ok_or_else(|| {
+        "The repository was not found. Build the launcher inside a checkout of this project, or set the repository folder in Settings.".to_string()
+    })
 }
 
 /// Setup's paths from the configuration, when the dump is usable.
@@ -131,7 +133,11 @@ fn paths(cfg: &Config) -> Result<setup::Paths, String> {
     let repo = need_repo(cfg)?;
     let report = dump::scan(&cfg.dump_dir, &builds_of(&repo));
     let chosen = report.chosen.ok_or_else(|| {
-        if cfg.dump_dir.trim().is_empty() { "Choose your game files first.".to_string() } else { format!("The game files at {} are not usable: {}", cfg.dump_dir, report.errors.join(" ")) }
+        if cfg.dump_dir.trim().is_empty() {
+            "Choose your game files first.".to_string()
+        } else {
+            format!("The game files at {} are not usable: {}", cfg.dump_dir, report.errors.join(" "))
+        }
     })?;
     let game_dir = game_dir_of(cfg, &repo);
     Ok(setup::Paths {
@@ -147,7 +153,8 @@ fn paths(cfg: &Config) -> Result<setup::Paths, String> {
 /// The supported builds of main: the package's dump_hashes.json, else the checkout's recomp/games/fefw/config.py.
 fn builds_of(repo: &Path) -> Vec<(String, String)> {
     if let Some(t) = package_tools() {
-        let v: serde_json::Value = fs::read_to_string(t.join("build").join("dump_hashes.json")).ok().and_then(|x| serde_json::from_str(&x).ok()).unwrap_or_default();
+        let v: serde_json::Value =
+            fs::read_to_string(t.join("build").join("dump_hashes.json")).ok().and_then(|x| serde_json::from_str(&x).ok()).unwrap_or_default();
         if let (Some(id), Some(ver)) = (v["main_build_id"].as_str(), v["version"].as_str()) {
             return vec![(id.to_uppercase(), ver.to_string())];
         }
@@ -348,7 +355,7 @@ fn files_in(dirs: &[PathBuf], sets: &[&[&str]], what: &str) -> FeatureFiles {
 }
 
 #[tauri::command]
-fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>, frame_gen_dlss: Option<bool>) -> Result<UpscalerFiles, String> {
+fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>) -> Result<UpscalerFiles, String> {
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let game = game_dir_of(&cfg, &repo);
@@ -367,22 +374,24 @@ fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: O
         xess.push(d.to_path_buf());
     }
     const DLSS: [&str; 4] = ["sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"];
-    const DLSS_G: [&str; 9] =
-        ["sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "nvngx_dlssg.dll", "NvLowLatencyVk.dll"];
+    const DLSS_G: [&str; 9] = [
+        "sl.interposer.dll",
+        "sl.common.dll",
+        "sl.dlss.dll",
+        "nvngx_dlss.dll",
+        "sl.dlss_g.dll",
+        "sl.reflex.dll",
+        "sl.pcl.dll",
+        "nvngx_dlssg.dll",
+        "NvLowLatencyVk.dll",
+    ];
     // Files of the Streamline SDK the game never asks for. Streamline skips the plugins, but NVIDIA's NGX still loads a stray nvngx_*.dll it finds
-    // there (nvngx_deepdvc.dll). sl.pcl.dll stays: the game's Streamline needs it. The frame generation files count as unused while it is off.
-    const DLSS_UNUSED: [&str; 7] = ["sl.deepdvc.dll", "sl.directsr.dll", "sl.dlss_d.dll", "sl.nis.dll", "sl.nvperf.dll", "nvngx_deepdvc.dll", "nvngx_dlssd.dll"];
-    const DLSS_UNUSED_NO_FG: [&str; 4] = ["sl.dlss_g.dll", "sl.reflex.dll", "nvngx_dlssg.dll", "NvLowLatencyVk.dll"];
+    // there (nvngx_deepdvc.dll). sl.pcl.dll stays: the game's Streamline needs it. The frame generation files are never listed: removing them
+    // while frame generation is off breaks it the next time it is turned on.
+    const DLSS_UNUSED: [&str; 7] =
+        ["sl.deepdvc.dll", "sl.directsr.dll", "sl.dlss_d.dll", "sl.nis.dll", "sl.nvperf.dll", "nvngx_deepdvc.dll", "nvngx_dlssd.dll"];
     let dlss_unused: Vec<String> = match sl_pick.iter().find(|d| d.join("sl.interposer.dll").is_file()) {
-        Some(d) => {
-            let fg = frame_gen_dlss.unwrap_or(false);
-            DLSS_UNUSED
-                .iter()
-                .chain(if fg { [].iter() } else { DLSS_UNUSED_NO_FG.iter() })
-                .filter(|f| d.join(f).is_file())
-                .map(|f| f.to_string())
-                .collect()
-        }
+        Some(d) => DLSS_UNUSED.iter().filter(|f| d.join(f).is_file()).map(|f| f.to_string()).collect(),
         None => Vec::new(),
     };
     Ok(UpscalerFiles {
@@ -552,6 +561,12 @@ fn open_lsfg_install() -> Result<(), String> {
     play::open_with_shell(Path::new(lsfg::INSTALL_URL))
 }
 
+/// Linux: installs the LSFG-VK layer (Settings, when it is missing): CachyOS's package through Shelly, else LSFG-VK's build into ~/.local (lsfg.rs).
+#[tauri::command]
+async fn install_lsfg() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(lsfg::install).await.map_err(|e| e.to_string())?
+}
+
 /// The OS the launcher runs on ("linux", "windows"). The page cannot tell from its user agent: WebKitGTK reports a macOS one.
 #[tauri::command]
 fn platform() -> &'static str {
@@ -616,7 +631,9 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     let vars = steam_vars(&cfg, &p)?;
     let close = if steam::state(&exe, &vars).running {
         app.dialog()
-            .message("Steam saves its game list when it closes, so it has to close while the launcher adds the game. It is started again right after.")
+            .message(
+                "Steam saves its game list when it closes, so it has to close while the launcher adds the game. It is started again right after.",
+            )
             .title("Add to Steam")
             .kind(MessageDialogKind::Info)
             .buttons(MessageDialogButtons::OkCancelCustom("Close Steam and add".into(), "Cancel".into()))
@@ -689,7 +706,10 @@ async fn gpu_info() -> gpu::Gpus {
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<update::Check, String> {
     // FEFW_LAUNCHER_PRETEND_VERSION: test the update path against the published release from an older-looking launcher
-    let current = std::env::var("FEFW_LAUNCHER_PRETEND_VERSION").ok().filter(|v| update::parse_version(v).is_some()).unwrap_or_else(|| update::BUILD_ID.map(String::from).unwrap_or_else(|| app.package_info().version.to_string()));
+    let current = std::env::var("FEFW_LAUNCHER_PRETEND_VERSION")
+        .ok()
+        .filter(|v| update::parse_version(v).is_some())
+        .unwrap_or_else(|| update::BUILD_ID.map(String::from).unwrap_or_else(|| app.package_info().version.to_string()));
     let package = package_tools().is_some();
     tauri::async_runtime::spawn_blocking(move || update::check(&current, package)).await.map_err(|e| e.to_string())?
 }
@@ -728,7 +748,13 @@ fn start_update(
         if s.state == "running" {
             return Err("An update is already running.".into());
         }
-        *s = update::Status { state: "running".into(), phase: "download".into(), message: "Starting".into(), version: release.version.clone(), ..Default::default() };
+        *s = update::Status {
+            state: "running".into(),
+            phase: "download".into(),
+            message: "Starting".into(),
+            version: release.version.clone(),
+            ..Default::default()
+        };
     }
     let cfg = load_config(&app);
     let install = exe_dir();
@@ -809,8 +835,7 @@ fn prepare_headless(game: Option<String>) -> i32 {
     if let Some(why) = cpu::check() {
         return prepare_fail(&why);
     }
-    let mut cfg = Config::default();
-    cfg.dump_dir = game.trim().to_string();
+    let mut cfg = Config { dump_dir: game.trim().to_string(), ..Default::default() };
     let mut base = 0.0f64;
     let src = PathBuf::from(&cfg.dump_dir);
     if src.is_file() && src.extension().map(|e| e.eq_ignore_ascii_case("nup")).unwrap_or(false) {
@@ -848,7 +873,8 @@ fn prepare_headless(game: Option<String>) -> i32 {
         Err(e) => return prepare_fail(&e),
     };
     let shared = Arc::new(setup::Shared::default());
-    *shared.progress.lock().unwrap() = setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
+    *shared.progress.lock().unwrap() =
+        setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
     shared.cancel.store(false, Ordering::SeqCst);
     let jobs = jobs_of(&cfg);
     let n = setup::steps(&p, None).iter().filter(|s| s.state != "done").count().max(1) as f64;
@@ -932,6 +958,7 @@ fn main() {
             platform,
             lsfg_status,
             open_lsfg_install,
+            install_lsfg,
             game_status,
             steam_status,
             add_to_steam,

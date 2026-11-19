@@ -24,7 +24,12 @@ if not defined NX_JOBS set "NX_JOBS=20"
 if not defined SCCACHE_DIR set "SCCACHE_DIR=%ROOT%\work\build\sccache"
 if not defined SCCACHE_SERVER_PORT set "SCCACHE_SERVER_PORT=24339"
 if not defined SCCACHE_CACHE_SIZE set "SCCACHE_CACHE_SIZE=20G"
-call "%HERE%nx_env.cmd" cmake -S "%HERE%..\games\%GAME%" -B "%NX_BUILD%" -G Ninja -DCMAKE_TOOLCHAIN_FILE="%HERE%..\cmake\clang-cl.cmake" -DCMAKE_BUILD_TYPE=Release -DNX_ROOT="%ROOT%"
+rem CMAKE_SUPPRESS_REGENERATION: the configure on the next line runs on every build, and Ninja must not re-run it from a timestamp
+rem comparison. A release extracted with files newer than the clock, or an output written in the same tick as an input, otherwise loops
+rem "Re-running CMake" until Ninja's 100-try limit (EmblemWeave issue 34).
+rem CMAKE_NINJA_FORCE_RESPONSE_FILE: Ninja otherwise writes object paths into the command line, and cmd.exe splits an unquoted & in an
+rem absolute source path (for example "PC Ports & Recomps") into two commands (EmblemWeave issue 38).
+call "%HERE%nx_env.cmd" cmake -S "%HERE%..\games\%GAME%" -B "%NX_BUILD%" -G Ninja -DCMAKE_TOOLCHAIN_FILE="%HERE%..\cmake\clang-cl.cmake" -DCMAKE_BUILD_TYPE=Release -DNX_ROOT="%ROOT%" -DCMAKE_SUPPRESS_REGENERATION=ON -DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON
 if errorlevel 1 exit /b 1
 call "%HERE%nx_env.cmd" cmake --build "%NX_BUILD%" --target %GAME%_modules -- -j %NX_JOBS%%ARGS%
 exit /b %errorlevel%

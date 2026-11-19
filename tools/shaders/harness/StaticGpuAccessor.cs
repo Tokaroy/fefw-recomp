@@ -256,13 +256,20 @@ namespace SpirvHarness
         public bool QueryHostSupportsGeometryShader() => DesktopHost;
         public bool QueryHostSupportsGeometryShaderPassthrough() => false;
         public bool QueryHostSupportsTransformFeedback() => false;
-        public bool QueryHostSupportsShaderFloat64() => DesktopHost;
+        // --no-float64: what Ryujinx answers on a GPU without shaderFloat64 (Intel Arc A-series), so its DoubleToFloat pass lowers
+        // 64-bit floats to 32-bit and the module declares no Float64 (GitHub issue #45).
+        public static bool NoFloat64;
+        public bool QueryHostSupportsShaderFloat64() => DesktopHost && !NoFloat64;
         public bool QueryHostSupportsShaderBallot() => false;
         public bool QueryHostSupportsViewportMask() => false;
         public bool QueryHostSupportsNonConstantTextureOffset() => false;
         public bool QueryHostSupportsTextureShadowLod() => false;
         public bool QueryHostSupportsFragmentShaderInterlock() => false;   // S4d: no SPV_EXT_fragment_shader_interlock dependency (only the rare ordered-fragment shaders lose their ordering)
         public bool QueryHostSupportsShaderNonUniformIndexing() => true;
+        // Ryujinx's Vulkan backend answers false on Intel GPUs ("Vendor != Vendor.Intel"): barriers on potentially divergent
+        // blocks hang them, so the translator leaves those barriers out. --no-divergent-barriers does the same (GitHub issue #45).
+        public static bool NoDivergentBarriers;
+        public bool QueryHostSupportsShaderBarrierDivergence() => !NoDivergentBarriers;
         // Offline modules run on any Vulkan subgroup size. 128 selects Ryujinx's
         // portable warp paths (four ballot words), not a required hardware size.
         // Lane ID / base / ballot selection fold away on native 32-lane GPUs.

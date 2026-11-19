@@ -49,8 +49,9 @@ const TABS = [
       {
         title: 'settings.sec.frameRate', icon: 'gauge', file: 'game',
         fields: [
-          { id: 'fps60', type: 'toggle', label: 'settings.fps60.label', sec: 'fefw', key: 'fps60', def: '0', hint: 'settings.fps60.hint' },
-          { id: 'fps120', type: 'toggle', label: 'settings.fps120.label', sec: 'fefw', key: 'fps120', def: '0', hint: 'settings.fps120.hint' },
+          // one choice over the game's two switches ([fefw] fps60 and fps120; 120 wins when both are on)
+          { id: 'fps_target', type: 'rate', label: 'settings.fpsTarget.label', sec: 'fefw', keys: ['fps60', 'fps120'],
+            options: [['30', 'settings.fpsTarget.30'], ['60', 'settings.fpsTarget.60'], ['120', 'settings.fpsTarget.120']], hint: 'settings.fpsTarget.hint' },
           { id: 'smooth_step', type: 'toggle', label: 'settings.smoothStep.label', sec: 'fefw', key: 'smooth_step', def: '0', hint: 'settings.smoothStep.hint' },
           { id: 'fps_limit', type: 'autonum', label: 'settings.fpsLimit.label', file: 'controls', sec: 'display', key: 'fps_limit', def: 'auto',
             min: 0, max: 1000, numDefault: 60, unit: 'settings.fpsLimit.unit', autoLabel: 'settings.fpsLimit.auto', hint: 'settings.fpsLimit.hint' },
@@ -62,6 +63,14 @@ const TABS = [
   {
     id: 'graphics', title: 'settings.tab.graphics', icon: 'sparkles',
     groups: [
+      {
+        // Low / Medium / High / Ultra: render scale, shadow map size, quality and the four detail keys together (PRESETS below). Not a key of
+        // its own: it shows the preset those seven hold, Custom when they hold anything else, as the F1 menu does (games/fefw/fefw_presets.h).
+        title: 'settings.sec.preset', icon: 'sliders-horizontal', file: 'game',
+        fields: [
+          { id: 'preset', type: 'preset', label: 'settings.preset.label', hint: 'settings.preset.hint' },
+        ],
+      },
       {
         title: 'settings.sec.upscaling', icon: 'image-upscale', file: 'game', gpuNote: true,
         fields: [
@@ -97,9 +106,19 @@ const TABS = [
         title: 'settings.sec.detail', icon: 'layers', file: 'game',
         fields: [
           { id: 'quality', type: 'select', label: 'settings.quality.label', sec: 'fefw', key: 'quality', def: 'console',
-            options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked']] },
+            options: [['console', 'settings.quality.console'], ['docked', 'settings.quality.docked'], ['handheld', 'settings.quality.handheld']] },
           { id: 'shadow_size', type: 'select', label: 'settings.shadowSize.label', sec: 'fefw', key: 'shadow_size', def: '0',
-            options: [['0', 'settings.shadowSize.game'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
+            options: [['0', 'settings.shadowSize.game'], ['1024', '1024'], ['2048', '2048'], ['4096', '4096'], ['8192', '8192']] },
+          // the game's own graphics data, edited as it loads (games/fefw/fefw_detail.cpp): applies at the next start
+          { id: 'reflections', type: 'select', label: 'settings.reflections.label', sec: 'fefw', key: 'reflections', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.reflections.reduced'], ['off', 'settings.detail.off']],
+            hint: 'settings.reflections.hint', restart: true },
+          { id: 'ambient_occlusion', type: 'select', label: 'settings.ao.label', sec: 'fefw', key: 'ambient_occlusion', def: '1',
+            options: [['1', 'settings.detail.on'], ['0', 'settings.detail.off']], hint: 'settings.ao.hint', restart: true },
+          { id: 'crowd_detail', type: 'select', label: 'settings.crowdDetail.label', sec: 'fefw', key: 'crowd_detail', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.detail.reduced']], hint: 'settings.crowdDetail.hint', restart: true },
+          { id: 'scenery_detail', type: 'select', label: 'settings.sceneryDetail.label', sec: 'fefw', key: 'scenery_detail', def: 'full',
+            options: [['full', 'settings.detail.full'], ['reduced', 'settings.detail.reduced']], hint: 'settings.sceneryDetail.hint', restart: true },
           { id: 'texture_detail', type: 'select', label: 'settings.textureDetail.label', sec: 'gfx', key: 'texture_detail', def: 'auto',
             options: [['auto', 'settings.textureDetail.auto'], ['full', 'settings.textureDetail.full'], ['half', 'settings.textureDetail.half']],
             hint: 'settings.textureDetail.hint', restart: true },
@@ -130,6 +149,9 @@ const TABS = [
         fields: [
           { id: 'volume', type: 'range', label: 'settings.volume.label', sec: 'audio', key: 'volume', def: '1.0', max: 2, unit: 'settings.volume.unit' },
           { id: 'mute_unfocused', type: 'toggle', label: 'settings.muteUnfocused.label', sec: 'audio', key: 'mute_unfocused', def: '0' },
+          // [audio] channels of controls.ini: the game's mix, stereo or 5.1 (runtime/src/gfx/play/play.cpp hands it to the audio services at start)
+          { id: 'audio_channels', type: 'select', label: 'settings.audioChannels.label', sec: 'audio', key: 'channels', def: '2',
+            options: [['2', 'settings.audioChannels.stereo'], ['6', 'settings.audioChannels.surround']], hint: 'settings.audioChannels.hint', restart: true },
         ],
       },
       {
@@ -224,6 +246,27 @@ const TABS = [
   },
 ];
 
+// The graphics presets: the same table as runtime/games/fefw/fefw_presets.h (and runtime/docs/CONFIG.md). A preset sets these fields.
+const DETAIL_FULL = { reflections: 'full', ambient_occlusion: '1', crowd_detail: 'full', scenery_detail: 'full' };
+const PRESETS = [
+  ['low', 'settings.preset.low', { render_ratio: '0.5', shadow_size: '1024', quality: 'handheld',
+    reflections: 'reduced', ambient_occlusion: '0', crowd_detail: 'reduced', scenery_detail: 'reduced' }],
+  ['medium', 'settings.preset.medium', { render_ratio: '0', shadow_size: '0', quality: 'console', ...DETAIL_FULL }],
+  ['high', 'settings.preset.high', { render_ratio: '0.67', shadow_size: '4096', quality: 'docked', ...DETAIL_FULL }],
+  ['ultra', 'settings.preset.ultra', { render_ratio: '1.0', shadow_size: '8192', quality: 'docked', ...DETAIL_FULL }],
+];
+const lowerOf = (x) => String(x).trim().toLowerCase();
+const switchOn = (x) => !['0', 'false', 'off', 'no'].includes(lowerOf(x));
+/** The preset the fields hold now ('' = Custom), compared by meaning as the runtime reads them. A fixed [fefw] render size (fixed) wins over
+ *  render_ratio, so with one in the file no preset is in force until a picked preset clears it on Save. */
+const presetOf = (m, fixed) => {
+  if (fixed && !m.preset) return '';
+  const hit = PRESETS.find(([, , v]) => Number(m.render_ratio) === Number(v.render_ratio) && Number(m.shadow_size) === Number(v.shadow_size)
+    && ['quality', 'reflections', 'crowd_detail', 'scenery_detail'].every((k) => lowerOf(m[k]) === v[k])
+    && switchOn(m.ambient_occlusion) === switchOn(v.ambient_occlusion));
+  return hit ? hit[0] : '';
+};
+
 // The open tab, kept while the launcher runs (saving re-renders the page; it should come back on the same tab)
 let activeTab = TABS[0].id;
 // The fields whose full description is open, kept across redraws like the tab
@@ -237,11 +280,15 @@ const fwd = (s) => String(s).trim().replace(/\\/g, '/');
 const optName = (label) => (Array.isArray(label) ? `${optName(label[0])} (${optName(label[1])})` : String(label).includes('.') ? t(label) : label);
 
 export async function render(el, ctx) {
+  const visit = el.dataset.visit; // this render is still the page on show (main.js go); read before the first await
+  const live = () => el.dataset.visit === visit;
   const [cfg, status, gpu] = await Promise.all([api('get_config'), api('game_status'), api('gpu_info').catch(() => ({ known: false }))]);
   // NVIDIA-only choices: shown with an NVIDIA GPU, and also when the probe found no GPU at all (better shown than wrongly hidden)
   const nvOk = !gpu.known || gpu.nvidia;
   // LSFG-VK's layer and lsfg-vk.dll (lsfg.rs): its switch turns on only when both are there
   let lsfgSt = IS_LINUX ? await api('lsfg_status').catch(() => null) : null;
+  let lsfgHere = false; // installLsfg's install has not returned yet
+  let lsfgTimer = 0;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
   const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
@@ -249,12 +296,14 @@ export async function render(el, ctx) {
   const exists = { game: true, controls: data.controls_exists, config: true };
   const keyOf = (f, k) => (f.file === 'config' ? k : `${f.sec}.${k}`);
   const get = (f, k, def) => files[f.file][keyOf(f, k)] ?? def;
+  const fixedRender = String(files.game['fefw.render'] ?? '').trim() !== '';
 
   // ----- model: one UI value per field -----
   const READ = {
     select: (f) => { const v = get(f, f.key, f.def); return f.unsupported?.includes(v) ? f.def : v; },
     toggle: (f) => (f.off !== undefined ? ![f.off, '0', 'false', 'no'].includes(String(get(f, f.key, f.def)).trim().toLowerCase()) : truthy(get(f, f.key, f.def))),
     size: (f) => ({ w: get(f, f.keys[0], f.def[0]), h: get(f, f.keys[1], f.def[1]) }),
+    rate: (f) => (truthy(get(f, f.keys[1], '0')) ? '120' : truthy(get(f, f.keys[0], '0')) ? '60' : '30'),
     autonum: (f) => {
       const v = String(get(f, f.key, f.def));
       return v.toLowerCase() === 'auto' ? { auto: true, num: String(f.numDefault) } : { auto: false, num: v };
@@ -264,9 +313,11 @@ export async function render(el, ctx) {
     text: (f) => get(f, f.key, f.def),
     number: (f) => String(get(f, f.key, f.def)),
     language: () => getLang(),
+    preset: () => '', // shown from the fields it sets (presetOf), never stored
   };
   const WRITE = {
     select: (f, x) => [[f.sec, f.key, x]],
+    rate: (f, x) => [[f.sec, f.keys[0], x === '60' ? '1' : '0'], [f.sec, f.keys[1], x === '120' ? '1' : '0']],
     toggle: (f, x) => [[f.sec, f.key, x ? (f.on ?? '1') : (f.off ?? '0')]],
     size: (f, x) => [
       [f.sec, f.keys[0], String(clamp(parseInt(x.w, 10) || 1280, 320, 16384))],
@@ -278,6 +329,7 @@ export async function render(el, ctx) {
     text: (f, x) => [[f.sec, f.key, String(x).trim()]],
     number: (f, x) => [[f.sec, f.key, String(clamp(parseInt(x, 10) || 0, f.min, f.max))]],
     language: () => [],
+    preset: () => (fixedRender ? [['fefw', 'render', '']] : []), // a preset was picked: the fixed render size would win over it
   };
 
   // Every field, with its file filled in from the group. A hidden NVIDIA-only field stays in the model: it is never dirty, so never written.
@@ -292,7 +344,8 @@ export async function render(el, ctx) {
     // a stored value this platform cannot use shows as the default and counts as changed, so the next Save replaces it
     orig[f.id] = f.unsupported?.includes(get(f, f.key, f.def)) ? JSON.stringify(get(f, f.key, f.def)) : JSON.stringify(model[f.id]);
   }
-  const dirtyFields = () => all.filter((f) => JSON.stringify(model[f.id]) !== orig[f.id]);
+  // the preset row counts only when picking it has to clear a fixed render size; otherwise the fields it set are the changes
+  const dirtyFields = () => all.filter((f) => (f.type !== 'preset' || fixedRender) && JSON.stringify(model[f.id]) !== orig[f.id]);
 
   // ----- markup -----
   const dis = (f) => (exists[f.file] ? '' : 'disabled');
@@ -303,6 +356,7 @@ export async function render(el, ctx) {
       const opts = avail.some(([v]) => String(v) === String(x)) ? avail : [...avail, [x, x]];
       return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(x) ? 'selected' : ''}>${esc(optName(l))}</option>`).join('')}</select>`;
     },
+    rate: (f, x) => CONTROL.select(f, x),
     toggle: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" ${x ? 'checked' : ''} ${dis(f) || (f.lockedIf?.(model, fieldCtx) ? 'disabled' : '')}>${esc(t(x ? f.onLabel || 'common.on' : f.offLabel || 'common.off'))}</label>`,
     size: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" data-part="w" min="320" max="16384" value="${esc(x.w)}" ${dis(f)}><span class="unit">x</span><input type="number" data-f="${f.id}" data-part="h" min="320" max="16384" value="${esc(x.h)}" ${dis(f)}>`,
     autonum: (f, x) => `<label class="switch"><input type="checkbox" id="f-${f.id}" data-f="${f.id}" data-part="auto" ${x.auto ? 'checked' : ''} ${dis(f)}>${esc(optName(f.autoLabel))}</label><input type="number" data-f="${f.id}" data-part="num" min="${f.min}" max="${f.max}" value="${esc(x.num)}" ${x.auto || !exists[f.file] ? 'disabled' : ''}><span class="unit">${esc(optName(f.unit))}</span>`,
@@ -310,6 +364,11 @@ export async function render(el, ctx) {
     text: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}>`,
     number: (f, x) => `<input type="number" id="f-${f.id}" data-f="${f.id}" min="${f.min}" max="${f.max}" value="${esc(x)}" ${dis(f)}>`,
     path: (f, x) => `<input type="text" id="f-${f.id}" data-f="${f.id}" spellcheck="false" placeholder="${esc(f.placeholder ? optName(f.placeholder) : '')}" value="${esc(x)}" ${dis(f)}><button class="btn" data-browse="${f.id}" ${dis(f)}>${icon('folder-open')}${esc(t('common.browse'))}</button>`,
+    preset: (f) => {
+      const cur = presetOf(model, fixedRender);
+      const custom = cur ? '' : `<option value="" selected disabled>${esc(t('settings.preset.custom'))}</option>`;
+      return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${custom}${PRESETS.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${esc(t(l))}</option>`).join('')}</select>`;
+    },
     language: (f, x) => `<select id="f-${f.id}" data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
   };
 
@@ -415,7 +474,7 @@ export async function render(el, ctx) {
       } else if (f.type === 'toggle') {
         const c = el.querySelector(`[data-f="${f.id}"]`);
         if (c) c.checked = !!x;
-      } else {
+      } else if (f.type !== 'preset') {
         const c = el.querySelector(`[data-f="${f.id}"]`);
         if (c) c.value = x;
       }
@@ -460,18 +519,18 @@ export async function render(el, ctx) {
   let checkSeq = 0;
   async function checkFiles() {
     const seq = ++checkSeq;
-    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || ''), frameGenDlss: model.frame_gen === 'dlss' })
+    const r = await api('upscaler_files', { fsrDir: fwd(model.fsr_dll || ''), dlssDir: fwd(model.dlss_dll || ''), xessDir: fwd(model.xess_dll || '') })
       .catch(() => null);
     if (seq !== checkSeq || !r) return;
     const line = (name, x) => `${t(name)}: ${x.found ? t('settings.files.found', { detail: x.detail }) : t('settings.files.notFound', { detail: fileDetail(x.detail) })}`;
-    // `warn`: a sentence appended in red and bold (the files of the Streamline folder the game does not use)
-    const put = (which, text, warn) =>
+    // `note`: a sentence appended in its own span (the Streamline SDK files the game does not use)
+    const put = (which, text, note) =>
       el.querySelectorAll(`[data-status="${which}"]`).forEach((n) => {
         n.textContent = text;
-        if (warn) {
+        if (note) {
           const w = document.createElement('span');
-          w.className = 'status-warn';
-          w.textContent = ` ${warn}`;
+          w.className = 'status-note';
+          w.textContent = ` ${note}`;
           n.appendChild(w);
         }
       });
@@ -490,6 +549,7 @@ export async function render(el, ctx) {
     if (!note) return;
     const was = fieldCtx.lsfgReady;
     const r = await api('lsfg_status').catch(() => null);
+    if (!live()) return;
     if (!r) { note.textContent = ''; return; }
     lsfgSt = r;
     if (fieldCtx.lsfgReady !== was) { draw(); return; }
@@ -498,14 +558,41 @@ export async function render(el, ctx) {
       r.dll ? t('settings.lsfg.dllFound', { path: r.dll }) : t(r.wrong_branch ? 'settings.lsfg.wrongBranch' : 'settings.lsfg.dllMissing'),
     ].join(' ');
     if (!r.layer) {
-      // the layer is the one part the launcher cannot set up: link to its install instructions
-      const b = document.createElement('button');
-      b.className = 'btn quiet';
-      b.style.marginTop = 'var(--space-2)';
-      b.textContent = t('settings.lsfg.installLink');
-      b.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
-      note.append(document.createElement('br'), b);
+      // the layer is installed on request (lsfg.rs install): CachyOS's package through Shelly, else LSFG-VK's build into ~/.local
+      const how = document.createElement('span');
+      how.textContent = t(r.install === 'shelly' ? 'settings.lsfg.install.shelly' : 'settings.lsfg.install.local');
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginTop = 'var(--space-2)';
+      const go = document.createElement('button');
+      go.className = 'btn';
+      const busy = r.installing || lsfgHere;
+      go.disabled = busy;
+      go.textContent = t(busy ? 'settings.lsfg.install.running' : 'settings.lsfg.install.button');
+      go.addEventListener('click', (ev) => { ev.preventDefault(); installLsfg(); });
+      const link = document.createElement('button');
+      link.className = 'btn quiet';
+      link.textContent = t('settings.lsfg.installLink');
+      link.addEventListener('click', (ev) => { ev.preventDefault(); api('open_lsfg_install').catch((e) => toast(errText(e), 'error')); });
+      row.append(go, link);
+      note.append(document.createElement('br'), how, row);
+      // an install started from an earlier visit of this page: follow it until it ends
+      clearTimeout(lsfgTimer);
+      if (r.installing && !lsfgHere) lsfgTimer = setTimeout(checkLsfg, 1000);
     }
+  }
+  async function installLsfg() {
+    if (lsfgHere) return;
+    lsfgHere = true;
+    const done = api('install_lsfg');
+    checkLsfg();
+    try {
+      toast(await done, 'ok');
+    } catch (e) {
+      toast(errText(e), 'error');
+    }
+    lsfgHere = false;
+    if (live()) checkLsfg();
   }
   let checkTimer = 0;
 
@@ -622,6 +709,12 @@ export async function render(el, ctx) {
       const part = input.dataset.part;
       const onChange = () => {
         const v = input.type === 'checkbox' ? input.checked : input.value;
+        if (f.type === 'preset') {
+          const p = PRESETS.find(([id]) => id === v);
+          if (p) Object.assign(model, p[2], { preset: v });
+          draw();
+          return;
+        }
         if (part) model[f.id] = { ...model[f.id], [part]: v };
         else model[f.id] = f.type === 'range' ? parseInt(v, 10) : v;
         if (f.type === 'language') {
@@ -698,6 +791,7 @@ export async function render(el, ctx) {
     }
   }
 
+  if (!live()) return; // another page was opened while this one was loading
   draw();
   pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }
