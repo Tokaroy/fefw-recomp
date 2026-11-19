@@ -51,6 +51,9 @@ struct ProgLayout {
     // Set 0 is pushed and nothing outside it depends on the uniform buffers (no texture handle read from a uniform block): a draw whose
     // only change is a uniform buffer binding pushes set 0 again and keeps the other sets it has bound ([nvn] ubo_only_rebind).
     bool ubo_only = false;
+    // A per-program invariant of the replay: a storage buffer the program's shaders write (one that [nvn] gfx_ssbo_readonly proves read-only
+    // does not count) or a storage image. A draw of this program then writes memory; worked out once here instead of over every binding a draw.
+    bool writes_storage = false;
 };
 
 // [nvn] push_uniforms (default true): programs whose set 0 fits the device's push descriptor limit push it (ProgLayout::push_set0). False when the
