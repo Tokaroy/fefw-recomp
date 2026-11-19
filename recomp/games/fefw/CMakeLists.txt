@@ -29,6 +29,9 @@ set(FEFW_SHARDS_SUBSDK0 5 CACHE STRING "translation units of subsdk0, dlss (233 
 set(FEFW_SHARDS_SUBSDK1 14 CACHE STRING "translation units of subsdk1, cuda (620 k)")
 set(FEFW_SHARDS_SUBSDK2 3 CACHE STRING "translation units of subsdk2, movie (136 k)")
 set(FEFW_SITES "${CMAKE_CURRENT_LIST_DIR}/main.sites" CACHE FILEPATH "hook sites of main for this build")
+# a copy beside the libraries: the game build puts it next to fefw.exe as fefw.sites, the list the runtime checks
+# hooks and mods' sites against (runtime/src/services/mods_dll.cpp)
+configure_file("${FEFW_SITES}" "${CMAKE_BINARY_DIR}/main.sites" COPYONLY)
 # the lifts run one at a time, each with FEFW_LIFT_JOBS processes, and every compile waits for all of them (target fefw_lift)
 set(FEFW_LIFT_JOBS 10 CACHE STRING "lifter processes")
 set_property(GLOBAL APPEND PROPERTY JOB_POOLS fefw_lift=1)

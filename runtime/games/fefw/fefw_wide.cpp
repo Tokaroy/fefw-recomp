@@ -27,6 +27,8 @@
 //                console); the scissor is put back to the whole target at its end.
 //   stat chart   the unit screen's radar polygons (0x17d8e80) are built by the game from the layout's Locator panes in 1920x1080 layout pixels
 //                and drawn in its own 2D primitive buffer over the whole output, not through a pane: their x gets 960 + (x - 960) / k.
+//   map routes   the world / quest map's location dots (0x16bb860) and route lines (0x16bd660) are pushed into the same buffer in
+//                1920x1080 layout pixels: every vertex a batch pushed gets the same x at the batch's end, so they stay on the map picture.
 //   movies       the movie draw (0x1904aa0) clears the target to opaque black and draws into the centred 16:9 viewport; a midhook in
 //                front of its tail-called draw draws, puts the viewport back to the whole target and returns.
 // Outputs narrower than 16:9 are not widened: fefw_res.cpp fits the output to 16:9 inside them and the window letterboxes it. Wider than
@@ -77,6 +79,18 @@ constexpr uint64_t kFxScissor1 = 0xb76bb0;        // `blr x8`: SetScissor(x0 = c
 constexpr uint64_t kFxScissor2 = 0xb76cfc;
 constexpr uint64_t kFxEnd = 0xb76d9c;             // the epilogue
 constexpr uint64_t kStatGraph = 0x17d90b0;        // in 0x17d8e80 (the stat radar chart): after the 8 ring vertices are computed; sp + 0x20 = 8 x (x, y), sp + 0x10 = centre x
+// world / quest map: the dots batch (0x16bb860) and the route lines batch (0x16bd660), each between the renderer's batch start (0x19ca6c0)
+// and batch end (0x19ca3e0); the vertex pushes are inlined in between and the only calls are renderer state setters and vector growth
+constexpr uint64_t kDotsStart = 0x16bbe98;        // `ldr x0, [x0]`: [x0] = the 2D renderer, before its batch start
+constexpr uint64_t kDotsEnd = 0x16bcef8;          // the epilogue, after every batch of the function has ended
+constexpr uint64_t kLinesStart = 0x16bd704;       // `str wzr, [x8, x9]`: x0 = the 2D renderer, before its batch start
+constexpr uint64_t kLinesEnd = 0x16bdfbc;         // where every path out of the vertex loop meets, before the tail-called batch end
+// the 2D renderer's primitive buffer: vertices of 40 bytes (x, y f32 at +0, in 1920x1080 layout pixels), a push takes index count + 1
+// and writes the vertex only while count <= 0x3fffe
+constexpr uint64_t kPrimVerts = 0x4ac0;           // vertex array pointer
+constexpr uint64_t kPrimCount = 0x4b00;           // s32: the last index pushed
+constexpr uint32_t kPrimMaxIndex = 0x3ffff;
+constexpr uint64_t kPrimStride = 40;
 constexpr uint64_t kMovieTarget = 0x1904b5c;      // in 0x1904aa0, after the target is set: [x19] = command wrapper, x20 + 0x10 = s32 w, h
 constexpr uint64_t kMovieDraw = 0x1904c20;        // midhook: the draw is tail-called next (vtable + 0x110 with 3, 0)
 
@@ -90,9 +104,10 @@ constexpr uint32_t kInv960 = 0x3a888889;          // 1/960: a 1920 wide ortho
 constexpr uint32_t kInv540 = 0x3af2b9d6;          // 1/540: 1080 high
 constexpr uint32_t kOne = 0x3f800000;
 
-enum Counter { kCCamera, kCUi, kCBackdrop, kCScissor, kCMarker, kCEdge, kCFxOrtho, kCFxScissor, kCMovie, kCStatGraph, kCCount };
+enum Counter { kCCamera, kCUi, kCBackdrop, kCScissor, kCMarker, kCEdge, kCFxOrtho, kCFxScissor, kCMovie, kCStatGraph, kCMapRoutes, kCCount };
 constexpr const char* kCounterNames[kCCount] = {"camera",     "UI projection", "full-width pane",   "list scissor", "world marker",
-                                               "off-screen marker", "2D effect", "2D effect scissor", "movie", "stat chart"};
+                                               "off-screen marker", "2D effect", "2D effect scissor", "movie", "stat chart",
+                                               "map batch"};
 static_assert(kCCount == WideInfo::kCounters, "fefw_game.h WideInfo::kCounters");
 
 struct Wide {
@@ -287,6 +302,46 @@ void hook_stat_graph(::Ctx* c, uint64_t, void*) {
     if (first(kCStatGraph)) NXLOG_I(kTag, "ultrawide: stat chart polygon x scaled by %.4f about 960", w.inv_k);
 }
 
+// ---- map routes ---------------------------------------------------------------------------------------------------------------------------
+// The world / quest map's location dots and the route lines between them are written straight into the same 2D primitive buffer, in 1920x1080
+// layout pixels, while the map picture is a pane drawn in the centred 16:9 area: on a wide output they spread sideways past it. Each of the
+// two batches is bracketed: at its start the buffer's vertex count is noted, at its end every vertex pushed since gets x' = 960 + (x - 960) / k.
+struct MapBatch {
+    uint64_t renderer = 0;
+    uint32_t count0 = 0;
+    bool open = false;
+};
+thread_local MapBatch t_dots, t_lines;
+
+void map_batch_start(MapBatch& b, uint64_t renderer) {
+    b.open = false;
+    if (!renderer || !mem::is_mapped(renderer + kPrimCount, 4)) return;
+    b.renderer = renderer;
+    b.count0 = rdv<uint32_t>(renderer + kPrimCount);
+    b.open = true;
+}
+void map_batch_end(MapBatch& b) {
+    if (!b.open) return;
+    b.open = false;
+    const uint32_t count1 = rdv<uint32_t>(b.renderer + kPrimCount);
+    if (count1 <= b.count0 || count1 - b.count0 > kPrimMaxIndex + 1) return;   // nothing pushed, or the count went back
+    const uint32_t last = std::min(count1, kPrimMaxIndex);
+    if (last <= b.count0) return;
+    const uint64_t verts = rdv<uint64_t>(b.renderer + kPrimVerts);
+    const uint64_t from = verts + (static_cast<uint64_t>(b.count0) + 1) * kPrimStride;
+    if (!verts || !mem::is_mapped(from, static_cast<uint64_t>(last - b.count0) * kPrimStride)) return;
+    const float inv_k = ws().inv_k;
+    for (uint64_t a = from, end = verts + (static_cast<uint64_t>(last) + 1) * kPrimStride; a < end; a += kPrimStride)
+        wrv<float>(a, 960.0f + (rdv<float>(a) - 960.0f) * inv_k);
+    if (first(kCMapRoutes)) NXLOG_I(kTag, "ultrawide: map batch of %u vertices: x scaled by %.4f about 960", last - b.count0, inv_k);
+}
+void hook_dots_start(::Ctx* c, uint64_t, void*) {
+    map_batch_start(t_dots, mem::is_mapped(c->x[0], 8) ? rdv<uint64_t>(c->x[0]) : 0);
+}
+void hook_dots_end(::Ctx*, uint64_t, void*) { map_batch_end(t_dots); }
+void hook_lines_start(::Ctx* c, uint64_t, void*) { map_batch_start(t_lines, c->x[0]); }
+void hook_lines_end(::Ctx*, uint64_t, void*) { map_batch_end(t_lines); }
+
 // ---- world markers ------------------------------------------------------------------------------------------------------------------------
 void hook_marker_s1(::Ctx* c, uint64_t, void*) {
     c->v[1].f[0] *= ws().k;
@@ -432,7 +487,7 @@ void wide_install(uint64_t base, int out_w, int out_h) {
     w.cam_aspect_num = static_cast<float>(9.0 * out_w / out_h);
     w.active = true;
     // [fefw] ultrawide_skip (debug): a comma-separated list of hook groups to leave out: camera, ui, backdrop, scissor, markers, fx, fxclip,
-    // movie, statgraph
+    // movie, statgraph, maproutes
     std::string skip = "," + config_get_str("fefw", "ultrawide_skip", "") + ",";
     skip.erase(std::remove(skip.begin(), skip.end(), ' '), skip.end());
     auto on = [&](const char* g) { return skip.find(std::string(",") + g + ",") == std::string::npos; };
@@ -450,6 +505,12 @@ void wide_install(uint64_t base, int out_w, int out_h) {
         add(kEdgeMarker, &hook_edge_marker);
     }
     if (on("statgraph")) add(kStatGraph, &hook_stat_graph);
+    if (on("maproutes")) {
+        add(kDotsStart, &hook_dots_start);
+        add(kDotsEnd, &hook_dots_end);
+        add(kLinesStart, &hook_lines_start);
+        add(kLinesEnd, &hook_lines_end);
+    }
     if (on("fx")) add(kFxOrtho, &hook_fx_ortho);
     if (on("fx") && on("fxclip")) {
         add(kFxScissor1, &hook_fx_scissor);

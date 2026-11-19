@@ -253,6 +253,7 @@ void tex_ensure_current(Texture* t, Frame& f);
 // The same for a copy or clear of the image: never a stand-in ([nvn] tex_async), the real content now.
 void tex_ensure_exact(Texture* t, Frame& f);
 void tex_poll_cpu_writes();   // start of a submission: textures of coherent pools whose pages the CPU wrote become dirty (nvn_gpu_texture.cpp)
+void resid_tick();            // start of a submission: the [gfx] residency clock (resid_ms) is read once here for the whole submission
 // Moves the whole image to `layout` (no-op if already there). Call with no render pass open.
 void tex_transition(Texture* t, Frame& f, VkImageLayout layout);
 // nvn_pipeline.cpp: tex_transition moves t to `layout`. A texture leaving its sampled layout is looked at again by the next draw that
@@ -331,6 +332,7 @@ VkImageView tex_present_view(Texture* t);
 VkImageView dummy_view(VkImageViewType type, bool depth_compare);
 VkImageView dummy_view(VkImageViewType type, bool depth_compare, int component);
 VkSampler dummy_sampler();
+VkSampler reserved_sampler();   // linear: sampler id 0 of a texel-fetch handle, sampled with filtering (nvn_replay.cpp)
 // Sampler for the NVN sampler state (cached forever). Never null.
 VkSampler sampler_for(const SamplerInfo& s);
 // Buffer <-> image copies with the NVN conventions (used by the replay for CopyBufferToTexture etc.).

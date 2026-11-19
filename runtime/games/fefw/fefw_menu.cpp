@@ -202,14 +202,16 @@ void apply(UiHost& host, Menu& m) { host.apply(m.edit); }
 // ---- widgets: a two-column table of rows, label left, the control right ----------------------------------------------------------------
 enum class When { Live, Restart, Info };
 
-bool pressed(ImGuiKey a, ImGuiKey b, ImGuiKey c) { return ImGui::IsKeyPressed(a, true) || ImGui::IsKeyPressed(b, true) || ImGui::IsKeyPressed(c, true); }
+// ImGui reads a key's state at io.KeysData[key - ImGuiKey_NamedKey_BEGIN] without a range check (asserts are off in this build), so
+// ImGuiKey_None must never reach IsKeyPressed: it read 8 KiB before the ImGui context, and crashed when that page was not mapped.
+bool pressed(ImGuiKey a, ImGuiKey b) { return ImGui::IsKeyPressed(a, true) || ImGui::IsKeyPressed(b, true); }
 
 // Left / right on the focused, not held, row: -1 / +1, and the cursor stays where it is.
 int step_dir() {
     if (!ImGui::IsItemFocused() || ImGui::IsItemActive()) return 0;
     int d = 0;
-    if (pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_LeftArrow, ImGuiKey_None)) d = -1;
-    else if (pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_RightArrow, ImGuiKey_None)) d = 1;
+    if (pressed(ImGuiKey_GamepadDpadLeft, ImGuiKey_LeftArrow)) d = -1;
+    else if (pressed(ImGuiKey_GamepadDpadRight, ImGuiKey_RightArrow)) d = 1;
     if (d) ImGui::NavMoveRequestCancel();
     return d;
 }
@@ -910,9 +912,9 @@ void audio_page(UiHost& host, Menu& m) {
         row(m, "Master volume", When::Live, "Everything the game plays.");
         double pct = a.volume * 100.0;
         bool drag = false;
-        const bool commit = slider(m, "##vol", &pct, 0, 100, 5, "%.0f%%", &drag);
+        const bool commit = slider(m, "##vol", &pct, 0, 200, 5, "%.0f%%", &drag);   // 0 to audio::kMaxVolume (200%)
         if (drag || commit) {
-            a.volume = std::clamp(pct / 100.0, 0.0, 1.0);
+            a.volume = std::clamp(pct / 100.0, 0.0, 2.0);
             audio::set_master_volume(static_cast<float>(a.volume));   // heard while dragged
         }
         if (commit) apply(host, m);

@@ -357,7 +357,7 @@ const char* key_alt_sens();
 //              frame_generation (1/0)
 //   [latency]  mode (off auto on boost) log_timings (1/0)
 //   [picture]  contrast (0.5..1.5) saturation (0..2) black (-0.5..0.25) gamma (0.5..2), neutral 1 1 0 1; preset (neutral vivid) is read, not written
-//   [audio]    volume (0..1) mute_unfocused (1/0) device (default or part of an output device's name)
+//   [audio]    volume (0..2, above 1 a limited boost) mute_unfocused (1/0) device (default or part of an output device's name)
 //   [prompts]  style = switch|xbox|playstation|keyboard|auto   (which button icons the game's prompts show; auto, the default, follows the last used input device)
 //   [tweaks]   skip_intro skip_boot_logos fast_menus (1/0) menu_speed (1..4)   (play_fastboot.h)
 //              glow_color (off | R,G,B) suit_glow ball_glow gun_glow (auto | off | R,G,B)   (play_tweaks.h)
