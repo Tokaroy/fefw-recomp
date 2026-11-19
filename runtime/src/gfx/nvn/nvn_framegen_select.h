@@ -29,6 +29,7 @@ struct Scene {
     uint32_t eval_w = 0, eval_h = 0;     // the picture the upscaler evaluated, in image texels (0: not known)
     uint32_t shown_w = 0, shown_h = 0;   // the part of the window texture the last present showed (a crop, or all of it)
     uint32_t known_good = 0;             // a texture id a present has accepted as the capture (0: none yet)
+    bool copied = false;                 // a window texture was drawn after this frame's capture: the picture is already in it
 };
 
 // A draw into colour target 0, after the frame's evaluation.
@@ -105,6 +106,11 @@ inline Choice judge(const Scene& s, const Look& c, int cur, uint32_t cur_id) {
         r.why = "the target a present already accepted as the capture";
     }
     r.ok = true;
+    if (cur != kReject && s.copied) {
+        // the frame's picture is already in the window texture: another target drawn now is not what was presented, whatever it is
+        r.pick = "the target captured earlier stays: the frame's picture is already in the window texture";
+        return r;
+    }
     if (cur == kReject) {
         r.place = true;
         r.pick = "the frame's first candidate";

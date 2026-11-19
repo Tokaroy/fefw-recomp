@@ -137,6 +137,18 @@ NXTEST(the_target_a_present_accepted_is_kept) {
     CHECK_EQ(f.tier, static_cast<int>(fgsel::kKnown));
 }
 
+// Once the game has drawn the captured picture into the window texture, no later target can be what was presented: the frame keeps the
+// capture it copied (a same-sized target drawn after that is another pass, not the picture).
+NXTEST(a_capture_after_the_window_copy_is_not_replaced) {
+    fgsel::Scene sc = scene(rgba8_promoted(), 2560, 1440);
+    Frame f(sc);
+    CHECK(f.offer(target(10, 2560, 1440, rgba8_promoted())));
+    sc.copied = true;   // the replay saw a draw into a window texture
+    CHECK(!f.offer(target(64, 2560, 1440, rgba8_promoted())));
+    CHECK_EQ(f.picked, 10u);
+    CHECK(f.last.pick[0] != '\0');
+}
+
 // A larger window texture, of which only the evaluated region is presented: the window target is still selectable.
 NXTEST(a_larger_window_texture_presented_through_a_crop_is_captured) {
     const fgsel::Scene sc = scene(rgba8_sdr(), 1920, 1080);

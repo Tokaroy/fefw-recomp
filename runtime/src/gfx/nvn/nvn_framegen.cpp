@@ -131,9 +131,10 @@ void fg_note_eval(VkExtent2D eval_size) {
 bool fg_hudless_candidate(Texture* t, bool blended) {
     State& s = st();
     if (!s.after_eval || !t) return false;
-    if (s.captured && !s.copied_to && t != s.captured && is_window_texture(s, t)) {
-        // the game's copy of the captured picture into the window texture, after it was captured: not another candidate
-        s.copied_to = t;
+    if (s.captured && t != s.captured && is_window_texture(s, t)) {
+        // the game's copy of the captured picture into the window texture, after it was captured: not another candidate, and no draw into
+        // the window after it either (its textels then hold the picture with its UI)
+        if (!s.copied_to) s.copied_to = t;
         return false;
     }
     if (!blended) {
@@ -150,6 +151,7 @@ bool fg_hudless_candidate(Texture* t, bool blended) {
     sc.shown_w = s.shown.width;
     sc.shown_h = s.shown.height;
     sc.known_good = s.known_good;
+    sc.copied = s.copied_to != nullptr;
     fgsel::Look look;
     look.id = t->id;
     look.w = e.width;
