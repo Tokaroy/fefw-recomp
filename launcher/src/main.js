@@ -20,6 +20,7 @@ const PAGES = {
 const nav = document.getElementById('nav');
 const view = document.getElementById('view');
 let current = null;
+let visits = 0;
 let statusHandler = null;
 let setupHandler = null;
 let logHandler = null;
@@ -70,6 +71,7 @@ async function go(page, opts = {}) {
   logHandler = null;
   drawNav();
   view.scrollTop = 0;
+  view.dataset.visit = String(++visits);
   try {
     await PAGES[page].mod.render(view, { ...ctx, ...opts });
   } catch (e) {

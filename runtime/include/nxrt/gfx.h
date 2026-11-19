@@ -153,10 +153,10 @@ struct GpuQuirks {
     // texture_detail = half does), so scene loads stop pushing video memory past the budget, where Windows moves it to system memory
     // and the frame rate halves (#49).
     bool pressure_detail = false;
-    // [gfx] igpu_compat (auto: on for Intel integrated GPUs only): [nvn] lean_draws and [gfx] residency default to off. On an Arc B390
+    // [gfx] igpu_compat (auto: on for every Intel GPU): [nvn] lean_draws and [gfx] residency default to off. On an Arc B390
     // (#18) and an Arc 140V (#5) the device was lost on the title screen from 0.2.0 on: with the other paths added after 0.1.7 off,
-    // either of these two on alone was enough (#18), so turning off only one never helped (#5). A key set in the ini or the
-    // environment still wins.
+    // either of these two on alone was enough (#18), so turning off only one never helped (#5). The discrete Arc A770 and B580 lost
+    // the device in the first scene the same way and ran with it on (#45). A key set in the ini or the environment still wins.
     bool igpu_compat = false;
 };
 const GpuQuirks& gpu_quirks();
@@ -285,7 +285,8 @@ struct FrameInfo {
 
 struct RendererStats {
     uint64_t frames = 0;                  // frames submitted
-    uint64_t presents = 0;                // vkQueuePresentKHR calls (0 when headless)
+    uint64_t presents = 0;                // vkQueuePresentKHR calls that succeeded or returned SUBOPTIMAL (0 when headless)
+    uint64_t presents_failed = 0;         // vkQueuePresentKHR calls that returned another error (device loss ends the process instead)
     uint64_t skipped = 0;                 // begin_frame returned false
     uint64_t swapchain_creates = 0;       // swapchains created (first one included)
     uint64_t out_of_date = 0;             // OUT_OF_DATE / SUBOPTIMAL results seen
