@@ -97,6 +97,7 @@ struct State {
     std::atomic<::Ctx*> svc_ctx{nullptr};
     std::atomic<uint64_t> svc_count{0};
     std::thread wall_thread;
+    bool own_watchdog = false;   // init started the freeze watchdog (freeze_exit): shutdown stops it
     std::atomic<bool> stop_wall{false};
 };
 
@@ -444,6 +445,7 @@ bool init() {
             WatchdogOptions wo;
             wo.on_fire = on_freeze;
             watchdog_start(wo);
+            s.own_watchdog = true;
         }
     }
     diag_set_frame_listener(tick_listener);
@@ -465,6 +467,12 @@ void shutdown() {
     if (!s.on) return;
     s.stop_wall = true;
     if (s.wall_thread.joinable()) s.wall_thread.join();
+    // The freeze watchdog this run started: left running, its on_freeze would end a later run in the same process, and a later
+    // watchdog_start (another run, the watchdog tests) would be ignored.
+    if (s.own_watchdog) {
+        watchdog_stop();
+        s.own_watchdog = false;
+    }
     detail::svc_every.store(0);
     release_held_keys(s);
     if (!s.finished) {
@@ -502,6 +510,7 @@ void reset_for_tests() {
     if (s.wall_thread.joinable()) s.wall_thread.join();
     s.stop_wall = false;
     s.frame_tid.store(0, std::memory_order_relaxed);   // a recycled thread id must not move the next run's clock
+    if (s.own_watchdog) watchdog_stop();                // a run reset without shutdown: its freeze watchdog goes with it
     if (s.trace) { std::fclose(s.trace); s.trace = nullptr; }
     detail::svc_every.store(0);
     ExitFn keep = s.exit_fn;
