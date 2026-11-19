@@ -216,6 +216,10 @@ audio plays. The cache is %s: translate it with Build the game (the shader step 
             prm.out = hs.output;
             prm.paper_white_nits = extras::hdr_output_white_nits(hs);   // the UI's white with [hdr] ui_nits, when this frame's scene got the gain
             prm.peak_nits = hs.peak_nits;
+            prm.sdr_gamma = hs.scene_hdr ? static_cast<float>(extras::settings().hdr.sdr_gamma) : 0.0f;   // [hdr] sdr_gamma: the TV's power curve
+            prm.dither = extras::settings().hdr.dither;
+            prm.gamut_expand = static_cast<float>(extras::settings().hdr.gamut_expand);
+            prm.scene_gain = prm.paper_white_nits > 0 ? hs.paper_white_nits / prm.paper_white_nits : 1.0f;
             prm.fsr1 = extras::upscale_mode() == extras::UpscaleMode::Fsr1;
             prm.nis = extras::upscale_mode() == extras::UpscaleMode::Nis;
             prm.sharpness = extras::upscale_sharpness();
