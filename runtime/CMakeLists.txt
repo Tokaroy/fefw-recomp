@@ -93,10 +93,26 @@ if(NXRT_BUILD_TESTS)
 
     # Lifted-code integration tests (tests/lift): need the recompiler, its Python environment and the AArch64 clang.
     option(NXRT_BUILD_LIFT_TESTS "Lift test programs with nxrecomp and run them on the runtime (CTest entries lift_*)" ON)
-    if(NXRT_BUILD_LIFT_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/cmake/NxRecomp.cmake" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/.venv/Scripts/python.exe")
-        add_subdirectory(tests/lift)
+    # The AArch64 clang the guest programs are built with (recomp/oracle/e2e/build_prog.py reads LLVM_BIN): the environment's LLVM_BIN, else
+    # the folder of the host compiler when it is LLVM's (clang-cl next to clang.exe), else LLVM's default install folder.
+    set(_nxrt_llvm_default "C:/Program Files/LLVM/bin")
+    if(DEFINED ENV{LLVM_BIN})
+        file(TO_CMAKE_PATH "$ENV{LLVM_BIN}" _nxrt_llvm_default)
     else()
+        get_filename_component(_nxrt_cc_dir "${CMAKE_C_COMPILER}" DIRECTORY)
+        if(EXISTS "${_nxrt_cc_dir}/clang.exe")
+            set(_nxrt_llvm_default "${_nxrt_cc_dir}")
+        endif()
+    endif()
+    set(NXRT_LIFT_LLVM_BIN "${_nxrt_llvm_default}" CACHE PATH "LLVM bin folder with clang.exe, ld.lld and llvm-objdump for the AArch64 guest programs of tests/lift")
+    if(NOT NXRT_BUILD_LIFT_TESTS)
+        message(STATUS "nxrt: lifted-code integration tests (tests/lift) are off (NXRT_BUILD_LIFT_TESTS=OFF)")
+    elseif(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../recomp/cmake/NxRecomp.cmake" OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/.venv/Scripts/python.exe")
         message(STATUS "nxrt: lifted-code integration tests (tests/lift) are off: ../recomp or ../tools/.venv not found")
+    elseif(NOT EXISTS "${NXRT_LIFT_LLVM_BIN}/clang.exe")
+        message(STATUS "nxrt: lifted-code integration tests (tests/lift) are off: no clang.exe in NXRT_LIFT_LLVM_BIN (${NXRT_LIFT_LLVM_BIN}); set it or LLVM_BIN")
+    else()
+        add_subdirectory(tests/lift)
     endif()
 endif()
 
