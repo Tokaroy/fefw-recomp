@@ -144,6 +144,9 @@ uint64_t pool_imports();          // statistics
 // Called from destroy_pool_gpu on the render thread.
 void pool_gpu_destroy(PoolGpu* p);
 void pool_shutdown();             // destroys every imported pool still alive and the dummy buffer (device idle)
+// Under Wine ([memory] heap_section = auto), tests whether the GPU driver can import section alias views via
+// VK_EXT_external_memory_host and tolerate primary-view protection changes; publishes the result to mem::set_wine_section_supported().
+void probe_wine_section();
 // Device-local copies of pool pages (S38, [nvn] pool_mirror). resolve_read is resolve_buffer for data draws only read (vertex and index
 // buffers, uniform blocks): it gives the device-local copy when every page of the range is current there, else the pool. The replay calls
 // note_gpu_write for every range a command may write in pool memory (true: a copied page there went stale, so bindings must be made again),
