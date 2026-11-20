@@ -74,6 +74,10 @@ void detail_install();
 std::string detail_summary();      // "" when nothing is changed
 // The render-target pool's allocator was given room past the pool ([fefw] rt_pool_overflow_mb): renders above half of a 2160p output fit.
 bool res_rt_pool_extended();
+// fefw_crowd.cpp: [fefw] npc_distance scales the hub crowd's NPC model limit, display distance and draw budget (1 = the game's own:
+// nothing installed). Installed from play_install, removed from play_remove.
+void crowd_install(uint64_t base);
+void crowd_remove();
 
 // fefw_wide.cpp: outputs wider than 16:9 ([fefw] ultrawide; hooks after Kompas9's ultrawide patch). res_install calls wide_install with
 // the output it gives the game; nothing is installed unless that output is wider than 16:9.

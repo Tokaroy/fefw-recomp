@@ -101,6 +101,7 @@ constexpr IniKey kIni[] = {
     {"fefw", "ambient_occlusion", "1", Norm::Bool, true, "ambient occlusion"},
     {"fefw", "crowd_detail", "full", Norm::Text, true, "crowd detail"},
     {"fefw", "scenery_detail", "full", Norm::Text, true, "scenery detail"},
+    {"fefw", "npc_distance", "1", Norm::Number, true, "NPC limit"},
     {"fefw", "fps60", "0", Norm::Bool, true, "60 fps"},
     {"fefw", "fps120", "0", Norm::Bool, true, "120 fps"},
     {"fefw", "smooth_step", "auto", Norm::Text, true, "smooth time step"},
@@ -912,9 +913,13 @@ void preset_group(Menu& m) {
     end_rows();
 }
 
+// [fefw] npc_distance (fefw_crowd.cpp): the hub crowd's model limit, display distance and draw budget
+constexpr const char* kNpcNames[] = {"Console (the game's own)", "1.5x", "2x", "3x", "4x"};
+constexpr const char* kNpcVals[] = {"1", "1.5", "2", "3", "4"};
+
 void detail_group(Menu& m) {
     section("Graphics detail");
-    ImGui::TextWrapped(tr("The game's own graphics settings files, edited as they load: these apply on restart."));
+    ImGui::TextWrapped(tr("The game's own graphics settings and limits, changed as the game loads them: these apply on restart."));
     if (!begin_rows("detail")) return;
     ini_combo_row(m, *ini_key("fefw", "reflections"), "Reflections",
                   "Screen-space reflections on floors and water. Reduced takes 8 rays instead of 32 and mostly helps in the hubs.",
@@ -927,6 +932,11 @@ void detail_group(Menu& m) {
     ini_combo_row(m, *ini_key("fefw", "scenery_detail"), "Scenery detail",
                   "Reduced: scenery switches to its simpler versions at 60% of the distance (50 m becomes 30 m).", kDetailLevelNames,
                   kDetailLevelVals, 2);
+    ini_combo_row(m, *ini_key("fefw", "npc_distance"), "NPC limit",
+                  "How many townspeople a town shows. The game keeps at most 70 different NPC models loaded, shows them within 80 m and "
+                  "under a draw budget; past those limits townspeople are hidden, even close by, and pop in as you walk. This multiplies all "
+                  "three. More memory and CPU work. Console = exactly the game's behaviour.",
+                  kNpcNames, kNpcVals, 5);
     end_rows();
 }
 
