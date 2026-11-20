@@ -82,9 +82,6 @@ inline 0x7101041c54
 inline 0x7101042680
 inline 0x7101042898
 inline 0x7101042c20
-# [fefw] npc_log: the update's reference position (v2) and the character show / hide call (x0 chara, w1 mode)
-inline 0x7101041d7c
-entryhook 0x7100d039e0
 # frame-rate fixes (runtime games/fefw/fefw_frame.cpp, [fefw] frame_fixes): per-frame amounts made for 30 fps kept at
 # their real speed at 60 and 120 (site map after Fortune's Eden, TheSneakyBadger, GPL-3.0-or-later). Each inline site is the instruction after
 # the one that makes the game's value: after the movk of a per-frame constant (dt 1/30, PhysX step, cloth gravity, easing factors, UI
