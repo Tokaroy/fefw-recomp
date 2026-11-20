@@ -70,7 +70,7 @@ inline 0x71016bdfbc
 # (vtable + 0x110); the midhook draws, puts the viewport back and returns
 inline 0x7101904b5c
 midhook 0x7101904c20
-# hub NPCs (runtime games/fefw/fefw_crowd.cpp, [display] npc_distance): the crowd update (map::zv crowd, 0x1041880).
+# hub NPCs (runtime games/fefw/fefw_crowd.cpp, [fefw] npc_distance): the crowd update (map::zv crowd, 0x1041880).
 # model limit: before `str w8, [x19, #16]`, w8 = the game parameter "hub character model hash limit" (how many distinct NPC models the
 # crowd keeps loaded; at the limit an NPC whose model is not loaded yet is not shown, even close by)
 inline 0x7101041b18

@@ -304,13 +304,13 @@ void exit_writing_profile(int code) {
 
 }  // namespace
 
-void play_install(uint64_t base, play::GameHost*, const play::Settings& settings) {
+void play_install(uint64_t base, play::GameHost*, const play::Settings&) {
     State& s = st();
     int (*volatile write_profile)(void) = &__llvm_profile_write_file;
     if (write_profile != &nxrt_no_profile_write) tt::set_exit_handler(&exit_writing_profile);
     s.base = base;
     res_install(base);
-    crowd_install(base, settings.display.npc_distance);
+    crowd_install(base);
     detail_install();   // before the game's file system is set up: the graphics settings files are edited as the RomFS is laid out
     twprobe_start(base);
     s.fps60 = config_get_bool("fefw", "fps60", false);
@@ -376,6 +376,7 @@ void set_clock_log(int period_s) {
 void play_remove() {
     State& s = st();
     wide_remove();
+    crowd_remove();
     for (uint32_t* h : {&s.hook, &s.movie_select, &s.movie_count, &s.step_hook, &s.cursor_x, &s.cursor_y}) {
         if (*h) hook_remove(*h);
         *h = 0;

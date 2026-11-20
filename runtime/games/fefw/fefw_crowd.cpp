@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Fire Emblem: Fortune's Weave: how many townspeople the hubs show ([display] npc_distance in the controls file, 1 = the game's own;
-// [fefw] npc_distance in the ini wins over it).
+// Fire Emblem: Fortune's Weave: how many townspeople the hubs show ([fefw] npc_distance in fefw.ini or NXRT_FEFW_NPC_DISTANCE, 1 = the
+// game's own; the F1 page's "NPC limit" row writes it).
 //
 // The hub crowd update (0x1041880, map::zv crowd) shows and hides the townspeople through 0xd039e0 (chara, mode: 0 shown, 1 hidden,
 // 2 the crowd's far / released state). Three of the game's limits decide who is drawn, and npc_distance k multiplies all three (tests
@@ -10,7 +10,7 @@
 //   - the display distance: "hub character display distance" (80 m), the radius the crowd shows townspeople within.
 //   - the draw budget: townspeople are shown nearest first while max(cost / 600000, count / 80) stays under 1.0; once it is reached,
 //     every further townsperson that frame is hidden.
-// k = 1 installs the hooks but leaves every value as the game has it.
+// A limit whose factor is 1 gets no hook: at k = 1 nothing is installed and the game runs as it is.
 #include "fefw_game.h"
 
 #include <atomic>
@@ -19,11 +19,13 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 #include "nxrt/abi.h"
 #include "nxrt/config.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
+#include "nxrt/memory.h"
 
 namespace nxrt::games::fefw {
 
@@ -42,7 +44,7 @@ float bitsf(uint32_t u) {
     return f;
 }
 
-double g_npc = 1.0;                                                // npc_distance: the factor shown on the F1 page
+double g_npc = 1.0;                                                // npc_distance
 double g_npc_model = 1.0, g_npc_radius = 1.0, g_npc_budget = 1.0;   // what each limit uses (npc_distance unless an ini key overrides it)
 
 // ---- display distance -----------------------------------------------------------------------------------------------------------------
@@ -90,14 +92,12 @@ std::mutex g_diag_mu;
 std::unordered_map<uint64_t, int> g_state;     // character -> last mode
 int g_diag_lines = 0;
 
-bool safe_read(uint64_t addr, void* out, size_t n) {   // a guest read through a pointer that is not verified
-    if (addr < 0x10000 || addr > 0x7fffffffffffULL) return false;
-    __try {
-        std::memcpy(out, reinterpret_cast<const void*>(addr), n);
-        return true;
-    } __except (1) {
-        return false;
-    }
+// A guest read through a pointer that is not verified. mem::is_mapped checks the range first: a __try around an inlined memcpy does not
+// catch the fault under clang-cl without /EHa.
+bool safe_read(uint64_t addr, void* out, size_t n) {
+    if (addr < 0x10000 || addr > 0x7fffffffffffULL || !mem::is_mapped(addr, n)) return false;
+    std::memcpy(out, reinterpret_cast<const void*>(addr), n);
+    return true;
 }
 
 void hook_crowd_ref(::Ctx* c, uint64_t, void*) {
@@ -108,10 +108,10 @@ int hook_show_hide(::Ctx* c, uint64_t, void*) {
     const uint64_t ch = c->x[0], caller = c->x[30] - g_crowd_base;
     const int mode = static_cast<int>(c->x[1] & 0xff);
     std::lock_guard<std::mutex> lk(g_diag_mu);
+    if (g_diag_lines >= kMaxLogLines) return 0;   // the log is full: stop tracking too, so the map stops growing
     auto [it, fresh] = g_state.try_emplace(ch, mode);
     if (!fresh && it->second == mode) return 0;
     it->second = mode;
-    if (g_diag_lines >= kMaxLogLines) return 0;
     ++g_diag_lines;
     float p[3] = {0, 0, 0};
     uint64_t obj = 0;
@@ -124,11 +124,16 @@ int hook_show_hide(::Ctx* c, uint64_t, void*) {
     return 0;
 }
 
+std::vector<uint32_t> g_hooks;   // crowd_remove takes these out
+
+void add_inline(uint64_t addr, InlineHookFn fn) {
+    if (const uint32_t id = hook_add_inline(addr, fn)) g_hooks.push_back(id);
+}
+
 }  // namespace
 
-void crowd_install(uint64_t base, double npc_distance) {
-    const double ini = config_get_double("fefw", "npc_distance", 0.0);   // set in the ini: wins over the F1 page
-    const double npc = ini > 0.0 ? ini : npc_distance;
+void crowd_install(uint64_t base) {
+    const double npc = config_get_double("fefw", "npc_distance", 1.0);
     g_npc = npc > 1.0 ? std::fmin(npc, 4.0) : 1.0;
     // Testing / modding: each of the three limits can be set on its own in the ini (a factor, 1 = the game's own); not on the F1 page.
     auto own = [](const char* key) {
@@ -139,21 +144,25 @@ void crowd_install(uint64_t base, double npc_distance) {
     g_npc_model = m > 0 ? m : g_npc;
     g_npc_radius = r > 0 ? r : g_npc;
     g_npc_budget = b > 0 ? b : g_npc;
-    hook_add_inline(base + kHubRadius, &hook_hub_radius);
-    hook_add_inline(base + kModelLimit, &hook_model_limit);
+    if (g_npc_radius > 1.0) add_inline(base + kHubRadius, &hook_hub_radius);
+    if (g_npc_model > 1.0) add_inline(base + kModelLimit, &hook_model_limit);
     if (g_npc_budget > 1.0)
-        for (uint64_t off : kCrowdBudget) hook_add_inline(base + off, &hook_crowd_budget);
-    NXLOG_I(kTag, "hub NPCs x%.2f (%s; 1 = the game's own): model limit x%.2f%s, display distance x%.2f%s, budget x%.2f%s", g_npc,
-            ini > 0.0 ? "[fefw] npc_distance" : "[display] npc_distance", g_npc_model, m > 0 ? " ([fefw] npc_model_limit)" : "",
-            g_npc_radius, r > 0 ? " ([fefw] npc_radius)" : "", g_npc_budget, b > 0 ? " ([fefw] npc_budget)" : "");
+        for (uint64_t off : kCrowdBudget) add_inline(base + off, &hook_crowd_budget);
+    if (!g_hooks.empty())
+        NXLOG_I(kTag, "hub NPCs x%.2f ([fefw] npc_distance; 1 = the game's own): model limit x%.2f%s, display distance x%.2f%s, budget x%.2f%s",
+                g_npc, g_npc_model, m > 0 ? " ([fefw] npc_model_limit)" : "", g_npc_radius, r > 0 ? " ([fefw] npc_radius)" : "",
+                g_npc_budget, b > 0 ? " ([fefw] npc_budget)" : "");
     if (config_get_bool("fefw", "npc_log", false)) {
         g_crowd_base = base;
-        hook_add_inline(base + kCrowdRef, &hook_crowd_ref);
-        hook_add_entry(base + kShowHide, &hook_show_hide);
+        add_inline(base + kCrowdRef, &hook_crowd_ref);
+        if (const uint32_t id = hook_add_entry(base + kShowHide, &hook_show_hide)) g_hooks.push_back(id);
         NXLOG_I(kTag, "npc log: character show / hide changes are logged ([fefw] npc_log)");
     }
 }
 
-double npc_distance_applied() { return g_npc; }
+void crowd_remove() {
+    for (uint32_t id : g_hooks) hook_remove(id);
+    g_hooks.clear();
+}
 
 }  // namespace nxrt::games::fefw
