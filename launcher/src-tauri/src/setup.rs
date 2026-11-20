@@ -628,8 +628,13 @@ pub(crate) fn host_env(cmd: &mut Command) {
     if !cfg!(target_os = "linux") {
         return;
     }
+    // keep variables the caller already set on cmd (e.g. a custom runner's leading NAME=value assignments)
+    let explicit: std::collections::HashSet<std::ffi::OsString> = cmd.get_envs().map(|(k, _)| k.to_os_string()).collect();
     let vars: Vec<(String, String)> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
     for (k, v) in appimage_fixes(&vars) {
+        if explicit.contains(std::ffi::OsStr::new(&k)) {
+            continue;
+        }
         match v {
             Some(v) => cmd.env(k, v),
             None => cmd.env_remove(k),
@@ -762,7 +767,10 @@ impl Runner<'_> {
         cmd.env("PYTHONUNBUFFERED", "1").env("NINJA_STATUS", "[%f/%t] ");
         // A PYTHONPATH / PYTHONHOME left by another Python install is inherited by every Python this step starts, tools/.venv's
         // included, and can make it import an extension built for another version (EmblemWeave issue 43). Only this child loses them.
-        cmd.env_remove("PYTHONPATH").env_remove("PYTHONHOME").env("PYTHONNOUSERSITE", "1");
+        // The prepare step runs extract_corpus.py with -I and fefw.exe through the Linux runner (which may be a user-installed umu-run).
+        if step != "prepare" {
+            cmd.env_remove("PYTHONPATH").env_remove("PYTHONHOME").env("PYTHONNOUSERSITE", "1");
+        }
         quiet(&mut cmd);
         let mut child = cmd
             .stdin(Stdio::null())
@@ -896,7 +904,7 @@ const RYUBING_GIT: &str = "https://git.ryujinx.app/ryubing/ryujinx.git";
 /// The revision tools/shaders' patches were made against (tools/shaders/scripts/setup_ryujinx.ps1).
 const RYUBING_COMMIT: &str = "a82350bb774f70fcbd41c9987bf67a3775409963";
 
-fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize) -> Result<bool, String> {
+fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize, runner_setting: &str) -> Result<bool, String> {
     let game = &p.game_dir;
     fs::create_dir_all(game).map_err(|e| format!("cannot create {}: {}", game.display(), e))?;
     if !p.python().is_file() {
@@ -929,7 +937,7 @@ fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize) -> Result
     }
     r.progress("ini", 0, 0, "Writing fefw.ini");
     crate::settings::ensure_play_paths(&p.game_dir, p)?;
-    prepare_step(r, p, jobs)
+    prepare_step(r, p, jobs, runner_setting)
 }
 
 /// Size and modification time of a file ("" when missing): enough to tell that it was replaced.
@@ -1048,7 +1056,7 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
 /// shader to compile. Needs the translated shaders and fefw.ini. It saves time and nothing else: when it cannot run or fails, Set up goes on
 /// (the game then compiles while it is played) and the step is marked given up. Instant when the runtime's state file says this GPU and driver
 /// were prepared already (--if-needed).
-fn prepare_step(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
+fn prepare_step(r: &Runner, p: &Paths, jobs: usize, runner_setting: &str) -> Result<bool, String> {
     if !p.exe().is_file() || !shaders_ok(p) || r.shared.cancel.load(Ordering::SeqCst) {
         return Ok(!r.shared.cancel.load(Ordering::SeqCst));
     }
@@ -1076,7 +1084,15 @@ fn prepare_step(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
             }
         }
     }
-    let mut c = Command::new(p.exe());
+    // On Linux fefw.exe is a Windows binary and runs through the same Proton / umu-run / Wine runner Play uses (GitHub issue #91).
+    let runner = match crate::play::runner(runner_setting) {
+        Ok(r) => r,
+        Err(e) => {
+            give_up(e);
+            return Ok(true);
+        }
+    };
+    let mut c = crate::play::exe_command(&p.exe(), &p.game_dir, &runner, &[]);
     c.args(["--prepare-shaders", "--if-needed"]);
     match r.run("prepare", "Preparing the shaders for your GPU (a minute or two, once)", c, &p.game_dir) {
         Ok(true) => Ok(true),
@@ -1088,9 +1104,9 @@ fn prepare_step(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     }
 }
 
-fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
+fn run_steps(r: &Runner, p: &Paths, jobs: usize, runner_setting: &str) -> Result<bool, String> {
     if let Some(tools) = &p.package {
-        return run_package_steps(r, p, tools, jobs);
+        return run_package_steps(r, p, tools, jobs, runner_setting);
     }
     let repo = &p.repo;
     let py = p.python();
@@ -1183,7 +1199,7 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize) -> Result<bool, String> {
     r.progress("ini", 0, 0, "Writing fefw.ini");
     crate::settings::ensure_play_paths(&p.game_dir, p)?;
     r.log(vec![format!("fefw.ini is in {}", crate::dump::fwd(&p.game_dir))]);
-    prepare_step(r, p, jobs)
+    prepare_step(r, p, jobs, runner_setting)
 }
 
 /// Holds a logind sleep and idle inhibitor while it lives, so the PC does not suspend in the middle of a long setup. The lock belongs
@@ -1215,7 +1231,14 @@ impl Drop for SleepInhibit {
 }
 
 /// Runs the whole setup on this thread. Returns the final progress (done, cancelled or error).
-pub fn run(shared: &Arc<Shared>, p: &Paths, jobs: usize, emit: &(dyn Fn(Progress) + Sync), emit_log: &(dyn Fn(Vec<String>) + Sync)) -> Progress {
+pub fn run(
+    shared: &Arc<Shared>,
+    p: &Paths,
+    jobs: usize,
+    runner_setting: &str,
+    emit: &(dyn Fn(Progress) + Sync),
+    emit_log: &(dyn Fn(Vec<String>) + Sync),
+) -> Progress {
     let _ = fs::create_dir_all(p.repo.join("work"));
     let file = fs::OpenOptions::new().create(true).append(true).open(p.log()).ok();
     let r = Runner { shared, emit, emit_log, log_file: Mutex::new(file), log_path: p.log() };
@@ -1226,7 +1249,7 @@ pub fn run(shared: &Arc<Shared>, p: &Paths, jobs: usize, emit: &(dyn Fn(Progress
     if _inhibit.is_none() {
         r.log(vec!["note: could not block sleep (systemd-inhibit); keep the PC awake until setup finishes".into()]);
     }
-    let end = match run_steps(&r, p, jobs) {
+    let end = match run_steps(&r, p, jobs, runner_setting) {
         Ok(true) => Progress { state: "done".into(), message: "Setup finished. Press Play.".into(), ..Default::default() },
         Ok(false) => Progress { state: "cancelled".into(), message: "Paused. Set up continues where it stopped.".into(), ..Default::default() },
         Err(e) => {
@@ -1431,6 +1454,44 @@ mod tests {
         assert!(p.libs().join("main_with_mods.sites").is_file());
         assert_eq!(lift_sites_file(&p).unwrap(), own);
         assert!(!p.libs().join("main_with_mods.sites").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepare_step_runs_exe_through_linux_runner() {
+        let root = std::env::temp_dir().join(format!("fefw-prepare-runner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let game = root.join("play");
+        let p = Paths {
+            repo: root.clone(),
+            exefs: root.join("exefs"),
+            romfs: root.join("romfs"),
+            dlc: None,
+            game_dir: game.clone(),
+            package: Some(root.join("tools")),
+        };
+        fs::create_dir_all(p.spirv()).unwrap();
+        fs::write(p.exe(), b"MZ").unwrap(); // non-executable PE stub: fails if invoked directly without a runner
+        fs::write(p.spirv().join("results.tsv"), "h\n").unwrap();
+        let stamp = serde_json::json!({
+            "complete": true,
+            "translator_version": SHADER_TRANSLATOR_VERSION,
+            "romfs": crate::dump::fwd(&p.romfs),
+            "crashed": 0,
+            "no_float64": no_float64(),
+        });
+        fs::write(p.shader_stamp(), stamp.to_string()).unwrap();
+        fs::write(p.programs_bin(), b"MPRPRG01").unwrap();
+
+        let shared = Arc::new(Shared::default());
+        let r = Runner { shared: &shared, emit: &|_| {}, emit_log: &|_| {}, log_file: Mutex::new(None), log_path: p.log() };
+        let runner = r#"sh -c 'printf "%s\n" "$@" > args.txt' _"#;
+        assert_eq!(prepare_step(&r, &p, 1, runner), Ok(true));
+        assert!(!p.prepare_file("prepare.skipped").exists(), "should not fall back to skipped when runner succeeds");
+        let args = fs::read_to_string(game.join("args.txt")).unwrap();
+        let lines: Vec<&str> = args.lines().collect();
+        assert_eq!(lines, [p.exe().to_str().unwrap(), "--prepare-shaders", "--if-needed"]);
         let _ = fs::remove_dir_all(&root);
     }
 }
