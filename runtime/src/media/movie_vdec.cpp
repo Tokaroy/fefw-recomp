@@ -553,6 +553,7 @@ void worker_main(Decoder* d) {
         }
         if (!d->decoded.empty() && (!d->free_.empty() || !d->pending_free.empty())) deliver_locked(*d, lk);
         if (d->stop) break;
+        if (gen != d->generation) continue;   // Flush ran during deliver_locked's off-lock copy: close stale av1 before popping queue
         const bool can_decode = !d->queue.empty() && d->decoded.size() < g_ahead;
         if (!can_decode) {
             if (d->decoded.empty() || d->pending_free.empty()) d->cv.wait(lk);
