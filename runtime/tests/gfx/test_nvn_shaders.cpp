@@ -449,7 +449,7 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     emit({65, 15, 36, 23, 16});                     // %36 = OpAccessChain %23[0]
     emit({169, 15, 37, 18, 33, 36});                // %37 = OpSelect %ptr %true %33 %36
     emit({62, 37, 17});                             // OpStore %37 %17
-    emit({69, 27, 38, 24, 16, 16});                 // %38 = OpImageTexelPointer %24 0 0
+    emit({60, 27, 38, 24, 16, 16});                 // %38 = OpImageTexelPointer %24 0 0
     emit({234, 11, 39, 38, 16, 16, 16});            // %39 = OpAtomicIAdd %38
     emit({253});                                    // OpReturn
     emit({56});                                     // OpFunctionEnd

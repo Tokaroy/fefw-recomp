@@ -472,8 +472,8 @@ bool reflect_spirv(const uint32_t* words, size_t count, ShaderReflection& out, s
             if (n >= 4) chains.push_back({w[2], std::vector<uint32_t>(w + 3, w + n)});
             if (n >= 3) ptr_root[w[1]] = w[2];
             break;
-        case 67: case 68:   // OpPtrAccessChain, OpInBoundsPtrAccessChain
-        case 69:            // OpImageTexelPointer: result type, result id, image, coordinate, sample
+        case 60:            // OpImageTexelPointer: result type, result id, image, coordinate, sample
+        case 67: case 70:   // OpPtrAccessChain, OpInBoundsPtrAccessChain
             if (n >= 3) ptr_root[w[1]] = w[2];
             break;
         case 83:            // OpCopyObject
