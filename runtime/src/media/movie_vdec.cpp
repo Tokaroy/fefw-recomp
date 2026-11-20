@@ -129,7 +129,7 @@ constexpr int kMimeAv1 = 3;                // nn::movie::MediaMimeType of an AV1
 constexpr uint32_t kResultNoFrame = 0x7b;  // AcquireVideoFrame with no picture ready, as the library answers
 constexpr uint32_t kAutoClear = 1;         // nn::os::EventClearMode_AutoClear
 constexpr size_t kMaxFrames = 64;
-constexpr size_t kMaxQueuedPackets = 16;   // compressed packets buffered ahead so demuxing/I/O overlaps with decoding
+constexpr size_t kMaxQueuedPackets = 8;    // compressed packets buffered ahead so demuxing/I/O overlaps with decoding
 
 bool g_log = false;
 int g_threads = 4;
@@ -163,7 +163,7 @@ void dav1d_thread_hook(int begin) {
     snprintf(name, sizeof name, "movie-av1-%d", g_dav1d_threads.fetch_add(1, std::memory_order_relaxed));
     decoder_thread_begin(name);
 }
-std::atomic<uint64_t> s_packets{0}, s_pictures{0}, s_acquired{0}, s_released{0}, s_no_frame{0}, s_skipped{0};
+std::atomic<uint64_t> s_packets{0}, s_pictures{0}, s_acquired{0}, s_released{0}, s_no_frame{0}, s_starved{0}, s_skipped{0};
 // Decode time of the packets since the last stats line (worker threads): total and the slowest, in microseconds.
 std::atomic<uint64_t> s_dec_us{0}, s_dec_n{0}, s_dec_max_us{0};
 
@@ -303,12 +303,13 @@ void stats_tick(Decoder* d) {
         pend = d->pending_free.size();
     }
     NXLOG_I(kTag,
-            "stats: packets %llu, pictures %llu, frames acquired %llu, released %llu, misses %llu, skipped %llu; "
+            "stats: packets %llu, pictures %llu, frames acquired %llu, released %llu, empty %llu (starved %llu), skipped %llu; "
             "decode %.2f ms per packet (slowest %.1f) over %llu; cushion %zu (min %zu), queued %zu, ready %zu, gpu-pending %zu",
             static_cast<unsigned long long>(s_packets.load()), static_cast<unsigned long long>(s_pictures.load()),
             static_cast<unsigned long long>(s_acquired.load()), static_cast<unsigned long long>(s_released.load()),
-            static_cast<unsigned long long>(s_no_frame.load()), static_cast<unsigned long long>(s_skipped.load()),
-            n ? us / 1000.0 / n : 0.0, mx / 1000.0, static_cast<unsigned long long>(n), dec, min_dec, q, rdy, pend);
+            static_cast<unsigned long long>(s_no_frame.load()), static_cast<unsigned long long>(s_starved.load()),
+            static_cast<unsigned long long>(s_skipped.load()), n ? us / 1000.0 / n : 0.0, mx / 1000.0,
+            static_cast<unsigned long long>(n), dec, min_dec, q, rdy, pend);
 }
 
 Decoder* dec_of(uint64_t self) {
@@ -375,6 +376,7 @@ void deliver_locked(Decoder& d, std::unique_lock<std::mutex>& lk, bool wait_if_b
     if (d.delivering) {
         if (!wait_if_busy) return;
         d.deliver_cv.wait(lk, [&] { return !d.delivering; });
+        if (!d.ready.empty()) return;   // another thread just filled a frame while we waited
     }
     if (d.stop || d.decoded.empty()) return;
     reclaim_free_locked(d);
@@ -533,11 +535,22 @@ Dav1dContext* open_av1(Decoder& d, const std::vector<uint8_t>& config) {
 
 void worker_main(Decoder* d) {
     decoder_thread_begin("movie-vdec");
+    LARGE_INTEGER hz;
+    QueryPerformanceFrequency(&hz);
     Dav1dContext* av1 = nullptr;
     uint64_t gen = d->generation;
     std::unique_lock<std::mutex> lk(d->mu);
     for (;;) {
         if (d->stop) break;
+        if (gen != d->generation) {
+            gen = d->generation;
+            if (av1) {
+                lk.unlock();
+                dav1d_close(&av1);
+                lk.lock();
+                continue;
+            }
+        }
         if (!d->decoded.empty() && (!d->free_.empty() || !d->pending_free.empty())) deliver_locked(*d, lk);
         if (d->stop) break;
         const bool can_decode = !d->queue.empty() && d->decoded.size() < g_ahead;
@@ -545,11 +558,6 @@ void worker_main(Decoder* d) {
             if (d->decoded.empty() || d->pending_free.empty()) d->cv.wait(lk);
             else d->cv.wait_for(lk, std::chrono::milliseconds(1));   // frames wait for the GPU: re-check shortly
             continue;
-        }
-        if (gen != d->generation) {
-            if (av1) dav1d_close(&av1);
-            av1 = nullptr;
-            gen = d->generation;
         }
         Packet k = std::move(d->queue.front());
         d->queue.pop_front();
@@ -565,11 +573,10 @@ void worker_main(Decoder* d) {
             out.emplace_back();
             out.back().eos = true;
         } else if (av1) {
-            LARGE_INTEGER t0, t1, hz;
+            LARGE_INTEGER t0, t1;
             QueryPerformanceCounter(&t0);
             decode_packet(*d, av1, k, out);
             QueryPerformanceCounter(&t1);
-            QueryPerformanceFrequency(&hz);
             const uint64_t us = static_cast<uint64_t>((t1.QuadPart - t0.QuadPart) * 1000000 / hz.QuadPart);
             s_dec_us += us;
             s_dec_n++;
@@ -781,7 +788,9 @@ void vd_decode_async(::Ctx* c) {   // (self, const nn::movie::Buffer*)
             d->queue.push_back(std::move(k));
             d->eos_queued = true;
         }
-        if (input_has_room(*d)) d->in_ready.signal();   // keep the demuxer ahead of dav1d
+        // Prime the input queue immediately while output is empty; once ready frames are waiting, let worker_main re-signal on dequeue
+        // so a single-threaded WaitAny(in_ev, out_ev) player is never starved of servicing out_ev.
+        if (input_has_room(*d) && d->ready.empty()) d->in_ready.signal();
         if (d->ready.empty() && !d->decoded.empty() && (!d->free_.empty() || !d->pending_free.empty()))
             deliver_locked(*d, lk, /*wait_if_busy=*/false, /*max_frames=*/1);
         if (g_log) NXLOG_I(kTag, "DecodeAsync: %llu bytes at %lld%s; queued %zu, decoded %zu, ready %zu, free %zu", static_cast<unsigned long long>(n),
@@ -800,6 +809,7 @@ uint32_t acquire(Decoder* d, uint64_t* out, int* idx) {
         if (d->ready.empty()) deliver_locked(*d, lk, /*wait_if_busy=*/true, /*max_frames=*/1);
         if (d->ready.empty()) {
             s_no_frame++;
+            if (d->decoded.empty() && d->pictures > 0 && !d->eos_queued) s_starved++;
             *out = 0;
             return kResultNoFrame;
         }
@@ -874,7 +884,6 @@ void vd_flush(::Ctx* c) {   // (self)
     {
         std::unique_lock<std::mutex> lk(d->mu);
         ++d->generation;
-        d->deliver_cv.wait(lk, [&] { return !d->delivering; });
         d->eos_queued = false;
         d->clk_on = false;
         d->last_time = 0;
@@ -882,6 +891,10 @@ void vd_flush(::Ctx* c) {   // (self)
         d->min_decoded = std::numeric_limits<size_t>::max();
         d->queue.clear();
         d->decoded.clear();
+        d->ready.clear();
+        // Wait for any in-flight off-lock copy to finish before resetting the frame pool; decoded is already cleared so a concurrent
+        // waiter on deliver_cv cannot start delivering a stale pre-flush picture.
+        d->deliver_cv.wait(lk, [&] { return !d->delivering; });
         d->ready.clear();
         d->pending_free.clear();
         d->free_.clear();
