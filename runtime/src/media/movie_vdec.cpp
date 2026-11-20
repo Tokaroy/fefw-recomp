@@ -486,9 +486,9 @@ void decode_packet(Decoder& d, Dav1dContext* av1, const Packet& k, std::vector<P
         } else if (pr != DAV1D_ERR(EAGAIN)) {
             if (!d.warned_error) NXLOG_E(kTag, "AV1 decode error %d (packet at %lld)", pr, static_cast<long long>(k.time));
             d.warned_error = true;
-        } else if (r == DAV1D_ERR(EAGAIN)) {
-            break;   // neither send nor get made progress
         }
+        // Note: if both send and get returned EAGAIN, dav1d_get_picture may still have consumed buffered trailing OBUs (e.g. padding)
+        // from the previous packet, freeing c->in for the next iteration to accept `in` (bounded by `guard`).
     }
     if (in.sz) dav1d_data_unref(&in);
 }
