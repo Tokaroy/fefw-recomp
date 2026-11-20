@@ -36,7 +36,6 @@
 #include "nxrt/dispatch.h"
 #include "nxrt/hooks.h"
 #include "nxrt/log.h"
-#include "nxrt/memory.h"
 
 namespace nxrt::games::fefw {
 namespace {
@@ -111,7 +110,9 @@ struct State {
     std::atomic<float> s_count{1.0f};           // native / target, for frame counts
     std::atomic<bool> tick{true};               // a 30 Hz step falls in this frame
     float tick_acc = 0.0f;                      // main thread (frame_step)
-    std::atomic<uint64_t> applied[kGroups] = {};
+    // Separate cache line from the read-mostly per-frame fields above so worker-thread counter flushes
+    // do not invalidate on/skip/s on every other core.
+    alignas(64) std::atomic<uint64_t> applied[kGroups] = {};
     std::atomic<uint64_t> quake_held{0};
     std::atomic<void (*)(::Ctx*)> quake_rest{nullptr};   // f_11eb084, looked up at the first quake (the modules register after play mode starts)
     std::atomic<int> quake_state{0};            // 0 not looked up, 1 found, -1 missing
@@ -134,7 +135,19 @@ inline float count_scale(Group g) {
     return s.s_count.load(std::memory_order_relaxed);
 }
 inline bool full(float s) { return s >= 0.999f; }
-inline void count(Group g) { st().applied[g].fetch_add(1, std::memory_order_relaxed); }
+inline void count(Group g) {
+    // Cloth and physics hooks fire hundreds of thousands of times per second across worker threads;
+    // batch them per thread so they do not contend on a single shared atomic cache line.
+    if (g == kCloth || g == kPhysics) {
+        thread_local uint32_t pending[kGroups] = {};
+        if (++pending[g] >= 64) {
+            st().applied[g].fetch_add(pending[g], std::memory_order_relaxed);
+            pending[g] = 0;
+        }
+        return;
+    }
+    st().applied[g].fetch_add(1, std::memory_order_relaxed);
+}
 
 inline float bits_f(uint32_t b) {
     float f;
@@ -191,7 +204,10 @@ void hook_cloth_blend(::Ctx* c, uint64_t, void*) {
     if (full(s) || !(q >= 0.0f && q <= 1.0f)) return;
     const float qs = pow_cached(q, s), k = 1.0f - qs;
     c->v[1].f[0] = qs;
-    if (mem::is_mapped(c->x[31] + 0x50, 4)) std::memcpy(reinterpret_cast<void*>(c->x[31] + 0x50), &k, 4);
+    // sp + 0x50 is this function's own live stack slot (written before 0xa68738 and reloaded right after).
+    // Do not call mem::is_mapped() here: guest stacks lie outside the heap page table, so is_mapped()
+    // acquires the global g_heap_mu mutex and runs a VirtualQuery() syscall on every cloth blend call.
+    if (c->x[31] >= 0x10000) std::memcpy(reinterpret_cast<void*>(c->x[31] + 0x50), &k, 4);
     count(kCloth);
 }
 // the velocity kept per step: s2 = 1 - damping -> ^s
