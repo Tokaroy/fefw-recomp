@@ -45,6 +45,7 @@ struct Region {
     uint64_t nwords = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> prot, valid, written, ban;
     std::unique_ptr<std::atomic<uint64_t>[]> guard;     // PAGE_NOACCESS because of guard() (a subset of prot)
+    std::atomic<bool> has_written{false};               // set after any written[] bit is set; cleared before take_written() scans
     std::atomic<Region*>* slot = nullptr;
     SRWLOCK lock = SRWLOCK_INIT;
     std::unique_ptr<std::atomic<uint16_t>[]> releasing;   // per page: releasers that saw it armed and have not finished its VirtualProtect (release_page)
@@ -108,6 +109,7 @@ std::atomic<int> g_busy{0};            // fault handlers and os-write calls look
 std::atomic<int> g_live{0};
 std::atomic<uint64_t> g_generation{0};
 std::atomic<uint64_t> g_faults{0};
+std::atomic<uint64_t> g_write_seq{0};  // bumped after any region sets written[] + has_written
 std::atomic<uint64_t> g_waits{0};      // rounds a fault waited for another releaser (statistics, tests)
 std::atomic<uint64_t> g_guard_faults{0};   // accesses that hit a guarded page
 std::atomic<GuardHandler> g_guard_fn{nullptr};
@@ -265,7 +267,9 @@ bool release_page(Region* r, uint64_t page) {
     if (armed) rel.fetch_add(1, std::memory_order_seq_cst);
     const uint64_t old = r->prot[w].fetch_and(~b, std::memory_order_acq_rel);
     r->valid[w].fetch_and(~b, std::memory_order_acq_rel);
-    r->written[w].fetch_or(b, std::memory_order_acq_rel);
+    r->written[w].fetch_or(b, std::memory_order_seq_cst);
+    r->has_written.store(true, std::memory_order_seq_cst);
+    g_write_seq.fetch_add(1, std::memory_order_seq_cst);
     const uint64_t addr = r->base + page * kPage;
     if (old & b) {
         bool ok = true;
@@ -741,10 +745,16 @@ bool all_valid_or_armed(const Region* r, uint64_t first, uint64_t count, const s
 
 uint64_t guard_faults() { return g_guard_faults.load(std::memory_order_relaxed); }
 
+bool has_written(const Region* r) { return r && r->has_written.load(std::memory_order_acquire); }
+uint64_t write_seq() { return g_write_seq.load(std::memory_order_seq_cst); }
+
 void take_written(Region* r, std::vector<uint64_t>& out) {
-    if (!r) return;
+    if (!r || !r->has_written.load(std::memory_order_acquire)) return;
+    // Clear before scanning with seq_cst so any concurrent release_page()/forget() that sets written[] after this point
+    // either becomes visible in the scan below or sets has_written = true after our exchange for the next call.
+    r->has_written.exchange(false, std::memory_order_seq_cst);
     for (uint64_t w = 0; w < r->nwords; ++w) {
-        if (!r->written[w].load(std::memory_order_relaxed)) continue;
+        if (!r->written[w].load(std::memory_order_acquire)) continue;
         uint64_t v = r->written[w].exchange(0, std::memory_order_acq_rel);
         while (v) {
             const unsigned long b = static_cast<unsigned long>(__builtin_ctzll(v));
@@ -963,6 +973,8 @@ void forget(uint64_t addr, uint64_t size, bool ban) {
             if (test(r->prot.get(), q)) release_page(r, q);
         set_bits(r->valid.get(), first, count, false);
         set_bits(r->written.get(), first, count, true);
+        r->has_written.store(true, std::memory_order_seq_cst);
+        g_write_seq.fetch_add(1, std::memory_order_seq_cst);
     });
 }
 

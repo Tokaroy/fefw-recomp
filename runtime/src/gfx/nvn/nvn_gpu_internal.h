@@ -159,16 +159,17 @@ enum WriteUse { kWriteStorage = 0, kWriteXfb = 1, kWriteImageCopy = 2, kWriteUpd
 BufRef resolve_read(uint64_t gpu_address, uint64_t size, int use);
 // The device-local copy of [gpu_address, +size) for the compute shadows (nvn_replay.cpp): its chunk and offset (buf null: no copy for it, or the
 // range spans two chunks), and whether the copy holds the pool's bytes right now. Call it before note_gpu_write invalidates the range.
-struct MirrorSpan { VkBuffer buf = VK_NULL_HANDLE; VkDeviceSize offset = 0; bool valid = false; VkDeviceSize avail = 0; };   // avail: bytes to the chunk's end
+struct MirrorSpan { VkBuffer buf = VK_NULL_HANDLE; VkDeviceSize offset = 0; bool valid = false; VkDeviceSize avail = 0; bool full_pages = false; };   // avail: bytes to the chunk's end; full_pages: covers >=1 whole trackable page
 MirrorSpan mirror_span(uint64_t gpu_address, uint64_t size);
 // The GPU wrote the same bytes of the range into the pool and into its copy (a shadow's result): the pages wholly inside the range hold the
 // pool's bytes again and are tracked again (unless hot or banned), so the next dispatch reads them from video memory.
 void mirror_span_written(uint64_t gpu_address, uint64_t size);
 // The compute bindings that use the copy directly (nvn_replay.cpp): records into cb the copies, from the pool, of the pages of the range the
-// copy does not hold, and tracks them like the copies of mirror_begin_submit. The caller orders earlier writes to the pool before cb's copies
-// and the copies before their readers. True when every page of the range is valid in the copy afterwards; false (nothing or only part of it
-// copied) when a page is hot, banned or cannot be tracked, or the range has no copy. *bytes (optional) receives the bytes copied.
-bool mirror_fill(VkCommandBuffer cb, uint64_t gpu_address, uint64_t size, uint64_t* bytes);
+// copy does not hold, and tracks them like the copies of mirror_begin_submit. If `barrier_done` is non-null and false, records a memory barrier
+// before the copies only when at least one copy is actually emitted (avoiding wasted barriers on hot/banned pages). True when every page of
+// the range is valid in the copy afterwards; false (nothing or only part of it copied) when a page is hot, banned or cannot be tracked, or
+// the range has no copy. *bytes (optional) receives the bytes copied.
+bool mirror_fill(VkCommandBuffer cb, uint64_t gpu_address, uint64_t size, uint64_t* bytes, bool* barrier_done = nullptr);
 bool note_gpu_write(uint64_t gpu_address, uint64_t size, int use);
 void mirror_begin_submit(Frame& f, bool on);
 void mirror_destroy(PoolGpu* p);
