@@ -987,6 +987,7 @@ uint64_t g_last_write_seq = 0;       // mem::ww::write_seq() at the last absorb_
 uint32_t g_mirror_clock_ms = 1;      // steady-clock ms updated once per submission (never 0)
 uint32_t g_last_evict_check_ms = 0;  // throttle proactive eviction checks in mirror_begin_submit
 uint32_t g_last_evict_try_ms = 0;    // throttle on-demand eviction scans in mirror_chunk
+constexpr uint64_t kMaxEvictCredit = 2 * kChunkBytes;        // cap deferred-eviction credit so VRAM does not transiently overshoot before defer_destroy runs
 uint64_t g_evict_credit = 0;         // bytes recently freed under pressure so subsequent chunks in the same burst can allocate
 uint64_t g_mirror_bytes = 0;         // video memory of the chunks made
 bool g_mirror_on = false;            // this submission reads mirrors (mode on and, with [nvn] gpuperf_ab, an "on" window)
@@ -1471,12 +1472,14 @@ VkBuffer mirror_chunk(Mirror& m, uint64_t page) {
         static bool refusing = false;
         if (pct >= press) {
             if (pct < 92 && g_evict_credit < bytes) {
-                g_evict_credit += spare_release();
+                g_evict_credit = std::min<uint64_t>(g_evict_credit + spare_release(), kMaxEvictCredit);
                 if (evict_ms > 0 && g_evict_credit < bytes) {
                     const uint32_t since = g_mirror_clock_ms - g_last_evict_try_ms;
                     if (g_last_evict_try_ms == 0 || (since >= 250u && since < 0x80000000u)) {
                         g_last_evict_try_ms = g_mirror_clock_ms;
-                        g_evict_credit += mirror_evict_idle(std::max<uint64_t>(bytes, kChunkBytes), std::min<uint32_t>(evict_ms, 10000u), "pressure");
+                        g_evict_credit = std::min<uint64_t>(
+                            g_evict_credit + mirror_evict_idle(std::max<uint64_t>(bytes, kChunkBytes), std::min<uint32_t>(evict_ms, 10000u), "pressure"),
+                            kMaxEvictCredit);
                     }
                 }
             }
@@ -1631,35 +1634,28 @@ MirrorSpan mirror_span(uint64_t gpu_address, uint64_t size) {
     s.offset = poff - (first / chunk_pages) * kChunkBytes;
     s.valid = range_valid(*m, first, last - first + 1) || (out_lazy() && new_servable(*m, first, last));
     s.avail = std::min<uint64_t>(kChunkBytes, m->pool_bytes - (first / chunk_pages) * kChunkBytes) - s.offset;
-    const uint64_t wfirst = (poff + kPageBytes - 1) / kPageBytes, wend = (poff + size) / kPageBytes;
-    if (wfirst < wend && wend <= m->npages) {
-        const uint32_t now = presents_now();
-        bool ok = true;
-        for (uint64_t p = wfirst; p < wend; ++p)
-            if (m->hot_until[static_cast<size_t>(p)] > now || mem::ww::page_banned(m->ww, p)) { ok = false; break; }
-        s.full_pages = ok;
-    }
     return s;
 }
 
-void mirror_span_written(uint64_t gpu_address, uint64_t size) {
-    if (!g_mirror_on || !size) return;
+bool mirror_span_written(uint64_t gpu_address, uint64_t size) {
+    if (!g_mirror_on || !size) return false;
     MemoryPool* mp = nullptr;
     PoolGpu* pg = nullptr;
     uint64_t poff = 0;
     const BufRef out = resolve_in_pool(gpu_address, size, &mp, &pg, &poff);
-    if (!out.ok || !pg || !pg->mirror) return;
+    if (!out.ok || !pg || !pg->mirror) return false;
     Mirror& m = *pg->mirror;
     const uint64_t first = (poff + kPageBytes - 1) / kPageBytes, end = (poff + size) / kPageBytes;   // pages wholly inside
-    if (first >= end || end > m.npages) return;
+    if (first >= end || end > m.npages) return false;
     const uint32_t now = presents_now();
     for (uint64_t p = first; p < end; ++p)
-        if (m.hot_until[static_cast<size_t>(p)] > now || mem::ww::page_banned(m.ww, p)) return;     // per-frame CPU data: leave it untracked
-    if (!arm_in_budget() || !arm_timed(m.ww, first, end - first)) return;   // not armed: the pages stay invalid and are read from the pool
+        if (m.hot_until[static_cast<size_t>(p)] > now || mem::ww::page_banned(m.ww, p)) return false;     // per-frame CPU data: leave it untracked
+    if (!arm_in_budget() || !arm_timed(m.ww, first, end - first)) return false;   // not armed: the pages stay invalid and are read from the pool
     for (uint64_t p = first; p < end; ++p) {
         m.copied_at[static_cast<size_t>(p)] = now ? now : 1;
         bit_put(m.want, p, false);
     }
+    return true;
 }
 
 bool mirror_fill(VkCommandBuffer cb, uint64_t gpu_address, uint64_t size, uint64_t* bytes, bool* barrier_done) {
@@ -1771,12 +1767,12 @@ void mirror_begin_submit(Frame& f, bool on) {
             const int pct = press > 0 ? gfx::video_usage_percent() : -1;
             const uint64_t cap = mirror_cap_bytes();
             if (press > 0 && pct >= std::max<int64_t>(press - 5, 1)) {
-                g_evict_credit += spare_release();
+                g_evict_credit = std::min<uint64_t>(g_evict_credit + spare_release(), kMaxEvictCredit);
                 const uint32_t idle = pct >= 90 ? std::min<uint32_t>(evict_ms, 10000u) : evict_ms;
                 const uint64_t vbudget = gfx::video_budget_bytes();
                 const int64_t want_pct = std::max<int64_t>(5, pct - std::max<int64_t>(press - 10, 0));
                 const uint64_t target = std::min<uint64_t>(512ull << 20, std::max<uint64_t>(kChunkBytes, vbudget ? vbudget / 100 * static_cast<uint64_t>(want_pct) : kChunkBytes));
-                g_evict_credit += mirror_evict_idle(target, idle, "pressure");
+                g_evict_credit = std::min<uint64_t>(g_evict_credit + mirror_evict_idle(target, idle, "pressure"), kMaxEvictCredit);
             } else {
                 g_evict_credit = 0;
                 if (cap > 0 && g_mirror_bytes > cap * 85 / 100) {

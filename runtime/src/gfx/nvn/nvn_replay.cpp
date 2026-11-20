@@ -2220,10 +2220,9 @@ void shadows_after_dispatch() {
         VkBufferCopy c = {0, u.host.offset, u.size};
         vkCmdCopyBuffer(F->cb, u.buf, u.host.buffer, 1, &c);
         g_sh_bytes_out += u.size;
-        if (u.mirror.buf && u.mirror.full_pages) {
+        if (u.mirror.buf && mirror_span_written(u.addr, u.size)) {
             VkBufferCopy mc = {0, u.mirror.offset, u.size};
             vkCmdCopyBuffer(F->cb, u.buf, u.mirror.buf, 1, &mc);
-            mirror_span_written(u.addr, u.size);
         }
     }
     if (any) gstamp("shadow out");

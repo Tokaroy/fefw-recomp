@@ -401,11 +401,12 @@ NXTEST(preload_pack_all_shaders) {
 }
 
 NXTEST(reflect_compute_ssbo_written_and_atomic) {
-    // Minimal compute SPIR-V with 4 storage buffers:
-    //   binding 0: read-only (OpLoad only)         -> written=false, atomic=false
-    //   binding 1: stored via OpStore              -> written=true,  atomic=false
-    //   binding 2: modified via OpAtomicFAddEXT    -> written=true,  atomic=true
-    //   binding 3: selected via OpSelect + OpStore -> written=true,  atomic=false
+    // Minimal compute SPIR-V with 4 storage buffers and 1 storage texel buffer:
+    //   set 1 binding 0: read-only (OpLoad only)                    -> written=false, atomic=false
+    //   set 1 binding 1: stored via OpStore                         -> written=true,  atomic=false
+    //   set 1 binding 2: modified via OpAtomicFAddEXT               -> written=true,  atomic=true
+    //   set 1 binding 3: selected via OpSelect + OpStore            -> written=true,  atomic=false
+    //   set 3 binding 0: imageBuffer via OpImageTexelPointer+Atomic -> written=true,  atomic=true
     std::vector<uint32_t> spv = {0x07230203u, 0x00010300u, 0u, 64u, 0u};
     auto emit = [&](std::initializer_list<uint32_t> words) {
         spv.push_back(static_cast<uint32_t>(words.size() << 16) | *words.begin());
@@ -416,6 +417,7 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     emit({71, 21, 34, 1}); emit({71, 21, 33, 1});   // set 1 binding 1
     emit({71, 22, 34, 1}); emit({71, 22, 33, 2});   // set 1 binding 2
     emit({71, 23, 34, 1}); emit({71, 23, 33, 3});   // set 1 binding 3
+    emit({71, 24, 34, 3}); emit({71, 24, 33, 0});   // set 3 binding 0 (storage texel buffer)
     emit({71, 13, 2});                              // OpDecorate %struct Block
     emit({19, 2});                                  // %2 = OpTypeVoid
     emit({33, 3, 2});                               // %3 = OpTypeFunction %void
@@ -425,6 +427,9 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     emit({30, 13, 10});                             // %13 = OpTypeStruct %float
     emit({32, 14, 12, 13});                         // %14 = OpTypePointer StorageBuffer %struct
     emit({32, 15, 12, 10});                         // %15 = OpTypePointer StorageBuffer %float
+    emit({25, 25, 11, 5, 0, 0, 0, 2, 33});          // %25 = OpTypeImage %uint Buffer 0 0 0 2 R32ui
+    emit({32, 26, 0, 25});                          // %26 = OpTypePointer UniformConstant %img
+    emit({32, 27, 11, 11});                         // %27 = OpTypePointer Image %uint
     emit({43, 11, 16, 0});                          // %16 = OpConstant uint 0
     emit({43, 10, 17, 0x3f800000u});                // %17 = OpConstant float 1.0
     emit({41, 12, 18});                             // %18 = OpConstantTrue %bool
@@ -432,6 +437,7 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     emit({59, 14, 21, 12});                         // %21 = OpVariable StorageBuffer (binding 1)
     emit({59, 14, 22, 12});                         // %22 = OpVariable StorageBuffer (binding 2)
     emit({59, 14, 23, 12});                         // %23 = OpVariable StorageBuffer (binding 3)
+    emit({59, 26, 24, 0});                          // %24 = OpVariable UniformConstant (storage texel buffer)
     emit({54, 2, 1, 0, 3});                         // OpFunction %1
     emit({248, 30});                                // OpLabel
     emit({65, 15, 31, 20, 16});                     // %31 = OpAccessChain %20[0]
@@ -443,6 +449,8 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     emit({65, 15, 36, 23, 16});                     // %36 = OpAccessChain %23[0]
     emit({169, 15, 37, 18, 33, 36});                // %37 = OpSelect %ptr %true %33 %36
     emit({62, 37, 17});                             // OpStore %37 %17
+    emit({69, 27, 38, 24, 16, 16});                 // %38 = OpImageTexelPointer %24 0 0
+    emit({234, 11, 39, 38, 16, 16, 16});            // %39 = OpAtomicIAdd %38
     emit({253});                                    // OpReturn
     emit({56});                                     // OpFunctionEnd
 
@@ -454,9 +462,12 @@ NXTEST(reflect_compute_ssbo_written_and_atomic) {
     const DescriptorBinding* b1 = refl.find(1, 1);
     const DescriptorBinding* b2 = refl.find(1, 2);
     const DescriptorBinding* b3 = refl.find(1, 3);
-    REQUIRE(b0 && b1 && b2 && b3);
+    const DescriptorBinding* b4 = refl.find(3, 0);
+    REQUIRE(b0 && b1 && b2 && b3 && b4);
     CHECK(!b0->written && !b0->atomic);
     CHECK(b1->written && !b1->atomic);
     CHECK(b2->written && b2->atomic);
     CHECK(b3->written && !b3->atomic);
+    CHECK(b4->type == DescriptorType::StorageTexelBuffer);
+    CHECK(b4->written && b4->atomic);
 }
