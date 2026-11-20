@@ -236,11 +236,14 @@ def check(game, variant):
     try:
         bid = json.load(open(os.path.join(HERE, 'dump_hashes.json'), encoding='utf-8'))['main_build_id']
         patch_stamp = exefs_patch_stamp(collect_exefs_patches(game, bid))
-        sites_stamp = mod_sites_stamp(collect_mod_sites(game, bid))
+        mod_sites = collect_mod_sites(game, bid)
+        sites_stamp = mod_sites_stamp(mod_sites)
     except Fail as e:
         return False, str(e)
     want = tool_stamp(variant, patch_stamp, sites_stamp)
     changed = [k for k in sorted(set(want) | set(done['tools'])) if done['tools'].get(k) != want.get(k)]
+    if changed == ['mod_sites'] and mod_sites_lifted(game, bid, mod_sites):
+        changed = []                     # a mod with sites was removed or switched off: fefw.exe still has every site the rest need
     if changed == ['exefs_patches']:
         return False, 'the exefs patches in mods changed (Set up applies them)'
     if changed and set(changed) <= {'exefs_patches', 'mod_sites'}:
@@ -595,7 +598,9 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
 # so that sites for another version of the game are left out. Set up lifts main with main.sites plus these sites; they are part
 # of the build stamp, so installing, updating or removing such a mod lifts again, and so does switching it off or on (a folder
 # name starting with - or _, as find_mod_dirs reads it). The list main was lifted with is written next to fefw.exe (fefw.sites,
-# write_lifted_sites), so the runtime can tell a mod whose sites are missing from this build.
+# write_lifted_sites), so the runtime can tell a mod whose sites are missing from this build. A change that only takes sites away
+# (removing or switching off a mod, with no exefs patch changing) does not lift again: a site no mod hooks only calls into the
+# runtime, which finds no hook there (mod_sites_lifted; the checkout's launcher decides the same way, setup.rs lift_done).
 MOD_SITE_KINDS = ('inline', 'midhook', 'entryhook')
 
 
@@ -639,6 +644,25 @@ def collect_mod_sites(game, build_id):
                     raise Fail('%s:%d: 0x%x is not an instruction address in main (main is at 0x%x)' % (where, ln, addr, MODULES[0][2]))
                 found.append(('%s:%d' % (where, ln), kind, addr))
     return found
+
+
+def mod_sites_lifted(game, build_id, mod_sites):
+    """Whether every site the installed mods add is in <game>/fefw.sites, the list fefw.exe was lifted with (for this build ID)."""
+    try:
+        text = open(os.path.join(game, 'fefw.sites'), encoding='utf-8-sig', errors='replace').read()
+    except OSError:
+        return False
+    bid, have = None, set()
+    for line in text.splitlines():
+        t = line.split('#', 1)[0].split()
+        if len(t) == 2 and t[0].lower() == '@nsobid':
+            bid = t[1]
+        elif len(t) >= 2:
+            try:
+                have.add((t[0], int(t[1], 16)))
+            except ValueError:
+                return False
+    return bid is not None and bid_matches(bid, build_id) and all((k, a) in have for _, k, a in mod_sites)
 
 
 def mod_sites_stamp(mod_sites):
