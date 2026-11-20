@@ -221,6 +221,46 @@ fn on_path(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
+/// Builds the Command that starts `exe` in `game_dir` through `runner` (the words from `runner()`), with the environment a Linux
+/// runner needs: AppImage cleanup (`host_env`), leading `NAME=value` assignments from `runner`, `extra_env`, `STEAM_COMPAT_MOUNTS`
+/// for folders outside Steam's container, and `GAMEID=0` for `umu-run`.
+pub fn exe_command(exe: &Path, game_dir: &Path, runner: &[String], extra_env: &[(String, String)]) -> Command {
+    // leading NAME=value words are environment variables, as in a shell (there is none in between here)
+    let n = runner.iter().take_while(|w| w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.contains('/'))).count();
+    let (assign, words) = runner.split_at(n);
+    let mut cmd = match words.split_first() {
+        None => Command::new(exe),
+        Some((prog, args)) => {
+            let mut c = Command::new(prog);
+            c.args(args).arg(exe);
+            c
+        }
+    };
+    crate::setup::host_env(&mut cmd);
+    cmd.envs(assign.iter().filter_map(|w| w.split_once('=')));
+    cmd.envs(extra_env.iter().map(|(k, v)| (k, v)));
+    // Steam's Proton (and umu-run) run in a container that does not see a dump outside the home folder, /mnt and /media (#142)
+    if !cfg!(windows) && std::env::var_os("STEAM_COMPAT_MOUNTS").is_none() && !assign.iter().any(|w| w.starts_with("STEAM_COMPAT_MOUNTS=")) {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        // and the folder of a file a Vulkan layer is pointed at (LSFG-VK's lsfg-vk.dll, in a Steam library that may be on another drive)
+        let mut dirs = ini_dirs(game_dir);
+        if let Some(d) = exe.parent() {
+            dirs.push(d.to_path_buf());
+        }
+        dirs.extend(extra_env.iter().filter(|(k, _)| k == "LSFGVK_DLL_PATH").filter_map(|(_, v)| Path::new(v).parent().map(Path::to_path_buf)));
+        if let Some(m) = container_mounts(&dirs, home.as_deref()) {
+            cmd.env("STEAM_COMPAT_MOUNTS", m);
+        }
+    }
+    // umu-run wants a game id (it picks protonfixes for known games from it); "0" is the generic one its README uses
+    if is_umu(runner) && std::env::var_os("GAMEID").is_none() && !assign.iter().any(|w| w.starts_with("GAMEID=")) {
+        cmd.env("GAMEID", "0");
+    }
+    // fefw.exe reads fefw.ini from its working directory: every path comes from there
+    cmd.current_dir(game_dir);
+    cmd
+}
+
 /// `launcher_dir`: the folder the package's upscalers/ is in (the AppImage's folder, not its mount).
 pub fn start(
     app: &AppHandle,
@@ -244,36 +284,7 @@ pub fn start(
     let launcher_dir = launcher_dir.to_path_buf();
     set_status(app, Status { state: "running".into(), message: "Starting fefw.exe...".into(), ..Default::default() });
     std::thread::spawn(move || {
-        // leading NAME=value words are environment variables, as in a shell (there is none in between here)
-        let n = runner.iter().take_while(|w| w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.contains('/'))).count();
-        let (assign, words) = runner.split_at(n);
-        let mut cmd = match words.split_first() {
-            None => Command::new(&exe),
-            Some((prog, args)) => {
-                let mut c = Command::new(prog);
-                c.args(args).arg(&exe);
-                c
-            }
-        };
-        crate::setup::host_env(&mut cmd);
-        cmd.envs(assign.iter().filter_map(|w| w.split_once('=')));
-        cmd.envs(extra_env.iter().map(|(k, v)| (k, v)));
-        // Steam's Proton (and umu-run) run in a container that does not see a dump outside the home folder, /mnt and /media (#142)
-        if !cfg!(windows) && std::env::var_os("STEAM_COMPAT_MOUNTS").is_none() && !assign.iter().any(|w| w.starts_with("STEAM_COMPAT_MOUNTS=")) {
-            let home = std::env::var_os("HOME").map(PathBuf::from);
-            // and the folder of a file a Vulkan layer is pointed at (LSFG-VK's lsfg-vk.dll, in a Steam library that may be on another drive)
-            let mut dirs = ini_dirs(&dir);
-            dirs.extend(extra_env.iter().filter(|(k, _)| k == "LSFGVK_DLL_PATH").filter_map(|(_, v)| Path::new(v).parent().map(Path::to_path_buf)));
-            if let Some(m) = container_mounts(&dirs, home.as_deref()) {
-                cmd.env("STEAM_COMPAT_MOUNTS", m);
-            }
-        }
-        // umu-run wants a game id (it picks protonfixes for known games from it); "0" is the generic one its README uses
-        if is_umu(&runner) && std::env::var_os("GAMEID").is_none() && !assign.iter().any(|w| w.starts_with("GAMEID=")) {
-            cmd.env("GAMEID", "0");
-        }
-        // fefw.exe reads fefw.ini from its working directory: every path comes from there
-        cmd.current_dir(&dir);
+        let mut cmd = exe_command(&exe, &dir, &runner, &extra_env);
         // the upscaler DLLs ship next to the launcher (upscalers/fsr, upscalers/streamline), which need not be the run folder
         // (on Linux as fefw.exe sees it under Wine: Z:/...)
         if cfg!(windows) {
@@ -367,16 +378,29 @@ pub fn container_mounts(dirs: &[PathBuf], home: Option<&Path>) -> Option<String>
     (!out.is_empty()).then(|| out.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":"))
 }
 
-/// The Linux folders fefw.ini in `dir` points the game at ([fs] romfs, exefs, mods, [aoc] dir; Z:/x is /x) and the run folder.
+/// The Linux folders fefw.ini in `dir` points the game at ([fs] romfs, exefs, mods, [aoc] dir, [nvn] shader_cache parent and
+/// bc7_cache; Z:/x is /x) and the run folder.
 fn ini_dirs(dir: &Path) -> Vec<PathBuf> {
     let ini = crate::ini::Ini::parse(&std::fs::read_to_string(dir.join(crate::settings::GAME_INI)).unwrap_or_default());
     let mut v = vec![dir.to_path_buf()];
-    for (s, k) in [("fs", "romfs"), ("fs", "exefs"), ("fs", "mods"), ("aoc", "dir")] {
+    for (s, k, parent) in [
+        ("fs", "romfs", false),
+        ("fs", "exefs", false),
+        ("fs", "mods", false),
+        ("aoc", "dir", false),
+        ("nvn", "shader_cache", true), // programs.bin and prepare.state live beside spirv/
+        ("nvn", "bc7_cache", false),
+    ] {
         let p = ini.get(s, k).unwrap_or_default().replace('\\', "/");
-        if let Some(rest) = p.strip_prefix("Z:").or_else(|| p.strip_prefix("z:")) {
-            v.push(PathBuf::from(rest));
+        let path = if let Some(rest) = p.strip_prefix("Z:").or_else(|| p.strip_prefix("z:")) {
+            Some(PathBuf::from(rest))
         } else if p.starts_with('/') {
-            v.push(PathBuf::from(p));
+            Some(PathBuf::from(p))
+        } else {
+            None
+        };
+        if let Some(p) = path {
+            v.push(if parent { p.parent().map(Path::to_path_buf).unwrap_or(p) } else { p });
         }
     }
     v
@@ -450,5 +474,25 @@ mod tests {
             assert_eq!(vdf_values(vdf, "path"), ["/mnt/a b"]);
             assert_eq!(vdf_values(vdf, "require_tool_appid"), ["1628350"]);
         }
+    }
+
+    #[test]
+    fn exe_command_wraps_exe_with_runner_and_assignments() {
+        let exe = Path::new("/g/fefw.exe");
+        let dir = Path::new("/g");
+        let r = words(r#"STEAM_COMPAT_DATA_PATH=/pfx "/s/Proton - Experimental/proton" waitforexitandrun"#);
+        let mut cmd = exe_command(exe, dir, &r, &[]);
+        cmd.args(["--prepare-shaders", "--if-needed"]);
+        assert_eq!(cmd.get_program(), "/s/Proton - Experimental/proton");
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, ["waitforexitandrun", "/g/fefw.exe", "--prepare-shaders", "--if-needed"]);
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.contains(&(std::ffi::OsStr::new("STEAM_COMPAT_DATA_PATH"), Some(std::ffi::OsStr::new("/pfx")))));
+
+        // direct execution when runner is empty (Windows)
+        let mut direct = exe_command(exe, dir, &[], &[]);
+        direct.arg("--prepare-shaders");
+        assert_eq!(direct.get_program(), "/g/fefw.exe");
+        assert_eq!(direct.get_args().collect::<Vec<_>>(), ["--prepare-shaders"]);
     }
 }

@@ -512,6 +512,7 @@ fn start_setup(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), S
     let shared = state.inner().clone();
     shared.cancel.store(false, Ordering::SeqCst);
     let jobs = jobs_of(&cfg);
+    let runner = cfg.runner;
     std::thread::spawn(move || {
         let a1 = app.clone();
         let a2 = app.clone();
@@ -521,7 +522,7 @@ fn start_setup(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), S
         let emit_log = move |lines: Vec<String>| {
             let _ = a2.emit("setup-log", lines);
         };
-        let end = setup::run(&shared, &p, jobs, &emit, &emit_log);
+        let end = setup::run(&shared, &p, jobs, &runner, &emit, &emit_log);
         let _ = app.emit("setup-status", end);
     });
     Ok(())
@@ -891,7 +892,7 @@ fn prepare_headless(game: Option<String>) -> i32 {
         out_line(&format!("progress {:.3} {}", f.clamp(0.0, 1.0), text));
     };
     let emit_log = move |_lines: Vec<String>| {};
-    let end = setup::run(&shared, &p, jobs, &emit, &emit_log);
+    let end = setup::run(&shared, &p, jobs, &cfg.runner, &emit, &emit_log);
     if end.state != "done" {
         let why = if end.message.trim().is_empty() { "Setup did not finish." } else { end.message.as_str() };
         return prepare_fail(why);
