@@ -456,3 +456,37 @@ NXTEST(import_freeze_holds_writes_until_it_ends) {
   }
   nxrt::config_set("memory", "freeze_table", "1");
 }
+
+NXTEST(has_written_and_write_seq_track_faults_and_forget) {
+    ww::Region* r = setup();
+    REQUIRE(r != nullptr);
+    CHECK(!ww::has_written(r));
+    CHECK(ww::arm(r, 0, 8));
+    const uint64_t seq0 = ww::write_seq();
+    CHECK(!ww::has_written(r));
+
+    // A write fault sets has_written and bumps write_seq.
+    *reinterpret_cast<volatile uint32_t*>(mem::kHeapBase + 2 * kPg) = 0xfeed;
+    CHECK(ww::has_written(r));
+    const uint64_t seq1 = ww::write_seq();
+    CHECK(seq1 > seq0);
+
+    std::vector<uint64_t> w;
+    ww::take_written(r, w);
+    CHECK(w.size() == 1 && w[0] == 2);
+    CHECK(!ww::has_written(r));
+
+    // A second take_written is a fast no-op.
+    w.clear();
+    ww::take_written(r, w);
+    CHECK(w.empty());
+
+    // forget() on armed pages also sets has_written and bumps write_seq.
+    ww::forget(mem::kHeapBase + 4 * kPg, kPg, false);
+    CHECK(ww::has_written(r));
+    CHECK(ww::write_seq() > seq1);
+    ww::take_written(r, w);
+    CHECK(w.size() == 1 && w[0] == 4);
+    CHECK(!ww::has_written(r));
+    teardown(r);
+}

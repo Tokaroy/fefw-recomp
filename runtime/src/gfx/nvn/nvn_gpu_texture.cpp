@@ -2187,16 +2187,24 @@ void tex_residency_tick(Frame& f) {
     // promotions: tex_residency_restore, every present
     if (!residency_marks_complete()) return;
     // demotions: over residency_percent of the OS budget, the textures no draw used for residency_idle_s, the longest unused first, until
-    // the use is 5 points under it (at most 512 MiB a look); over 92%, ten seconds unused is enough
-    int pct = nxrt::gfx::video_live_percent();   // the room free inside VMA's blocks is not pressure: the next images go there
+    // the use is 5 points under it (at most 512 MiB a look); over 92%, ten seconds unused is enough.
+    // Also trigger when raw OS usage (video_usage_percent) stays at/above max(residency_percent + 5, 85)%: fragmented VMA blocks hold freed
+    // bytes so live_pct can sit below residency_percent while WDDM and pool_mirror_pressure_percent still see pressure, blocking new mirror
+    // chunks and forcing paging. Demoted images go into small_pool so original VMA blocks can empty and return to the OS.
+    int live_pct = nxrt::gfx::video_live_percent();   // the room free inside VMA's blocks is not pressure while OS usage is healthy
+    int os_pct = nxrt::gfx::video_usage_percent();
     uint64_t budget = nxrt::gfx::video_budget_bytes();
-    if (pct < 0 || !budget) return;
+    if (live_pct < 0 || !budget) return;
     static const uint64_t test_mb = static_cast<uint64_t>(std::max<int64_t>(0, nxrt::config_get_int("gfx", "residency_test_budget_mb", 0)));
     if (test_mb && (test_mb << 20) < budget) {   // test aid: a smaller card's budget (the use stays this process' real one)
-        pct = static_cast<int>(budget / 100 * static_cast<uint64_t>(pct) / ((test_mb << 20) / 100));
+        live_pct = static_cast<int>(budget / 100 * static_cast<uint64_t>(live_pct) / ((test_mb << 20) / 100));
+        if (os_pct >= 0) os_pct = static_cast<int>(budget / 100 * static_cast<uint64_t>(os_pct) / ((test_mb << 20) / 100));
         budget = test_mb << 20;
     }
-    if (pct < cfg.percent) return;
+    const int os_trigger = std::min(100, std::max(cfg.percent + 5, 85));
+    const bool os_pressure = os_pct >= os_trigger;
+    if (live_pct < cfg.percent && !os_pressure) return;
+    const int pct = os_pressure ? std::max(live_pct, os_pct) : live_pct;
     const bool urgent = pct >= cfg.urgent_percent;
     const uint32_t idle_ms = static_cast<uint32_t>(urgent ? cfg.urgent_idle_s : cfg.idle_s) * 1000u;
     const uint64_t want = std::min<uint64_t>(budget / 100 * static_cast<uint64_t>(pct - cfg.percent + 5), 512ull << 20);
