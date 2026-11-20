@@ -42,8 +42,9 @@ struct Look {
     bool written = false;          // a draw without blending wrote it after the evaluation
 };
 
-// The tiers a candidate can land in, best last.
-enum Tier { kReject = 0, kInner = 2, kWindow = 3, kKnown = 4 };
+// The tiers a candidate can land in, best last. When the evaluated size and the region presented differ (a cropped present), an offscreen
+// target of the region presented (kInner, which passes present-time validation) outranks one of the evaluated size only (kEvalOnly).
+enum Tier { kReject = 0, kEvalOnly = 1, kInner = 2, kWindow = 3, kKnown = 4 };
 
 struct Choice {
     bool ok = false;       // the target could be the frame's capture
@@ -98,7 +99,7 @@ inline Choice judge(const Scene& s, const Look& c, int cur, uint32_t cur_id) {
             r.why = "its size is neither the evaluated picture's nor the region presented's";
             return r;
         }
-        r.tier = kInner;
+        r.tier = (shown_size || !s.shown_w) ? kInner : kEvalOnly;
         r.why = eval_size ? "an offscreen target of the evaluated picture's size" : "an offscreen target of the region presented's size";
     }
     if (c.id == s.known_good && s.known_good) {
@@ -124,6 +125,16 @@ inline Choice judge(const Scene& s, const Look& c, int cur, uint32_t cur_id) {
         r.pick = "the target captured earlier stays";
     }
     return r;
+}
+
+// Present-time update to Scene::known_good. A target accepted via copy is remembered; a direct window-texture capture clears any earlier
+// offscreen memory; a remembered target whose capture was not shown is forgotten so later frames can pick again (frames with no capture
+// keep the remembered target).
+inline uint32_t next_known_good(uint32_t known_good, uint32_t cap_id, bool direct, bool via_copy) {
+    if (direct) return 0;
+    if (via_copy) return cap_id;
+    if (cap_id && cap_id == known_good) return 0;
+    return known_good;
 }
 
 }  // namespace nxrt::nvn::be::gpu::fgsel

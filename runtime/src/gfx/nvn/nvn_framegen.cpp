@@ -65,23 +65,24 @@ fgsel::Fmt fmt_of(Texture* t) {
 
 bool ensure(Img& i, VkExtent2D e, VkFormat fmt, VkImageUsageFlags usage, const char* name) {
     if (i.img.image && i.img.extent.width == e.width && i.img.extent.height == e.height && i.img.format == fmt) return true;
-    if (i.img.image) {
-        gfx::Image old = i.img;
-        defer_destroy([old]() mutable { device().destroy_image(old); });
-    }
-    i = Img();
     gfx::ImageDesc d;
     d.format = fmt;
     d.width = e.width;
     d.height = e.height;
     d.usage = usage;
     d.name = name;
+    gfx::Image next;
     std::string why;
-    if (device().create_image(d, &i.img, &why) != VK_SUCCESS) {
+    if (device().create_image(d, &next, &why) != VK_SUCCESS) {
         NXLOG_E(kTag, "%s %ux%u: not made (%s)", name, e.width, e.height, why.c_str());
-        i = Img();
         return false;
     }
+    if (i.img.image) {
+        gfx::Image old = i.img;
+        defer_destroy([old]() mutable { device().destroy_image(old); });
+    }
+    i = Img();
+    i.img = next;
     return true;
 }
 
@@ -171,16 +172,6 @@ bool fg_hudless_candidate(Texture* t, bool blended) {
         return false;
     }
     if (!ch.place) return false;
-    if (s.captured &&
-        (s.cap_size.width != e.width || s.cap_size.height != e.height || s.copy[s.cur].img.format != unorm_of(static_cast<VkFormat>(fmt.vk)))) {
-        // a replacement copies into this frame's copy image again, which is made once for its size and format
-        if (s.told_rej < 32) {
-            ++s.told_rej;
-            NXLOG_I(kTag, "HUD-less colour: t%u %ux%u (NVN %s, Vulkan %d) would replace t%u %ux%u, but its copy image is this frame's: kept", t->id,
-                    e.width, e.height, t->fmt ? t->fmt->name : "?", fmt.vk, s.captured->id, s.cap_size.width, s.cap_size.height);
-        }
-        return false;
-    }
     if (s.told_sel < 8) {
         ++s.told_sel;
         NXLOG_I(kTag, "HUD-less colour: t%u %ux%u (NVN %s, Vulkan %d) is the capture: %s, %s; the evaluated picture is %ux%u", t->id, e.width, e.height,
@@ -225,14 +216,15 @@ void fg_hudless_present(Window* w, Texture* presented, Frame& f, VkExtent2D bb, 
     s.captured = s.copied_to = nullptr;
     s.cap_tier = fgsel::kReject;
     s.cap_size = VkExtent2D{};
+    s.eval_size = VkExtent2D{};
     s.written.clear();
     if (again || !eval || !presented || !extras::framegen_running()) return;
     ++s.evals;
     const auto report = [&] {
         if (s.evals % 600 == 0)
             NXLOG_I(kTag, "HUD-less colour: %llu of the frames with a scene had a capture passed to frame generation (the selection accepted it, which "
-                          "does not prove it holds no UI), %llu had no UI composite after the scene, %llu composited one that was not shown, %llu targets "
-                          "were rejected at selection",
+                          "does not prove it holds no UI), %llu had no UI composite after the scene, %llu composited one that was not shown, %llu blended "
+                          "draws were rejected at selection",
                     static_cast<unsigned long long>(s.used), static_cast<unsigned long long>(s.no_capture), static_cast<unsigned long long>(s.not_shown),
                     static_cast<unsigned long long>(s.rejected));
         if (s.evals % 600 == 0) s.used = s.no_capture = s.not_shown = s.rejected = 0;
@@ -241,6 +233,7 @@ void fg_hudless_present(Window* w, Texture* presented, Frame& f, VkExtent2D bb, 
     const uint32_t shown_w = s.shown.width, shown_h = s.shown.height;
     const bool direct = cap && cap == presented;
     const bool via_copy = cap && copied == presented && cap_size.width == shown_w && cap_size.height == shown_h;
+    s.known_good = fgsel::next_known_good(s.known_good, cap ? cap->id : 0u, direct, via_copy);
     if (!direct && !via_copy) {
         ++(cap ? s.not_shown : s.no_capture);
         if (!s.told_miss) {
@@ -252,7 +245,6 @@ void fg_hudless_present(Window* w, Texture* presented, Frame& f, VkExtent2D bb, 
         report();
         return;
     }
-    if (cap && !direct) s.known_good = cap->id;   // this target is the one the game copies into the window: prefer it in the frames after
     Img& c = s.copy[s.cur];
     Img& b = s.bb[s.cur];
     s.cur ^= 1u;

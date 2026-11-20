@@ -249,3 +249,39 @@ NXTEST(without_an_evaluated_size_the_region_presented_decides) {
     Frame g(sc);
     CHECK(!g.offer(target(11, 1280, 720, rgba8_promoted())));
 }
+
+// When the evaluated size and the region presented differ (cropped present), a target matching the region presented (which passes
+// present-time validation) outranks one matching only the evaluated size, in either draw order.
+NXTEST(shown_size_outranks_eval_only_size_when_cropped) {
+    fgsel::Scene sc = scene(rgba8_promoted(), 2560, 1440);
+    sc.shown_w = 1920;
+    sc.shown_h = 1080;
+
+    Frame f(sc);
+    CHECK(f.offer(target(20, 2560, 1440, rgba8_promoted())));
+    CHECK_EQ(f.tier, static_cast<int>(fgsel::kEvalOnly));
+    CHECK(f.offer(target(30, 1920, 1080, rgba8_promoted())));
+    CHECK_EQ(f.picked, 30u);
+    CHECK_EQ(f.tier, static_cast<int>(fgsel::kInner));
+    // a later eval-only target cannot clobber the shown-size capture
+    CHECK(!f.offer(target(40, 2560, 1440, rgba8_promoted())));
+    CHECK_EQ(f.picked, 30u);
+}
+
+// Present-time updates to known_good: remembered on via_copy, cleared if the remembered target is no longer shown or if the game switches
+// to direct window rendering, and preserved across frames that simply had no capture.
+NXTEST(known_good_clears_when_unshown_or_direct) {
+    uint32_t kg = 0;
+    kg = fgsel::next_known_good(kg, 10, false, true);    // accepted via copy: remember t10
+    CHECK_EQ(kg, 10u);
+    kg = fgsel::next_known_good(kg, 0, false, false);    // frame with no UI composite: keep t10
+    CHECK_EQ(kg, 10u);
+    kg = fgsel::next_known_good(kg, 64, false, false);   // another unshown target: keep t10
+    CHECK_EQ(kg, 10u);
+    kg = fgsel::next_known_good(kg, 10, false, false);   // t10 itself was not shown: forget it
+    CHECK_EQ(kg, 0u);
+    kg = fgsel::next_known_good(kg, 144, false, true);   // new accepted target: remember t144
+    CHECK_EQ(kg, 144u);
+    kg = fgsel::next_known_good(kg, 8, true, false);     // switched to direct window capture: clear offscreen memory
+    CHECK_EQ(kg, 0u);
+}
