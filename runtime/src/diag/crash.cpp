@@ -200,6 +200,11 @@ std::string build_report(const EXCEPTION_RECORD* rec, const CONTEXT* cx, DWORD t
         out += mem::ww::describe_page(addr);
     }
 
+    // If a Vulkan call already failed before the exception, surface it here; always include process/system memory
+    // figures so commit-limit or VRAM-exhaustion crashes are visible even without a matching log.
+    out += diag_vk_failure_text();
+    out += diag_memory_text("the crash");
+
     // Last guest function: the lifted function whose host code contains the faulting instruction.
     if (const uint64_t g = guest_function_of(rip))
         appendf(out, "last guest function entered: f_%llx\n", static_cast<unsigned long long>(g));

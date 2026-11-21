@@ -72,6 +72,9 @@ struct Slot {
     uint64_t sets_live = 0;               // descriptor sets allocated from this slot's pools since the last reset (vk.descriptor_sets)
     uint32_t gp_n = 0;                    // GPU pass profiler: timestamps written by the submission
     std::vector<std::pair<std::string, uint32_t>> gp_labels;   // label and argument of each interval (stamp i closes interval i)
+    // [diag] gpu_breadcrumbs: the label of each step of the submission; the GPU writes how many it has finished (crumb_begin, crumb_stamp)
+    std::vector<std::string> crumb_labels;
+    uint64_t crumb_serial = 0;            // the submission those labels belong to
     // split_submission: command buffers of this slot's pool already handed to the GPU in this submission, and free ones (all reset with the pool)
     std::vector<VkCommandBuffer> split_used, split_free;
     uint64_t frame = 0;                   // [prof] gpu_stats: presents counted when the submission was recorded (the frame it belongs to)
@@ -148,6 +151,8 @@ struct Gpu {
     StagingRing ring;
     VkQueryPool qpool = VK_NULL_HANDLE;   // frame trace: two timestamps per slot
     VkQueryPool gpool = VK_NULL_HANDLE;   // GPU pass profiler ([prof] gpu_passes): kGpMax timestamps per slot
+    gfx::Buffer crumbs;                   // [diag] gpu_breadcrumbs: two words per slot, (serial, steps finished), written by the GPU
+    std::mutex crumb_mu;                  // guards Slot::crumb_labels / crumb_serial against concurrent dump reads
     GpuStats stats;
     std::atomic<uint64_t> gpu_busy_ns{0};   // nvn.cnt.gpu_us (qpool: frame trace or [diag] soak_csv)
     uint64_t gpu_last_end = 0;              // render thread: last submission's end timestamp
@@ -177,6 +182,7 @@ struct Gpu {
 
 Gpu* g = nullptr;
 void flush_batch();   // [nvn] submit_batch, below
+void note_begin_cb(); // resets per-command-buffer barrier counter for the dispatch ring
 // submit_batch = frame: a thread waits for a serial of the batch (render thread; the batch only changes there).
 bool batch_flush_wanted() {
     if (g->batch.empty()) return false;
@@ -364,6 +370,7 @@ void flush_batch() {
         r = vkQueueSubmit2(g->dev->queue(), 1, &si, VK_NULL_HANDLE);
     }
     if (r != VK_SUCCESS) {
+        diag_vk_note(static_cast<int>(r), "vkQueueSubmit2 (nvn batch)", __FILE__, __LINE__);
         NXLOG_E(kTag, "vkQueueSubmit2 failed (%d): the device is lost or out of memory", static_cast<int>(r));
         // keep the timeline moving so waiters do not hang: signal from the host
         VkSemaphoreSignalInfo ssi = {VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
@@ -417,11 +424,15 @@ bool split_submission(Frame& f) {
         nxrt::hitch_phase_add(nxrt::kHpRenderLockWait, nxrt::hitch_ticks() - tl);
         r = vkQueueSubmit2(g->dev->queue(), 1, &si, VK_NULL_HANDLE);
     }
-    if (r != VK_SUCCESS) NXLOG_E(kTag, "vkQueueSubmit2 of a split submission failed (%d)", static_cast<int>(r));
+    if (r != VK_SUCCESS) {
+        diag_vk_note(static_cast<int>(r), "vkQueueSubmit2 (nvn split)", __FILE__, __LINE__);
+        NXLOG_E(kTag, "vkQueueSubmit2 of a split submission failed (%d)", static_cast<int>(r));
+    }
     s.split_used.push_back(s.cb);
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(next, &bi);
+    note_begin_cb();
     s.cb = next;
     f.cb = next;
     g->ctr.submits.fetch_add(1);
@@ -459,7 +470,10 @@ void wait_serial_blocking(uint64_t serial) {
     wi.pSemaphores = &g->timeline;
     wi.pValues = &serial;
     VkResult r = vkWaitSemaphores(g->dev->device(), &wi, UINT64_MAX);
-    if (r != VK_SUCCESS) NXLOG_E(kTag, "vkWaitSemaphores failed (%d)", static_cast<int>(r));
+    if (r != VK_SUCCESS) {
+        diag_vk_note(static_cast<int>(r), "vkWaitSemaphores (nvn blocking)", __FILE__, __LINE__);
+        NXLOG_E(kTag, "vkWaitSemaphores failed (%d)", static_cast<int>(r));
+    }
     read_completed();
 }
 
@@ -786,15 +800,99 @@ void run_on_render_thread(const std::function<void()>& fn) {
     cv.wait(lk, [&] { return done; });
 }
 
-bool gpass_on() { return g && g->gpool != VK_NULL_HANDLE; }
+bool gpass_on() { return g && (g->gpool != VK_NULL_HANDLE || g->crumbs.buffer != VK_NULL_HANDLE); }
 
-void gpass_stamp(Frame& f, const char* label, uint32_t arg) {
-    if (!g || !g->gpool || !f.slot) return;
+namespace {
+// [diag] gpu_breadcrumbs: the GPU records how far each submission got. At submission start it writes (serial, 0) into its
+// slot's two words; at every step outside a render pass it inserts a full barrier and writes the count of steps finished.
+// On freeze or device loss, gpu_breadcrumb_report() names the exact step the GPU stopped inside.
+VkDeviceSize crumb_offset(const Slot& s) { return static_cast<VkDeviceSize>(&s - g->slots) * 8; }
+
+// Orders the breadcrumb fill before subsequent GPU work and makes its transfer write visible to host reads
+// (gpu_breadcrumb_report() inspects unfinished submissions on freeze or device loss).
+void crumb_publish_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier2 b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1;
+    di.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
+void crumb_begin(Frame& f, Slot& s) {
+    {
+        std::lock_guard<std::mutex> lk(g->crumb_mu);
+        s.crumb_labels.clear();
+        s.crumb_serial = f.serial;
+    }
+    vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s), 4, static_cast<uint32_t>(f.serial));
+    vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s) + 4, 4, 0);
+    crumb_publish_barrier(f.cb);
+}
+
+void crumb_stamp(Frame& f, Slot& s, const char* label, uint32_t arg) {
+    memory_barrier(f.cb);   // ensure everything recorded before this step has finished before writing the marker
+    uint32_t step = 0;
+    {
+        std::lock_guard<std::mutex> lk(g->crumb_mu);
+        s.crumb_labels.emplace_back(arg ? std::string(label) + " (" + std::to_string(arg) + " draws)" : std::string(label));
+        step = static_cast<uint32_t>(s.crumb_labels.size());
+    }
+    vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s) + 4, 4, step);
+    crumb_publish_barrier(f.cb);
+}
+
+std::string gpu_breadcrumb_report() {
+    Gpu* gp = g;
+    if (!gp || !gp->crumbs.buffer || !gp->crumbs.mapped) return {};
+    std::unique_lock<std::mutex> lk(gp->crumb_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return "GPU breadcrumbs ([diag] gpu_breadcrumbs): (render thread busy)\n";
+    gp->dev->invalidate_buffer(gp->crumbs);
+    const auto* w = static_cast<const volatile uint32_t*>(gp->crumbs.mapped);
+    uint64_t tl = 0;
+    if (gp->timeline) (void)vkGetSemaphoreCounterValue(gp->dev->device(), gp->timeline, &tl);
+    const uint64_t done = std::max(gp->completed.load(std::memory_order_relaxed), tl);
+    std::vector<const Slot*> open;
+    for (const Slot& s : gp->slots)
+        if (s.crumb_serial > done) open.push_back(&s);
+    std::sort(open.begin(), open.end(), [](const Slot* a, const Slot* b) { return a->crumb_serial < b->crumb_serial; });
+    std::string out = "GPU breadcrumbs ([diag] gpu_breadcrumbs): ";
+    if (open.empty()) return out + "every recorded submission had completed.\n";
+    out += std::to_string(open.size()) + " submission(s) had not completed (the first is where the GPU stopped):\n";
+    char b[640];
+    for (const Slot* s : open) {
+        const size_t i = static_cast<size_t>(s - gp->slots);
+        const uint32_t serial = w[i * 2], steps = w[i * 2 + 1];
+        const size_t n = s->crumb_labels.size();
+        if (serial != static_cast<uint32_t>(s->crumb_serial)) {
+            std::snprintf(b, sizeof b, "  submission %llu: not started on the GPU (%zu steps)\n",
+                          static_cast<unsigned long long>(s->crumb_serial), n);
+        } else if (steps >= n) {
+            std::snprintf(b, sizeof b, "  submission %llu: all %zu steps finished (stopped after them)\n",
+                          static_cast<unsigned long long>(s->crumb_serial), n);
+        } else {
+            std::snprintf(b, sizeof b, "  submission %llu: %u of %zu steps finished; stopped in step %u: %s%s%s\n",
+                          static_cast<unsigned long long>(s->crumb_serial), steps, n, steps + 1, s->crumb_labels[steps].c_str(),
+                          steps ? ", after: " : "", steps ? s->crumb_labels[steps - 1].c_str() : "");
+        }
+        out += b;
+    }
+    return out;
+}
+}  // namespace
+
+void gpass_stamp(Frame& f, const char* label, uint32_t arg, bool in_pass) {
+    if (!g || !f.slot) return;
     Slot& s = *static_cast<Slot*>(f.slot);
-    if (s.gp_n >= kGpMax) return;
-    vkCmdWriteTimestamp2(f.cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g->gpool, static_cast<uint32_t>(&s - g->slots) * kGpMax + s.gp_n);
-    s.gp_labels.emplace_back(label, arg);
-    s.gp_n++;
+    if (g->gpool && s.gp_n < kGpMax) {
+        vkCmdWriteTimestamp2(f.cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, g->gpool, static_cast<uint32_t>(&s - g->slots) * kGpMax + s.gp_n);
+        s.gp_labels.emplace_back(label, arg);
+        s.gp_n++;
+    }
+    if (g->crumbs.buffer && !in_pass && f.serial && s.crumb_serial == f.serial) crumb_stamp(f, s, label, arg);
 }
 
 namespace {
@@ -876,15 +974,28 @@ void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImag
 
 namespace {
 thread_local std::unordered_map<VkCommandBuffer, uint64_t> t_barriers_in_cb;   // full memory barriers this thread recorded, per command buffer
+thread_local uint64_t t_cb_gen = 0;
+thread_local uint64_t t_cb_barriers = 0;
+
+void note_begin_cb() {
+    ++t_cb_gen;
+    t_cb_barriers = 0;
+}
 }
 uint64_t memory_barrier_count(VkCommandBuffer cb) {
     const auto it = t_barriers_in_cb.find(cb);
     return it == t_barriers_in_cb.end() ? 0 : it->second;
 }
 
+uint64_t command_buffer_barriers(uint64_t* gen) {
+    if (gen) *gen = t_cb_gen;
+    return t_cb_barriers;
+}
+
 void memory_barrier(VkCommandBuffer cb) {
     g_gauge_barriers_mem.add(1);
     ++t_barriers_in_cb[cb];
+    ++t_cb_barriers;
     VkMemoryBarrier2 b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -922,10 +1033,12 @@ uint64_t submit_on_render_thread(const std::function<void(Frame&)>& record, uint
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(s.cb, &bi);
+    note_begin_cb();
     // [nvn] replay_threads = 2: from here to vkEndCommandBuffer the Vulkan calls of this thread are made by the worker (nvn_cmdq.h)
     std::optional<cmdq::Scope> qscope;
     qscope.emplace();
     const uint32_t qi = static_cast<uint32_t>(&s - g->slots) * 2;
+    if (g->crumbs.buffer && !unsignalled) crumb_begin(f, s);
     if (g->gpool) {
         vkCmdResetQueryPool(s.cb, g->gpool, static_cast<uint32_t>(&s - g->slots) * kGpMax, kGpMax);
         s.gp_n = 0;
@@ -960,12 +1073,14 @@ uint64_t submit_on_render_thread(const std::function<void(Frame&)>& record, uint
         }
         f.cb = s.cb;
         vkBeginCommandBuffer(s.cb, &bi);
+        note_begin_cb();
         s.timed = false;
         s.gp_n = 0;
         s.gp_labels.clear();
+        if (g->crumbs.buffer && !unsignalled) crumb_begin(f, s);
         aborted = true;
     }
-    if (g->gpool && !aborted) gpass_stamp(f, "tail", 0);
+    if (gpass_on() && !aborted) gpass_stamp(f, "tail", 0);
     if (g->qpool && !aborted) vkCmdWriteTimestamp(s.cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g->qpool, qi + 1);
     qscope.reset();       // every queued call made
     vkEndCommandBuffer(s.cb);
@@ -1002,7 +1117,11 @@ uint64_t submit_on_render_thread(const std::function<void(Frame&)>& record, uint
         std::lock_guard<std::mutex> lk(g->dev->queue_mutex());
         nxrt::hitch_phase_add(nxrt::kHpRenderLockWait, nxrt::hitch_ticks() - tl);
         r = vkQueueSubmit2(g->dev->queue(), 1, &si, VK_NULL_HANDLE);
-        if (r == VK_SUCCESS) vkQueueWaitIdle(g->dev->queue());   // nothing else tells when it is done
+        if (r != VK_SUCCESS) diag_vk_note(static_cast<int>(r), "vkQueueSubmit2 (nvn unsignalled)", __FILE__, __LINE__);
+        if (r == VK_SUCCESS) {
+            const VkResult wr = vkQueueWaitIdle(g->dev->queue());   // nothing else tells when it is done
+            if (wr != VK_SUCCESS) diag_vk_note(static_cast<int>(wr), "vkQueueWaitIdle (nvn unsignalled)", __FILE__, __LINE__);
+        }
     }
     if (pool_copy_pending()) pool_copy_end();
     g->recording = 0;
@@ -1194,6 +1313,7 @@ bool wait_serial(uint64_t serial, uint64_t timeout_ns) {
             want_flush(serial, true);
         }
     }
+    if (r != VK_SUCCESS && r != VK_TIMEOUT) diag_vk_note(static_cast<int>(r), "vkWaitSemaphores (nvn timeline)", __FILE__, __LINE__);
     if (r == VK_SUCCESS && !on_render_thread()) {
         std::unique_lock<std::mutex> lock(g_copy_done_mu);
         auto ready = [serial] { const auto copying = g_copy_inflight.load(); return !copying || copying > serial; };
@@ -1447,6 +1567,20 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
         if (vkCreateQueryPool(dev.device(), &qi, nullptr, &gp->gpool) != VK_SUCCESS) gp->gpool = VK_NULL_HANDLE;
         else vk_gauge_query_pools().add(1);
     }
+    // [diag] gpu_breadcrumbs (default off): a device-lost or freeze dump names the step the GPU stopped in (crumb_stamp).
+    // Inserts a full barrier at every pass, dispatch and copy step: for diagnostic runs only.
+    if (config_get_bool("diag", "gpu_breadcrumbs", false)) {
+        if (dev.create_buffer(kSlots * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT, gfx::MemoryUse::Readback, &gp->crumbs, "nvn breadcrumbs") == VK_SUCCESS &&
+            gp->crumbs.mapped) {
+            std::memset(gp->crumbs.mapped, 0, kSlots * 8);
+            dev.flush_buffer(gp->crumbs);
+            NXLOG_I(kTag, "GPU breadcrumbs on ([diag] gpu_breadcrumbs): dumps name the step the GPU stopped in; every pass, dispatch and copy waits for earlier work");
+        } else {
+            if (gp->crumbs.buffer) dev.destroy_buffer(gp->crumbs);
+            gp->crumbs = gfx::Buffer{};
+            NXLOG_W(kTag, "GPU breadcrumbs: no host-visible buffer for them; off");
+        }
+    }
     if (ft::on()) extras::lowlat_set_backlog_fn([]() -> uint64_t {      // latency probe: submissions the GPU has not finished
         if (!g || !g->timeline) return 0;
         uint64_t v = 0;
@@ -1455,7 +1589,8 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
         return sub > v ? sub - v : 0;
     });
     extras::lowlat_set_gpu_wait_fn(&gpu_wait_frames);
-    static const bool report_registered = (diag_add_report(gpu_report), true);   // the freeze dump shows the GPU state
+    diag_set_submit_state(gpu_report);
+    static const bool report_registered = (diag_add_report(gpu_report), diag_add_report(gpu_breadcrumb_report), true);   // freeze & device-lost dumps
     (void)report_registered;
     register_counter_gauges();
     cmdq::install();      // [nvn] replay_threads: before the render thread records anything
@@ -1558,7 +1693,9 @@ void tear_down() {
     }
     if (gp->qpool) { vkDestroyQueryPool(d.device(), gp->qpool, nullptr); vk_gauge_query_pools().sub(1); }
     if (gp->gpool) { vkDestroyQueryPool(d.device(), gp->gpool, nullptr); vk_gauge_query_pools().sub(1); }
+    if (gp->crumbs.buffer) d.destroy_buffer(gp->crumbs);
     if (gp->timeline) { vkDestroySemaphore(d.device(), gp->timeline, nullptr); vk_gauge_semaphores().sub(1); }
+    diag_set_submit_state(nullptr);
     g = nullptr;
     delete gp;
 }

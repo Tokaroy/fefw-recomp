@@ -181,7 +181,7 @@ std::string format_threads(const std::vector<ThreadDump>& threads) {
 // said "no frame tick" while the last opened files pointed at audio. Recording
 // the process footprint, the guard's limit and the machine's remaining memory
 // makes the next report distinguish a deadlock from an exhausted system.
-std::string memory_text() {
+std::string memory_text(const char* when) {
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof pmc;
     const bool got = GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof pmc) != 0;
@@ -190,7 +190,9 @@ std::string memory_text() {
     const bool got_system = GlobalMemoryStatusEx(&ms) != 0;
     const double gb = 1024.0 * 1024.0 * 1024.0;
     char b[512];
-    std::string out = "memory at freeze:\n";
+    std::string out = "memory at ";
+    out += (when && when[0]) ? when : "freeze";
+    out += ":\n";
     if (got) {
         std::snprintf(b, sizeof b,
                       "  private commit %.2f GB, working set %.2f GB, peak working set %.2f GB, pagefile %.2f GB\n",
@@ -277,14 +279,9 @@ std::string extra_reports() {
     return out;
 }
 
-// Header line, then the thread dump. Goes to the log and the report file; returns the full text for on_fire.
+// Header line, then every section of the dump. Goes to the log and the report file; returns the full text for on_fire.
 std::string emit_dump(const std::string& report_path, const std::string& header) {
-    std::string text = header;
-    text += '\n';
-    text += memory_text();
-    text += dump_text();
-    text += kernel::sync_wait_report();
-    text += extra_reports();
+    const std::string text = diag_full_dump(header.c_str(), "freeze");
     log_lines(text);
     write_report(report_path, text);
     return text;
@@ -448,6 +445,19 @@ uint64_t diag_frame_count() { return g_frames.load(std::memory_order_relaxed); }
 uint32_t watchdog_fire_count() { return g_fires.load(std::memory_order_relaxed); }
 
 std::string diag_thread_dump() { return dump_text(); }
+
+std::string diag_memory_text(const char* when) { return memory_text(when); }
+
+std::string diag_full_dump(const char* header, const char* when) {
+    std::string text = header ? header : "";
+    if (!text.empty() && text.back() != '\n') text += '\n';
+    text += diag_vk_failure_text(when && std::strcmp(when, "device loss") == 0);
+    text += memory_text(when);
+    text += dump_text();
+    text += kernel::sync_wait_report();
+    text += extra_reports();
+    return text;
+}
 
 void diag_add_report(std::string (*fn)()) {
     std::lock_guard<std::mutex> lk(g_report_mu);

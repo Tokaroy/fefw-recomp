@@ -60,23 +60,12 @@ const char* window_mode_name() {
     if (once.exchange(true)) {
         for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));   // another thread is writing the report and ending the process
     }
-    char b[512];
-    std::snprintf(b, sizeof b,
-                  "GPU DEVICE LOST (reason: VK_ERROR_DEVICE_LOST)\n  %s returned %d after %llu presented frames: the graphics driver reset or removed the device\n"
-                  "  (a driver crash or timeout, an out-of-video-memory condition, or a GPU hang). The game was stopped.\n",
-                  where, static_cast<int>(r), static_cast<unsigned long long>(frames));
-    std::string text = b;
+    std::string ctx;
     {
         std::lock_guard<std::mutex> lk(g_lost_ctx_mu);
-        if (!g_lost_ctx.empty()) text += g_lost_ctx;
+        ctx = g_lost_ctx;
     }
-    text += frames == 0
-                ? "  What to try: the first frame never finished on the GPU. Update the graphics driver; if it happens in one window mode only "
-                  "(windowed, say), use another (F1 > Display) and tell us which works; [gfx] gpu in fefw.ini picks another GPU.\n"
-                : "  What to try: update the graphics driver; on a GPU that shares system memory (laptop, handheld) lower the render scale "
-                  "or the texture quality. Please attach this file and fefw.log to an issue.\n";
-    text += "\n";
-    text += diag_thread_dump();
+    const std::string text = diag_device_lost_dump(where, static_cast<int>(r), frames, ctx);
     for (size_t pos = 0; pos < text.size();) {
         size_t eol = text.find('\n', pos);
         if (eol == std::string::npos) eol = text.size();
@@ -800,6 +789,7 @@ bool Renderer::begin_frame(FrameInfo* out) {
     }
     {
         const VkResult fr = vkWaitForFences(s.vk(), 1, &slot.fence, VK_TRUE, kFrameWaitNs);
+        if (fr != VK_SUCCESS) diag_vk_note(static_cast<int>(fr), "vkWaitForFences (frame slot)", __FILE__, __LINE__);
         if (fr == VK_TIMEOUT) {
             s.stalled("the previous frame on this slot (GPU)");
             return false;
@@ -814,6 +804,7 @@ bool Renderer::begin_frame(FrameInfo* out) {
         idx = static_cast<uint32_t>(s.frame_number % s.targets.size());
     } else {
         VkResult r = vkAcquireNextImageKHR(s.vk(), s.swapchain, kFrameWaitNs, slot.acquire, VK_NULL_HANDLE, &idx);
+        if (r != VK_SUCCESS) diag_vk_note(static_cast<int>(r), "vkAcquireNextImageKHR", __FILE__, __LINE__);
         if (r == VK_TIMEOUT || r == VK_NOT_READY) {
             s.stalled("a swapchain image");
             return false;
@@ -951,6 +942,7 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
         std::lock_guard<std::mutex> lk(s.dev->queue_mutex());
         VkResult r = vkQueueSubmit2(s.dev->queue(), 1, &si, slot.fence);
         if (r != VK_SUCCESS) {
+            diag_vk_note(static_cast<int>(r), "vkQueueSubmit2 (present)", __FILE__, __LINE__);
             NXLOG_E(kTag, "vkQueueSubmit2 failed (%d)", static_cast<int>(r));
             if (r == VK_ERROR_DEVICE_LOST) device_lost("vkQueueSubmit2 (present)", r, s.st.frames);
             // The fence was reset in begin_frame and the present below waits for render_done: an empty submission stands in (it waits
@@ -963,6 +955,7 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
                 stand.pSignalSemaphoreInfos = &signal;
             }
             const VkResult r2 = vkQueueSubmit2(s.dev->queue(), 1, &stand, slot.fence);
+            if (r2 != VK_SUCCESS) diag_vk_note(static_cast<int>(r2), "vkQueueSubmit2 (present stand-in)", __FILE__, __LINE__);
             if (r2 == VK_ERROR_DEVICE_LOST) device_lost("vkQueueSubmit2 (present stand-in)", r2, s.st.frames);
             if (r2 != VK_SUCCESS) {
                 NXLOG_E(kTag, "the stand-in submission failed too (%d): the frame is not presented, the slot's sync objects are made again",
@@ -990,6 +983,7 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
                 pi.pNext = &pid;
             }
             r = vkQueuePresentKHR(s.dev->queue(), &pi);
+            if (r != VK_SUCCESS) diag_vk_note(static_cast<int>(r), "vkQueuePresentKHR", __FILE__, __LINE__);
             if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
                 // A present that failed is not a frame on the display: counting every call as a present made a black window
                 // report 60 fps of presents while nothing reached the screen (presents_failed keeps the other results).
@@ -1037,7 +1031,8 @@ void Renderer::end_frame(SubmitPrefix* prefix) {
     s.cur_slot = (s.cur_slot + 1) % static_cast<uint32_t>(s.slots.size());
 
     if (cap) {
-        vkWaitForFences(s.vk(), 1, &slot.fence, VK_TRUE, UINT64_MAX);
+        const VkResult cr = vkWaitForFences(s.vk(), 1, &slot.fence, VK_TRUE, UINT64_MAX);
+        if (cr != VK_SUCCESS) diag_vk_note(static_cast<int>(cr), "vkWaitForFences (screenshot)", __FILE__, __LINE__);
         std::vector<uint8_t> raw(static_cast<size_t>(w) * h * bpp);
         s.dev->invalidate_buffer(cap);
         std::memcpy(raw.data(), cap.mapped, raw.size());
