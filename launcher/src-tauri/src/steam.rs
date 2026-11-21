@@ -516,6 +516,27 @@ mod tests {
         assert_eq!(get("HOME"), None);
         assert!(crate::setup::appimage_fixes(&env[1..]).is_empty());
         assert!(crate::setup::appimage_fixes(&[v("APPDIR", "C:\\Apps"), v("PATH", "C:\\Apps\\bin;C:\\Windows")]).is_empty());
+
+        // unpacked AppImage (RecompLauncher): no $APPIMAGE, but <APPDIR>/AppRun exists; RecompLauncher's own paths stay intact
+        let tmp = std::env::temp_dir().join(format!("fefw-unpacked-appimage-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::write(tmp.join("AppRun"), "#!/bin/sh\n");
+        let appdir = tmp.to_string_lossy().to_string();
+        let unpacked = [
+            v("APPDIR", &appdir),
+            v("LD_LIBRARY_PATH", &format!("{appdir}/usr/lib:/usr/lib")),
+            v("GTK_DATA_PREFIX", &appdir),
+            v("RECOMPLAUNCHER_DATA", &format!("{appdir}/recompdata")),
+            v("TMPDIR", &format!("{appdir}/.recomplauncher-tmp")),
+        ];
+        let uf = crate::setup::appimage_fixes(&unpacked);
+        let uget = |k: &str| uf.iter().find(|(n, _)| n == k).map(|(_, x)| x.clone());
+        assert_eq!(uget("APPDIR"), Some(None));
+        assert_eq!(uget("LD_LIBRARY_PATH"), Some(Some("/usr/lib".into())));
+        assert_eq!(uget("GTK_DATA_PREFIX"), Some(None));
+        assert_eq!(uget("RECOMPLAUNCHER_DATA"), None);
+        assert_eq!(uget("TMPDIR"), None);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

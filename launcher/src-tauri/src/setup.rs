@@ -644,17 +644,26 @@ pub(crate) fn host_env(cmd: &mut Command) {
 
 /// What host_env changes in `vars` (an environment with an AppImage's APPDIR in it): (name, new value), None removes it.
 pub(crate) fn appimage_fixes(vars: &[(String, String)]) -> Vec<(String, Option<String>)> {
-    // only an AppImage's AppRun: on Windows (';' lists) or with an APPDIR some other program set, nothing is touched
-    if !cfg!(target_os = "linux") || !vars.iter().any(|(k, v)| k == "APPIMAGE" && !v.is_empty()) {
+    // only an AppImage's AppRun (mounted via $APPIMAGE, or unpacked with <APPDIR>/AppRun): on Windows (';' lists) or with an
+    // unrelated APPDIR, nothing is touched
+    if !cfg!(target_os = "linux") {
         return vec![];
     }
     let Some(appdir) = vars.iter().find(|(k, _)| k == "APPDIR").map(|(_, d)| d.trim_end_matches('/').to_string()).filter(|d| d.len() > 1) else {
         return vec![];
     };
+    let has_appimage = vars.iter().any(|(k, v)| k == "APPIMAGE" && !v.is_empty());
+    let unpacked_apprun = Path::new(&appdir).join("AppRun").is_file();
+    if !has_appimage && !unpacked_apprun {
+        return vec![];
+    }
     let mut out = vec![];
     for (k, v) in vars {
         if matches!(k.as_str(), "APPDIR" | "APPIMAGE" | "ARGV0" | "OWD" | "PYTHONHOME" | "PYTHONPATH" | "PYTHONDONTWRITEBYTECODE" | "PERLLIB") {
             out.push((k.clone(), None));
+        } else if k.starts_with("RECOMPLAUNCHER") || matches!(k.as_str(), "TMPDIR" | "TEMP" | "TMP" | "PWD") {
+            // an unpacked AppImage puts AppRun in the install folder, so RecompLauncher's own paths live under APPDIR too
+            continue;
         } else if v.contains(&appdir) {
             let kept: Vec<&str> = v.split(':').filter(|p| !p.is_empty() && !p.contains(&appdir)).collect();
             out.push((k.clone(), (!kept.is_empty()).then(|| kept.join(":"))));
