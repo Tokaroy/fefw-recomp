@@ -805,6 +805,20 @@ namespace {
 // On freeze or device loss, gpu_breadcrumb_report() names the exact step the GPU stopped inside.
 VkDeviceSize crumb_offset(const Slot& s) { return static_cast<VkDeviceSize>(&s - g->slots) * 8; }
 
+// Orders the breadcrumb fill before subsequent GPU work and makes its transfer write visible to host reads
+// (gpu_breadcrumb_report() inspects unfinished submissions on freeze or device loss).
+void crumb_publish_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier2 b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1;
+    di.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
 void crumb_begin(Frame& f, Slot& s) {
     {
         std::lock_guard<std::mutex> lk(g->crumb_mu);
@@ -813,6 +827,7 @@ void crumb_begin(Frame& f, Slot& s) {
     }
     vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s), 4, static_cast<uint32_t>(f.serial));
     vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s) + 4, 4, 0);
+    crumb_publish_barrier(f.cb);
 }
 
 void crumb_stamp(Frame& f, Slot& s, const char* label, uint32_t arg) {
@@ -824,6 +839,7 @@ void crumb_stamp(Frame& f, Slot& s, const char* label, uint32_t arg) {
         step = static_cast<uint32_t>(s.crumb_labels.size());
     }
     vkCmdFillBuffer(f.cb, g->crumbs.buffer, crumb_offset(s) + 4, 4, step);
+    crumb_publish_barrier(f.cb);
 }
 
 std::string gpu_breadcrumb_report() {
