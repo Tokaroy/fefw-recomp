@@ -106,11 +106,7 @@ fn resolve_exe_dir(current_exe: Option<&Path>, appdir: Option<&Path>, appimage: 
             return dir.to_path_buf();
         }
         // Mounted .AppImage: runs from a temporary mount, while the package sits next to the .AppImage file.
-        if let Some(d) = appimage
-            .filter(|p| !p.as_os_str().is_empty())
-            .and_then(|p| p.parent())
-            .filter(|d| !d.as_os_str().is_empty())
-        {
+        if let Some(d) = appimage.filter(|p| !p.as_os_str().is_empty()).and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()) {
             return d.to_path_buf();
         }
     }
