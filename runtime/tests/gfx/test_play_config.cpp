@@ -500,6 +500,19 @@ NXTEST(binding_keys_equals_and_semicolon) {
     CHECK(act_at(s, semi_name, Ctx::Menu) == Act::Back);
 }
 
+NXTEST(binding_key_left_bracket) {
+    const nxrt::play::test::PlayTestGame play_game;
+    // "[" is a real SDL name; in a bindings section a line starting with it is a binding, not a section header.
+    const char* lb_name = SDL_GetScancodeName(SDL_SCANCODE_LEFTBRACKET);
+    const char* rb_name = SDL_GetScancodeName(SDL_SCANCODE_RIGHTBRACKET);
+    Settings s;
+    std::string err;
+    const std::string text = std::string("[bindings.menu]\n") + lb_name + " = confirm\n" + rb_name + " = back\n";
+    REQUIRE_MSG(parse_settings(text, &s, &err), err);
+    CHECK(act_at(s, lb_name, Ctx::Menu) == Act::Confirm);
+    CHECK(act_at(s, rb_name, Ctx::Menu) == Act::Back);
+}
+
 NXTEST(inline_comments_and_case) {
     const nxrt::play::test::PlayTestGame play_game;
     Settings s;
