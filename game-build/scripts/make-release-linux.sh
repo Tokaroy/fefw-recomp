@@ -99,6 +99,7 @@ cp -a "$OUT/harness-linux" "$PKG/tools/spirv_harness"
 echo "--- from this checkout"
 cp "$ROOT/game-build/release/fefw_build.py" "$PKG/tools/build/fefw_build.py"
 cp "$ROOT/tools/shaders/ampere/extract_corpus.py" "$PKG/tools/shaders/extract_corpus.py"
+cp "$ROOT/recomplauncher.json" "$PKG/recomplauncher.json"
 sed "s/@VERSION@/$VERSION/" "$ROOT/game-build/release/README-linux.txt" > "$PKG/README.txt"
 
 echo "--- Zig $ZIG_VERSION"

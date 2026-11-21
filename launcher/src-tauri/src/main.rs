@@ -78,19 +78,54 @@ fn load_config(app: &AppHandle) -> Config {
     cfg
 }
 
-fn exe_dir() -> PathBuf {
-    // an AppImage runs from a temporary mount: the package is the folder the .AppImage file is in
+fn is_package_dir(dir: &Path) -> bool {
+    dir.join("tools").join("build").join("fefw_build.py").is_file()
+}
+
+fn resolve_exe_dir(current_exe: Option<&Path>, appdir: Option<&Path>, appimage: Option<&Path>) -> PathBuf {
     #[cfg(target_os = "linux")]
-    if let Some(d) = std::env::var_os("APPIMAGE").map(PathBuf::from).and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-        return d;
+    {
+        // RecompLauncher (and --appimage-extract) unpacks the AppImage into the install folder, putting the binary at
+        // <install>/usr/bin/fefw-launcher with tools/ at <install>/tools/ and no $APPIMAGE.
+        if let Some(exe) = current_exe {
+            if let Some(bin) = exe.parent() {
+                if bin.file_name() == Some(std::ffi::OsStr::new("bin")) {
+                    if let Some(usr) = bin.parent() {
+                        if usr.file_name() == Some(std::ffi::OsStr::new("usr")) {
+                            if let Some(root) = usr.parent() {
+                                if is_package_dir(root) {
+                                    return root.to_path_buf();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(dir) = appdir.filter(|d| !d.as_os_str().is_empty() && is_package_dir(d)) {
+            return dir.to_path_buf();
+        }
+        // Mounted .AppImage: runs from a temporary mount, while the package sits next to the .AppImage file.
+        if let Some(d) = appimage.filter(|p| !p.as_os_str().is_empty()).and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()) {
+            return d.to_path_buf();
+        }
     }
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
+    #[cfg(not(target_os = "linux"))]
+    let _ = (appdir, appimage);
+    current_exe.and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn exe_dir() -> PathBuf {
+    let current_exe = std::env::current_exe().ok();
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    resolve_exe_dir(current_exe.as_deref(), appdir.as_deref(), appimage.as_deref())
 }
 
 /// The release package's tools/ folder, when the launcher runs from the release zip (tools/build/fefw_build.py next to it).
 fn package_tools() -> Option<PathBuf> {
-    let t = exe_dir().join("tools");
-    t.join("build").join("fefw_build.py").is_file().then_some(t)
+    let dir = exe_dir();
+    is_package_dir(&dir).then(|| dir.join("tools"))
 }
 
 fn is_repo(dir: &Path) -> bool {
@@ -786,13 +821,25 @@ fn cancel_update(state: State<Arc<update::Shared>>) {
 /// Starts the (new) launcher from the install folder and closes this one.
 #[tauri::command]
 fn restart_launcher(app: AppHandle) -> Result<(), String> {
-    let exe = match std::env::var_os("APPIMAGE") {
-        Some(a) if !cfg!(windows) => PathBuf::from(a),
-        _ => exe_dir().join(if cfg!(windows) { "fefw-launcher.exe" } else { "fefw-launcher" }),
+    let dir = exe_dir();
+    let exe = if !cfg!(windows) {
+        // After an in-launcher update, update::install() places the new fefw-launcher.AppImage in `dir` even if we were
+        // started from an unpacked AppRun, so prefer it over the stale extracted AppRun.
+        if dir.join("fefw-launcher.AppImage").is_file() {
+            dir.join("fefw-launcher.AppImage")
+        } else if let Some(a) = std::env::var_os("APPIMAGE").filter(|a| !a.is_empty()) {
+            PathBuf::from(a)
+        } else if dir.join("AppRun").is_file() {
+            dir.join("AppRun")
+        } else {
+            dir.join("fefw-launcher")
+        }
+    } else {
+        dir.join("fefw-launcher.exe")
     };
     let mut c = std::process::Command::new(&exe);
     setup::host_env(&mut c); // not this AppImage's environment: its mount goes away when this launcher exits
-    c.current_dir(exe_dir()).spawn().map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
+    c.current_dir(&dir).spawn().map_err(|e| format!("cannot start {}: {e}", exe.display()))?;
     app.exit(0);
     Ok(())
 }
@@ -977,4 +1024,37 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running the launcher");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_exe_dir_handles_unpacked_and_mounted_appimage() {
+        let base = std::env::temp_dir().join(format!("fefw-exe-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let install = base.join("install");
+        std::fs::create_dir_all(install.join("tools/build")).unwrap();
+        std::fs::write(install.join("tools/build/fefw_build.py"), "").unwrap();
+        let unpacked_exe = install.join("usr/bin/fefw-launcher");
+        std::fs::create_dir_all(unpacked_exe.parent().unwrap()).unwrap();
+        std::fs::write(&unpacked_exe, "").unwrap();
+
+        // 1. Unpacked AppImage (RecompLauncher): $APPIMAGE unset
+        assert_eq!(resolve_exe_dir(Some(&unpacked_exe), Some(&install), None), install);
+        // 2. Unpacked AppImage with a leaked parent $APPIMAGE (e.g. RecompLauncher's own AppImage)
+        let foreign_appimage = base.join("other/RecompLauncher.AppImage");
+        assert_eq!(resolve_exe_dir(Some(&unpacked_exe), None, Some(&foreign_appimage)), install);
+        // 3. Mounted .AppImage (/tmp/.mount_.../usr/bin/fefw-launcher)
+        let mount = base.join("mount");
+        let mounted_exe = mount.join("usr/bin/fefw-launcher");
+        let own_appimage = install.join("fefw-launcher.AppImage");
+        assert_eq!(resolve_exe_dir(Some(&mounted_exe), Some(&mount), Some(&own_appimage)), install);
+        // 4. Dev build (no tools/build/fefw_build.py, no $APPIMAGE)
+        let dev_exe = base.join("checkout/target/debug/fefw-launcher");
+        assert_eq!(resolve_exe_dir(Some(&dev_exe), None, None), base.join("checkout/target/debug"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
