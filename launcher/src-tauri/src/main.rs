@@ -822,13 +822,20 @@ fn cancel_update(state: State<Arc<update::Shared>>) {
 #[tauri::command]
 fn restart_launcher(app: AppHandle) -> Result<(), String> {
     let dir = exe_dir();
-    let exe = if !cfg!(windows) && dir.join("AppRun").is_file() {
-        dir.join("AppRun")
-    } else {
-        match std::env::var_os("APPIMAGE").filter(|a| !a.is_empty()) {
-            Some(a) if !cfg!(windows) => PathBuf::from(a),
-            _ => dir.join(if cfg!(windows) { "fefw-launcher.exe" } else { "fefw-launcher" }),
+    let exe = if !cfg!(windows) {
+        // After an in-launcher update, update::install() places the new fefw-launcher.AppImage in `dir` even if we were
+        // started from an unpacked AppRun, so prefer it over the stale extracted AppRun.
+        if dir.join("fefw-launcher.AppImage").is_file() {
+            dir.join("fefw-launcher.AppImage")
+        } else if let Some(a) = std::env::var_os("APPIMAGE").filter(|a| !a.is_empty()) {
+            PathBuf::from(a)
+        } else if dir.join("AppRun").is_file() {
+            dir.join("AppRun")
+        } else {
+            dir.join("fefw-launcher")
         }
+    } else {
+        dir.join("fefw-launcher.exe")
     };
     let mut c = std::process::Command::new(&exe);
     setup::host_env(&mut c); // not this AppImage's environment: its mount goes away when this launcher exits
