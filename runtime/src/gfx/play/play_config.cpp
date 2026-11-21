@@ -757,7 +757,16 @@ bool parse_onto(const std::string& text, Settings* s, std::string* err, std::vec
             line = strip_inline_comment(line);
         }
 
-        if (line[0] == '[') {
+        // In a bindings section the left-bracket key ("[") is a real binding, like ";" above: a line starting with '['
+        // whose key before the last '=' parses as an input is a binding, not a section header.
+        bool bracket_binding = false;
+        if (line[0] == '[' && sec == Sec::Bindings) {
+            const size_t eq = line.rfind('=');
+            InputId probe;
+            bracket_binding = eq != kNpos && parse_input(trim(line.substr(0, eq)), &probe);
+        }
+
+        if (line[0] == '[' && !bracket_binding) {
             if (line.back() != ']') {
                 bail(i, "section header without ']'");
                 return false;
