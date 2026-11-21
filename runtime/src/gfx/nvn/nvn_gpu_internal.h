@@ -108,11 +108,11 @@ uint64_t completed_serial();      // cached timeline value; call poll_completed(
 uint64_t poll_completed();
 uint64_t current_serial();        // the serial of the submission being recorded (or the last one)
 
-// ---- GPU pass profiler ([prof] gpu_passes = true, needs the frame trace) --------------------------------------------------------------
-// Writes a GPU timestamp after everything recorded so far; the time since the previous stamp of the submission becomes a trace event
-// `gp:<label>` (arg = draws or 0). No-ops when the profiler is off.
+// ---- GPU pass profiler ([prof] gpu_passes = true) & GPU breadcrumbs ([diag] gpu_breadcrumbs = true) --------------------
+// Writes a GPU timestamp (pass profiler) and/or a serialising vkCmdFillBuffer step marker (breadcrumbs, outside a render pass).
+// No-ops when both are off.
 bool gpass_on();
-void gpass_stamp(Frame& f, const char* label, uint32_t arg = 0);
+void gpass_stamp(Frame& f, const char* label, uint32_t arg = 0, bool in_pass = false);
 
 // ---- barriers ---------------------------------------------------------------------------------------------------------------
 void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to, VkImageAspectFlags aspect,
@@ -121,6 +121,8 @@ void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImag
 void memory_barrier(VkCommandBuffer cb);
 // Full memory barriers this thread recorded into `cb` so far: a change since a point in its recording means one lies between.
 uint64_t memory_barrier_count(VkCommandBuffer cb);
+// Monotonic barrier count within the command buffer currently being recorded on this thread (gen increments on each vkBeginCommandBuffer).
+uint64_t command_buffer_barriers(uint64_t* gen = nullptr);
 // [nvn] pass_barriers = tracked (S38): image_barrier derives its stage and access masks from the two layouts instead of all commands and
 // all memory. Set by the replay for each submission; any thread may record image barriers, so it is an atomic.
 void set_narrow_barriers(bool on);

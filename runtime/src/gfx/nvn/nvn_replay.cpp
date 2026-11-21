@@ -25,6 +25,7 @@
 #include <bit>
 
 #include "nxrt/config.h"
+#include "nxrt/diag.h"
 #include "nxrt/frame_limiter.h"
 #include "nxrt/ftrace.h"
 #include "nxrt/gauge.h"
@@ -608,9 +609,10 @@ void xfb_end_in_pass() {
     g_xfb_slot_written[g_xfb_cur] = true;
 }
 
-// GPU pass profiler: closes the interval since the previous stamp under this label (no-op unless [prof] gpu_passes).
+// GPU pass profiler & GPU breadcrumbs: closes the interval since the previous stamp under this label (no-op unless
+// [prof] gpu_passes or [diag] gpu_breadcrumbs; breadcrumbs are never recorded inside an active render pass).
 void gstamp(const char* label) {
-    if (gpass_on()) gpass_stamp(*F, label, 0);
+    if (gpass_on()) gpass_stamp(*F, label, 0, P.open);
 }
 
 // Two texture objects over one image (as shares_image further down, which this code cannot see yet).
@@ -4393,7 +4395,29 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
     const ShaderInfo* cs = S.stage[kCompute];
     TRACE("dispatch %u %u %u indirect %llx cs %s%s%s", x, y, z, static_cast<unsigned long long>(indirect), cs ? cs->hash.c_str() : "-",
           !cs && !g_cs_missing.empty() ? " missing " : "", !cs ? g_cs_missing.c_str() : "");
-    if (!cs) return;
+    static uint64_t s_cb_gen = 0;
+    static uint64_t s_cb_mark = 0;
+    auto take_barriers = []() -> uint32_t {
+        uint64_t gen = 0;
+        const uint64_t mark = command_buffer_barriers(&gen);
+        const uint64_t delta = gen == s_cb_gen ? (mark - s_cb_mark) : mark;
+        s_cb_gen = gen;
+        s_cb_mark = mark;
+        return static_cast<uint32_t>(delta);
+    };
+    if (!cs) {
+        nxrt::DispatchNote n;
+        if (!g_cs_missing.empty()) std::memcpy(n.missing, g_cs_missing.c_str(), std::min(g_cs_missing.size(), sizeof n.missing - 1));
+        n.x = x;
+        n.y = y;
+        n.z = z;
+        n.indirect = indirect;
+        n.serial = F ? F->serial : 0;
+        n.barriers = take_barriers();
+        n.flags = nxrt::DispatchNote::kMissingCs | (indirect ? nxrt::DispatchNote::kIndirect : 0);
+        nxrt::diag_note_dispatch(n);
+        return;
+    }
     const ShaderInfo* stages[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, cs};
     const ProgLayout* pl = layout_cached(stages);
     if (!pl) return;
@@ -4482,8 +4506,26 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
         gstamp("shadow in");
     }
     cs_before_dispatch(*pl, indirect);
+    {   // Fixed 64-slot ring flushed by freeze and device-lost dumps (gpu_diag.cpp).
+        nxrt::DispatchNote n;
+        std::memcpy(n.shader, cs->hash.c_str(), std::min(cs->hash.size(), sizeof n.shader - 1));
+        n.x = x;
+        n.y = y;
+        n.z = z;
+        n.indirect = indirect;
+        n.serial = F ? F->serial : 0;
+        n.bindings = static_cast<uint32_t>(pl->bindings.size());
+        n.barriers = take_barriers();
+        n.flags = (indirect ? nxrt::DispatchNote::kIndirect : 0) | (g_sh_barrier ? nxrt::DispatchNote::kBarrierBefore : 0);
+        nxrt::diag_note_dispatch(n);
+    }
     if (indirect) {
         vkCmdDispatchIndirect(F->cb, ind.buffer, ind.offset);
+        if (gpass_on()) {
+            char lb[64];
+            std::snprintf(lb, sizeof lb, "cs %.8s indirect 0x%llx", cs->hash.c_str(), static_cast<unsigned long long>(indirect));
+            gstamp(lb);
+        }
     } else {
         vkCmdDispatch(F->cb, x, y, z);
         if (gpass_on()) {

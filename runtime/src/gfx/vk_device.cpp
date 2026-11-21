@@ -16,6 +16,7 @@
 #include <tuple>
 
 #include "nxrt/config.h"
+#include "nxrt/diag.h"
 #include "nxrt/gauge.h"
 #include "nxrt/memguard.h"
 #include "nxrt/gfx.h"
@@ -1383,12 +1384,18 @@ bool Device::submit_once(const std::function<void(VkCommandBuffer)>& fn) {
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    bool ok;
+    VkResult sr = VK_SUCCESS;
     {
         std::lock_guard<std::mutex> ql(queue_mutex_);
-        ok = vkQueueSubmit(queue_, 1, &si, impl_->once_fence) == VK_SUCCESS;
+        sr = vkQueueSubmit(queue_, 1, &si, impl_->once_fence);
     }
-    if (ok) ok = vkWaitForFences(device_, 1, &impl_->once_fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    if (sr != VK_SUCCESS) diag_vk_note(static_cast<int>(sr), "vkQueueSubmit (submit_once)", __FILE__, __LINE__);
+    bool ok = sr == VK_SUCCESS;
+    if (ok) {
+        const VkResult wr = vkWaitForFences(device_, 1, &impl_->once_fence, VK_TRUE, UINT64_MAX);
+        if (wr != VK_SUCCESS) diag_vk_note(static_cast<int>(wr), "vkWaitForFences (submit_once)", __FILE__, __LINE__);
+        ok = wr == VK_SUCCESS;
+    }
     vkResetFences(device_, 1, &impl_->once_fence);
     vkFreeCommandBuffers(device_, impl_->once_pool, 1, &cmd);
     vk_gauge_command_buffers().sub(1);
@@ -1397,7 +1404,8 @@ bool Device::submit_once(const std::function<void(VkCommandBuffer)>& fn) {
 
 void Device::wait_idle() {
     std::lock_guard<std::mutex> ql(queue_mutex_);
-    vkDeviceWaitIdle(device_);
+    const VkResult r = vkDeviceWaitIdle(device_);
+    if (r != VK_SUCCESS) diag_vk_note(static_cast<int>(r), "vkDeviceWaitIdle", __FILE__, __LINE__);
 }
 
 Device::MemoryStats Device::memory_stats() {
