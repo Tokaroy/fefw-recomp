@@ -196,7 +196,10 @@ std::condition_variable g_copy_done_cv;
 
 uint64_t read_completed() {
     uint64_t v = 0;
-    if (g && g->timeline) vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v);
+    if (g && g->timeline) {
+        // NVIDIA writes UINT64_MAX into `v` when vkGetSemaphoreCounterValue returns VK_ERROR_DEVICE_LOST.
+        if (vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v) != VK_SUCCESS || v == UINT64_MAX) v = 0;
+    }
     const uint64_t copying = g_copy_inflight.load();
     if (copying && v >= copying) v = copying - 1;
     if (v > g->completed.load()) g->completed.store(v);
@@ -853,8 +856,11 @@ std::string gpu_breadcrumb_report() {
     gp->dev->invalidate_buffer(gp->crumbs);
     const auto* w = static_cast<const volatile uint32_t*>(gp->crumbs.mapped);
     uint64_t tl = 0;
-    if (gp->timeline) (void)vkGetSemaphoreCounterValue(gp->dev->device(), gp->timeline, &tl);
-    const uint64_t done = std::max(gp->completed.load(std::memory_order_relaxed), tl);
+    if (gp->timeline) {
+        if (vkGetSemaphoreCounterValue(gp->dev->device(), gp->timeline, &tl) != VK_SUCCESS || tl == UINT64_MAX) tl = 0;
+    }
+    const uint64_t comp = gp->completed.load(std::memory_order_relaxed);
+    const uint64_t done = std::max(comp == UINT64_MAX ? 0 : comp, tl);
     std::vector<const Slot*> open;
     for (const Slot& s : gp->slots)
         if (s.crumb_serial > done) open.push_back(&s);
@@ -1255,13 +1261,18 @@ std::atomic<uint64_t> g_wait_serial{0}, g_wait_timeout{0};   // the latest wait:
 std::string gpu_report() {
     if (!g) return {};
     uint64_t v = 0;
-    if (g->timeline) vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v);
+    bool tl_ok = false;
+    if (g->timeline) {
+        tl_ok = vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v) == VK_SUCCESS && v != UINT64_MAX;
+    }
+    const uint64_t comp = g->completed.load(std::memory_order_relaxed);
     char b[400];
     size_t q = 0;
     bool got = false;
     if (g->qmu.try_lock()) { q = g->queue.size(); got = true; g->qmu.unlock(); }
-    std::snprintf(b, sizeof b, "NVN back end: last submitted serial %llu, timeline value %llu, %d game thread(s) in a sync wait (latest wait: serial %llu, timeout %llu ns), sync waits begun %llu done %llu, submits %llu, presents %llu, render queue %s%zu\n",
-                  static_cast<unsigned long long>(g->last_submitted.load()), static_cast<unsigned long long>(v), g_waiters.load(),
+    std::snprintf(b, sizeof b, "NVN back end: last submitted serial %llu, timeline value %llu%s, %d game thread(s) in a sync wait (latest wait: serial %llu, timeout %llu ns), sync waits begun %llu done %llu, submits %llu, presents %llu, render queue %s%zu\n",
+                  static_cast<unsigned long long>(g->last_submitted.load()), static_cast<unsigned long long>(tl_ok ? v : comp),
+                  tl_ok ? "" : " (last completed; timeline unreadable)", g_waiters.load(),
                   static_cast<unsigned long long>(g_wait_serial.load()), static_cast<unsigned long long>(g_wait_timeout.load()),
                   static_cast<unsigned long long>(g_waits_begun.load()), static_cast<unsigned long long>(g_waits_done.load()),
                   static_cast<unsigned long long>(g->ctr.submits.load()), static_cast<unsigned long long>(g->ctr.presents.load()), got ? "" : "(busy) ", q);
@@ -1584,7 +1595,7 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
     if (ft::on()) extras::lowlat_set_backlog_fn([]() -> uint64_t {      // latency probe: submissions the GPU has not finished
         if (!g || !g->timeline) return 0;
         uint64_t v = 0;
-        vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v);
+        if (vkGetSemaphoreCounterValue(g->dev->device(), g->timeline, &v) != VK_SUCCESS || v == UINT64_MAX) return 0;
         const uint64_t sub = g->last_submitted.load();
         return sub > v ? sub - v : 0;
     });
