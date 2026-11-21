@@ -470,7 +470,10 @@ void wait_serial_blocking(uint64_t serial) {
     wi.pSemaphores = &g->timeline;
     wi.pValues = &serial;
     VkResult r = vkWaitSemaphores(g->dev->device(), &wi, UINT64_MAX);
-    if (r != VK_SUCCESS) NXLOG_E(kTag, "vkWaitSemaphores failed (%d)", static_cast<int>(r));
+    if (r != VK_SUCCESS) {
+        diag_vk_note(static_cast<int>(r), "vkWaitSemaphores (nvn blocking)", __FILE__, __LINE__);
+        NXLOG_E(kTag, "vkWaitSemaphores failed (%d)", static_cast<int>(r));
+    }
     read_completed();
 }
 
@@ -1569,6 +1572,8 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
     if (config_get_bool("diag", "gpu_breadcrumbs", false)) {
         if (dev.create_buffer(kSlots * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT, gfx::MemoryUse::Readback, &gp->crumbs, "nvn breadcrumbs") == VK_SUCCESS &&
             gp->crumbs.mapped) {
+            std::memset(gp->crumbs.mapped, 0, kSlots * 8);
+            dev.flush_buffer(gp->crumbs);
             NXLOG_I(kTag, "GPU breadcrumbs on ([diag] gpu_breadcrumbs): dumps name the step the GPU stopped in; every pass, dispatch and copy waits for earlier work");
         } else {
             if (gp->crumbs.buffer) dev.destroy_buffer(gp->crumbs);
