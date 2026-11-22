@@ -1480,7 +1480,9 @@ VkBuffer mirror_chunk(Mirror& m, uint64_t page) {
         const int pct = gfx::video_usage_percent();
         static bool refusing = false;
         if (pct >= press) {
-            if (pct < 92 && g_evict_credit < bytes) {
+            // Up to 96% OS VRAM usage, allow zero-net-VRAM chunk recycling by evicting idle mirror chunks from older scenes first;
+            // only hard-stop at 96%+ (emergency OOM territory) or when no idle chunks can be evicted to cover `bytes`.
+            if (pct < 96 && g_evict_credit < bytes) {
                 g_evict_credit = std::min<uint64_t>(g_evict_credit + spare_release(), kMaxEvictCredit);
                 if (evict_ms > 0 && g_evict_credit < bytes) {
                     const uint32_t since = g_mirror_clock_ms - g_last_evict_try_ms;
@@ -1492,7 +1494,7 @@ VkBuffer mirror_chunk(Mirror& m, uint64_t page) {
                     }
                 }
             }
-            if (pct < 92 && g_evict_credit >= bytes) {
+            if (pct < 96 && g_evict_credit >= bytes) {
                 g_evict_credit -= bytes;
             } else {
                 if (!refusing) {
