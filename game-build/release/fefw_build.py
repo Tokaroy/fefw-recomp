@@ -560,12 +560,43 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
     sites = site_addresses()
     for where, kind, addr in mod_sites:
         sites.setdefault(addr - MODULES[0][2], '%s (%s)' % (kind, where))
-    touched = set()
+    # Mods built for an emulator's LayeredFS (Eglantine and the like) put code and strings into the alignment gaps: text ends at
+    # its memory size but rodata starts at the next page, and likewise rodata and data. The loader maps those gaps (as zeros), so a
+    # record there is valid. Widen the segment before the gap to reach the next one (the file grows by zero bytes, the header's
+    # offsets, sizes and hashes follow) when a record needs it; text widened this way is lifted with the rest of text.
+    widen = [False, False]
+    for where, mem in ((w, m) for _, w, m in patches):
+        for off, b in mem:
+            for i in (0, 1):
+                if off < segs[i + 1][1] and off + len(b) > segs[i][1] + segs[i][2]:
+                    widen[i] = True          # the record touches the gap after segment i
+    if any(widen):
+        tail = bytes(data[segs[2][0] + segs[2][2]:])
+        parts = []
+        newsegs = []
+        pos = segs[0][0]
+        for i, (fo, mo, sz) in enumerate(segs):
+            body = bytes(data[fo:fo + sz])
+            if i < 2 and widen[i]:
+                full = segs[i + 1][1] - mo
+                body += bytes(full - sz)
+                sz = full
+            newsegs.append((pos, mo, sz))
+            parts.append(body)
+            pos += sz
+        data = bytearray(data[:segs[0][0]]) + b''.join(parts) + tail
+        for i, (fo, mo, sz) in enumerate(newsegs):
+            data[0x10 + 0x10 * i:0x14 + 0x10 * i] = fo.to_bytes(4, 'little')
+            data[0x18 + 0x10 * i:0x1C + 0x10 * i] = sz.to_bytes(4, 'little')
+            data[0x60 + 4 * i:0x64 + 4 * i] = sz.to_bytes(4, 'little')    # compressed size of a plain segment
+        segs = newsegs
+        progress('verify', 0, 1, 'Note: exefs patches write into the alignment gap after %s; widened to the next segment'
+                 % ' and after '.join(n for n, w in zip(('text', 'rodata'), widen) if w))
+    touched = set(range(3)) if any(widen) else set()
     owner = {}
     for name, where, mem in patches:
         for off, b in mem:
-            seg = next((i for i, (fo, mo, sz) in enumerate(segs) if mo <= off and off + len(b) <= mo + sz), None)
-            if seg is None:
+            if not (segs[0][1] <= off and off + len(b) <= segs[2][1] + segs[2][2]):
                 raise Fail('%s: 0x%x..0x%x is outside main\'s text, rodata and data' % (where, off, off + len(b)))
             for a in range(off & ~3, off + len(b), 4):
                 if a in sites:
@@ -576,9 +607,12 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
                 progress('verify', 0, 1, 'Note: %s overwrites bytes %s patched at 0x%x (the later mod wins)' % (where, clash, off))
             for a in range(off, off + len(b)):
                 owner[a] = where
-            fo, mo, _ = segs[seg]
-            data[fo + off - mo:fo + off - mo + len(b)] = b
-            touched.add(seg)
+            # write piece by piece: a record may run across a segment boundary (the segments are contiguous in memory here)
+            for i, (fo, mo, sz) in enumerate(segs):
+                lo, hi = max(off, mo), min(off + len(b), mo + sz)
+                if lo < hi:
+                    data[fo + lo - mo:fo + hi - mo] = b[lo - off:hi - off]
+                    touched.add(i)
     for i in touched:
         fo, _, sz = segs[i]
         data[0xA0 + 0x20 * i:0xC0 + 0x20 * i] = hashlib.sha256(data[fo:fo + sz]).digest()
