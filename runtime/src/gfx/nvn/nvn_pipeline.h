@@ -56,6 +56,10 @@ struct ProgLayout {
     // A per-program invariant of the replay: a storage buffer the program's shaders write (one that [nvn] gfx_ssbo_readonly proves read-only
     // does not count) or a storage image. A draw of this program then writes memory; worked out once here instead of over every binding a draw.
     bool writes_storage = false;
+    // Per-program precomputed texture/image binding indices into `bindings`, avoiding full-binding scans in prep/feedback/vol3d/depth checks.
+    bool has_3d_sampler = false;
+    std::vector<uint16_t> sampled_tex_bindings;  // COMBINED_IMAGE_SAMPLER with SamplerBinding / HandleInUniform / ImageBinding
+    std::vector<uint16_t> storage_img_bindings;  // STORAGE_IMAGE
 };
 
 // [nvn] push_uniforms (default true): programs whose set 0 fits the device's push descriptor limit push it (ProgLayout::push_set0). False when the

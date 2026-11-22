@@ -810,9 +810,19 @@ const ProgLayout* prog_layout(const ShaderInfo* const stages[6]) {
     pl.push_bytes = pcr.size;
     // Per-program invariant (ProgLayout::writes_storage): begin_draw used to walk every binding of the program for this on each draw.
     static const bool ssbo_ro_pass = config_get_bool("nvn", "gfx_ssbo_readonly", true);
-    for (const BindingDesc& d : pl.bindings)
-        pl.writes_storage |= (d.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && !(ssbo_ro_pass && !d.shader->refl.bindings[d.index].written)) ||
+    for (uint32_t bi = 0; bi < pl.bindings.size(); ++bi) {
+        const BindingDesc& d = pl.bindings[bi];
+        const DescriptorBinding& b = d.shader->refl.bindings[d.index];
+        pl.writes_storage |= (d.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && !(ssbo_ro_pass && !b.written)) ||
                              d.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        if (d.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            pl.storage_img_bindings.push_back(static_cast<uint16_t>(bi));
+        } else if (d.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+                   (b.nvn.source == NvnSource::SamplerBinding || b.nvn.source == NvnSource::HandleInUniform || b.nvn.source == NvnSource::ImageBinding)) {
+            pl.sampled_tex_bindings.push_back(static_cast<uint16_t>(bi));
+            if (b.image.dim == 2 && b.nvn.source != NvnSource::ImageBinding) pl.has_3d_sampler = true;
+        }
+    }
     return &g_layouts.emplace(key, std::move(pl)).first->second;
 }
 
