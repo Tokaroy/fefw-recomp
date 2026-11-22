@@ -75,6 +75,14 @@ struct GfxEntry {
     std::shared_ptr<PipeUpgrade> up;
 };
 std::unordered_map<uint64_t, std::vector<GfxEntry>> g_gfx;
+// Render-thread direct-mapped cache of settled graphics pipelines in front of g_gfx (avoids unordered_map bucket + vector lookup).
+struct GfxFastSlot {
+    uint64_t hash = 0;
+    GraphicsKey key;
+    VkPipeline pipe = VK_NULL_HANDLE;
+};
+constexpr size_t kGfxFastSlots = 512;
+GfxFastSlot g_gfx_fast[kGfxFastSlots];
 // Compute pipelines by (shader, layout, integer samplers: set << 17 | binding << 1 | signed, see spirv_int_samplers; empty for the translated module).
 std::map<std::tuple<const ShaderInfo*, VkPipelineLayout, std::vector<uint32_t>>, VkPipeline> g_compute;
 std::map<std::pair<const ShaderInfo*, std::vector<uint32_t>>, VkShaderModule> g_int_samplers;   // their modules (null: could not be made)
@@ -694,11 +702,23 @@ const ProgLayout* prog_layout(const ShaderInfo* const stages[6]) {
             }
         }
     }
+    std::stable_sort(pl.bindings.begin(), pl.bindings.end(), [](const BindingDesc& a, const BindingDesc& b) { return a.set < b.set; });
+    for (uint32_t s = 0; s < 5; ++s) { pl.set_begin[s] = 0; pl.set_end[s] = 0; }
+    for (size_t i = 0; i < pl.bindings.size(); ) {
+        const uint32_t s = pl.bindings[i].set;
+        size_t j = i + 1;
+        while (j < pl.bindings.size() && pl.bindings[j].set == s) ++j;
+        if (s < 5) {
+            pl.set_begin[s] = static_cast<uint16_t>(i);
+            pl.set_end[s] = static_cast<uint16_t>(j);
+        }
+        i = j;
+    }
     std::vector<VkDescriptorSetLayoutBinding> lbs[4];
     std::string sig;                                   // the descriptors of the program, as bytes: the key of the shared layout
     for (int set = 0; set < 4; ++set) {
-        for (const BindingDesc& d : pl.bindings) {
-            if (d.set != static_cast<uint32_t>(set)) continue;
+        for (uint32_t bi = pl.set_begin[set]; bi < pl.set_end[set]; ++bi) {
+            const BindingDesc& d = pl.bindings[bi];
             VkDescriptorSetLayoutBinding b = {};
             b.binding = d.binding;
             b.descriptorType = d.type;
@@ -1062,12 +1082,22 @@ VkPipeline build_graphics_pipeline(const GraphicsKey& key, const ProgLayout& lay
 VkPipeline graphics_pipeline(const GraphicsKey& key, const ProgLayout& layout) {
     ensure_cache();
     const uint64_t h = key.hash();
+    GfxFastSlot& fast = g_gfx_fast[(h ^ (h >> 19)) & (kGfxFastSlots - 1)];
+    if (fast.pipe && fast.hash == h && fast.key == key) {
+        counters().pipeline_cache_hits.fetch_add(1, std::memory_order_relaxed);
+        return fast.pipe;
+    }
     auto& bucket = g_gfx[h];
     for (auto& e : bucket)
         if (e.first == key) {
             counters().pipeline_cache_hits.fetch_add(1, std::memory_order_relaxed);
             if (e.up && e.up->state.load(std::memory_order_acquire) != 0) gpl_take_upgrade(e.second, e.alt, e.up);
             if (e.alt && gpl_ab_whole()) return e.alt;
+            if (!e.up && !e.alt && e.second) {
+                fast.hash = h;
+                fast.key = key;
+                fast.pipe = e.second;
+            }
             return e.second;
         }
     prewarm_init();
@@ -2145,6 +2175,7 @@ void pipeline_shutdown() {
             if (e.up && e.up->state.load() == 1 && e.up->pipe) vkDestroyPipeline(d, e.up->pipe, nullptr);     // built and never taken
         }
     g_gfx.clear();
+    for (GfxFastSlot& s : g_gfx_fast) s.pipe = VK_NULL_HANDLE;
     g_gfx_keys.sub(g_gfx_keys.get());
     gpl_shutdown();                              // the parts the pipelines were linked from
     for (auto& [k, p] : g_compute)
