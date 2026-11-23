@@ -2203,6 +2203,7 @@ void tex_residency_tick(Frame& f) {
     // chunks and forcing paging. Demoted images go into small_pool so original VMA blocks can empty and return to the OS.
     int live_pct = nxrt::gfx::video_live_percent();   // the room free inside VMA's blocks is not pressure while OS usage is healthy
     int os_pct = nxrt::gfx::video_usage_percent();
+    const int sys_pct = nxrt::gfx::video_sysram_usage_percent();   // unified-memory GPU: shared host RAM usage (-1 on discrete GPUs)
     uint64_t budget = nxrt::gfx::video_budget_bytes();
     if (live_pct < 0 || !budget) return;
     static const uint64_t test_mb = static_cast<uint64_t>(std::max<int64_t>(0, nxrt::config_get_int("gfx", "residency_test_budget_mb", 0)));
@@ -2212,9 +2213,10 @@ void tex_residency_tick(Frame& f) {
         budget = test_mb << 20;
     }
     const int os_trigger = std::min(100, std::max(cfg.percent + 5, 85));
-    const bool os_pressure = os_pct >= os_trigger;
+    const bool sys_pressure = sys_pct >= os_trigger;
+    const bool os_pressure = os_pct >= os_trigger || sys_pressure;
     if (live_pct < cfg.percent && !os_pressure) return;
-    const int pct = os_pressure ? std::max(live_pct, os_pct) : live_pct;
+    const int pct = os_pressure ? std::max({live_pct, os_pct, sys_pct}) : live_pct;
     const bool urgent = pct >= cfg.urgent_percent;
     const uint32_t idle_ms = static_cast<uint32_t>(urgent ? cfg.urgent_idle_s : cfg.idle_s) * 1000u;
     const uint64_t want = std::min<uint64_t>(budget / 100 * static_cast<uint64_t>(pct - cfg.percent + 5), 512ull << 20);
@@ -2251,8 +2253,9 @@ void tex_residency_tick(Frame& f) {
     }
     static int logged = 0;
     if (n && (logged++ < 40 || logged % 50 == 0))
-        NXLOG_I(kTag, "residency: video memory at %d%% of the %.2f GiB budget: %d textures unused for %u s and more demoted (%.0f MB given back; %zu demoted "
-                      "in all, %d of %zu candidates)%s", pct, static_cast<double>(budget) / (1024.0 * 1024.0 * 1024.0), n, idle_ms / 1000,
+        NXLOG_I(kTag, "residency: video memory at %d%% of the %.2f GiB budget%s: %d textures unused for %u s and more demoted (%.0f MB given back; %zu demoted "
+                      "in all, %d of %zu candidates)%s", pct, static_cast<double>(budget) / (1024.0 * 1024.0 * 1024.0),
+                (sys_pressure && live_pct < cfg.percent && os_pct < os_trigger) ? " [system RAM pressure]" : "", n, idle_ms / 1000,
                 static_cast<double>(freed) / (1024.0 * 1024.0), g_demoted.size(), n, cand.size(), urgent ? " [urgent]" : "");
 }
 
@@ -2301,6 +2304,7 @@ void tex_residency_restore(Frame& f) {
                 os_pct = static_cast<int>(real_budget / 100 * static_cast<uint64_t>(os_pct) / ((test_mb << 20) / 100));
             }
         }
+        os_pct = std::max(os_pct, nxrt::gfx::video_sysram_usage_percent());
         const int os_warn = std::min(100, std::max(cfg.percent + 5, 85));
         if (os_pct >= 96) {
             // Near-OOM territory: hold off promoting demoted textures until VRAM drops below 96%.
@@ -4017,7 +4021,7 @@ void log_ram_census(const char* why) {
             "pools %.0f MiB (in RAM / pool size, MiB: %s; pools outside the heap %.0f), texture storage %.0f MiB (of %.0f; of textures whose image "
             "is uploaded %.0f), the rest of the heap %.0f MiB; ours: texture preparation %.0f MiB, staging ring %.0f MiB, staging past the ring so "
             "far %.0f MiB; %.1f ms",
-            why, pmc.WorkingSetSize / mib, pmc.PrivateUsage / mib, mem::heap_committed() / mib, sampled ? "" : "(not sampled) ", heap_ram / mib,
+            why, pmc.WorkingSetSize / mib, (pmc.PrivateUsage ? pmc.PrivateUsage : pmc.PagefileUsage) / mib, mem::heap_committed() / mib, sampled ? "" : "(not sampled) ", heap_ram / mib,
             pooled / mib, kinds.c_str(), m.outside / mib, tex_ram / mib, tex_size / mib, tex_up / mib, (heap_ram - pooled) / mib,
             texprep::held_bytes() / mib, gpu::staging_ring_size() / mib, gpu::staging_fallback_bytes() / mib, ms);
     // the rest of the working set: a walk of the whole address space (about 0.2 s), on a thread of its own so the render thread does not wait

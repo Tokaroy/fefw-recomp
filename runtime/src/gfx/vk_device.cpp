@@ -522,6 +522,24 @@ int video_live_percent() {
     return pct;
 }
 
+// On a unified-memory GPU (integrated GPU whose device-local heap is shared system RAM, so g_guard_heap < 0),
+// host physical RAM usage in percent (sampled at most every 250 ms); -1 on discrete GPUs or before a device exists.
+int video_sysram_usage_percent() {
+    static std::atomic<int64_t> next_ms{0};
+    static std::atomic<int> last{-1};
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t due = next_ms.load(std::memory_order_relaxed);
+    if (now < due || !next_ms.compare_exchange_strong(due, now + 250, std::memory_order_relaxed)) return last.load(std::memory_order_relaxed);
+    bool unified = false;
+    {
+        std::lock_guard<std::timed_mutex> lk(g_guard_mu);
+        unified = g_guard_vma && g_video_heap >= 0 && g_guard_heap < 0;
+    }
+    const int pct = unified ? nxrt::memguard_sysram_usage_percent() : -1;
+    last.store(pct, std::memory_order_relaxed);
+    return pct;
+}
+
 // ---- creation ---------------------------------------------------------------------------------------------------------
 std::unique_ptr<Device> Device::create(const DeviceDesc& desc, std::string* error) {
     std::unique_ptr<Device> d(new Device());

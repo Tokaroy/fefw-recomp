@@ -2,6 +2,7 @@
 // Memory guard discount of the Vulkan layer: which heap's usage is subtracted from the process commit (vk_gauges.h). No GPU needed.
 #include <cstring>
 
+#include "nxrt/gfx.h"
 #include "test_framework.h"
 #include "vk_gauges.h"
 NXTEST_GROUP(gfx_guard)
@@ -60,4 +61,5 @@ NXTEST(guard_no_device_local_heap) {
 
 NXTEST(guard_gpu_bytes_is_zero_without_an_allocator) {
     CHECK_EQ(nxrt::gfx::vk_guard_gpu_bytes(), 0ull);   // no device in this group: the null allocator reads as 0
+    CHECK_EQ(nxrt::gfx::video_sysram_usage_percent(), -1);
 }
