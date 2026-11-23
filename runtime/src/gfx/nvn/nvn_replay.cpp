@@ -1240,7 +1240,7 @@ ViewRequest make_request(const DescriptorBinding& b, const TexResolved& r) {
     q.type = view_type_for(b);
     q.depth_compare = b.image.depth;
     const Texture& t = *r.tex;
-    int sw[4] = {t.b.swizzle[0], t.b.swizzle[1], t.b.swizzle[2], t.b.swizzle[3]};
+    const int* sw = t.b.swizzle;
     int dsmode = t.b.depth_stencil_mode;
     if (r.has_view) {
         const TextureViewInfo& v = r.view;
@@ -1250,13 +1250,17 @@ ViewRequest make_request(const DescriptorBinding& b, const TexResolved& r) {
             const FormatInfo* fi = format_info(v.format);
             if (fi) q.format = fi->vk;
         }
-        if (v.has_swizzle) for (int i = 0; i < 4; ++i) sw[i] = v.swizzle[i];
+        if (v.has_swizzle) sw = v.swizzle;
         if (v.has_depth_stencil_mode) dsmode = v.depth_stencil_mode;
     }
-    q.swizzle.r = vk_swizzle(sw[0]);
-    q.swizzle.g = vk_swizzle(sw[1]);
-    q.swizzle.b = vk_swizzle(sw[2]);
-    q.swizzle.a = vk_swizzle(sw[3]);
+    if (sw[0] == NVN_TEXTURE_SWIZZLE_R && sw[1] == NVN_TEXTURE_SWIZZLE_G && sw[2] == NVN_TEXTURE_SWIZZLE_B && sw[3] == NVN_TEXTURE_SWIZZLE_A) {
+        q.swizzle = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
+    } else {
+        q.swizzle.r = vk_swizzle(sw[0]);
+        q.swizzle.g = vk_swizzle(sw[1]);
+        q.swizzle.b = vk_swizzle(sw[2]);
+        q.swizzle.a = vk_swizzle(sw[3]);
+    }
     q.depth_aspect = dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH;
     switch (b.image.component) {
         case ScalarType::Float: q.component = 1; break;
@@ -1634,7 +1638,7 @@ void prepare_textures(const ProgLayout& pl) {
         // owned by the pass; a compute dispatch runs outside every pass, so the graphics attachments do not own what it samples
         const bool is_depth = dt && (r.tex == dt || (dg && r.tex->gpu == dg) || (!dg && shares_image(r.tex, dt)));
         if (is_depth || (d.nvn_stage != kCompute && is_color_feedback(r.tex))) continue;
-        if (r.tex->cpu_dirty.load() || tex_layout(r.tex) != tex_sampled_layout(r.tex)) {
+        if (tex_needs_sampled_prepare(r.tex)) {
             need.push_back(r.tex);
             if (r.tex->cpu_dirty.load() && ft::on()) {
                 const DescriptorBinding& b = d.shader->refl.bindings[d.index];
@@ -2730,14 +2734,16 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
             // asked for a held-back texture: is_color_feedback makes its image (tex_gpu), which pool_image_lazy holds back until the upload's
             // turn, and a deferrable texture (ASTC / BC) is never a colour attachment.
             const bool feedback = r.tex && !waiting && d.nvn_stage != kCompute && is_color_feedback(r.tex);
-            if (r.tex && !waiting && tex_gpu(r.tex) && !feedback) {
+            if (r.tex && !waiting && !feedback) {
                 ViewRequest q = make_request(b, r);
                 if (int_comp) q.component = int_comp;
-                VkImageView v = tex_sampled_view(r.tex, q);
+                VkImageLayout img_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                VkImageAspectFlags img_aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+                VkImageView v = tex_bind_sampled(r.tex, q, &img_layout, &img_aspect);
                 if (v) {
                     ii.imageView = v;
                     // GENERAL: the op also writes it as a storage image (prepare_textures left it there)
-                    ii.imageLayout = tex_layout(r.tex) == VK_IMAGE_LAYOUT_GENERAL ? VK_IMAGE_LAYOUT_GENERAL : tex_sampled_layout(r.tex);
+                    ii.imageLayout = img_layout;
                     // Integer views (the integer sampler variant, and images the shader reads only as integer bits, reflected as uint) take the
                     // unfiltered sampler: Vulkan has no linear filtering of integer formats (VUID-vkCmdDrawIndexed-magFilter-04553), and Maxwell
                     // takes the nearest texel of them anyway. [nvn] int_view_nearest = false: the game's sampler as before.
@@ -2749,14 +2755,14 @@ VkDescriptorSet build_set(const ProgLayout& pl, uint32_t set) {
                     }
                     // [nvn] reserved_sampler (default on): a texel-fetch handle (sampler id 0, the driver's reserved range) sampled with filtering
                     // gets the linear reserved sampler, as on the console; integer and depth textures keep the nearest dummy
-                    else if (r.sid0 && component == 1 && !(tex_aspect(r.tex) & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) &&
+                    else if (r.sid0 && component == 1 && !(img_aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) &&
                              reserved_sampler_on())
                         ii.sampler = reserved_sampler();
                     if (r.tex == g_su_tex && g_su_view) {            // the upscaled scene replaces the small one for this draw (S14)
                         ii.imageView = g_su_view;
                         ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                     }
-                } else if (first_time_id(1, d.shader, static_cast<uint64_t>(d.index), r.tex->id)) {
+                } else if (tex_gpu(r.tex) && first_time_id(1, d.shader, static_cast<uint64_t>(d.index), r.tex->id)) {
                     NXLOG_W(kTag, "sampled texture %u (%s, target %d, %dx%dx%d) has no view of the shader's view type %d, sampled type %d: shader %s binding %s (NVN slot %d, set %u binding %u) gets the dummy view",
                             r.tex->id, r.tex->fmt ? r.tex->fmt->name : "?", r.tex->b.target, r.tex->b.width, r.tex->b.height, r.tex->b.depth,
                             static_cast<int>(view_type_for(b)), static_cast<int>(q.component), d.shader->hash.c_str(), b.name.c_str(), b.nvn.index, d.set, d.binding);
@@ -5364,12 +5370,12 @@ bool is_bind_op(Op op) {
     }
 }
 
-void mark_dirty(const RecordReader& r) {
+bool mark_dirty(const RecordReader& r) {
     if ((same_binds_on() || rs_on()) && is_bind_op(r.op())) {
         ++g_rs.binds;
         if (bind_is_same(r)) {
             ++g_rs.binds_same;
-            if (same_binds_on()) return;
+            if (same_binds_on()) return !g_trace;   // no state changed: run_list can skip the op body when not tracing
         }
     }
     switch (r.op()) {
@@ -5393,6 +5399,7 @@ void mark_dirty(const RecordReader& r) {
         case Op::SetRenderTargets: g_dirty = kAllDirty; break;
         default: break;
     }
+    return false;
 }
 
 // ---- windowed GPU counters (see g_cw) ----------------------------------------------------------------------------------------
@@ -5431,7 +5438,7 @@ void run_list(const CmdList& list, int depth) {
     if (depth > kMaxDepth) { NVN_LOG_ONCE("depth", "CallCommands nesting too deep"); return; }
     counters().lists_replayed.fetch_add(1, std::memory_order_relaxed);
     for (RecordReader r(list); r.next();) {
-        mark_dirty(r);
+        if (mark_dirty(r)) continue;
         const Op op = r.op();
         if (g_cs_open && !cs_keeps_open(op)) cs_close();
         if (g_wm_open && !wm_keeps_open(op)) wm_close();
