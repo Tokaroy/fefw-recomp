@@ -129,6 +129,9 @@ if(FEFW_CPU_VARIANT STREQUAL "compat")
     target_compile_definitions(fefw PRIVATE FEFW_CPU_NEEDS=FEFW_CPU_NEEDS_COMPAT_BUILD)
 else()
     target_compile_definitions(fefw PRIVATE FEFW_CPU_NEEDS=FEFW_CPU_NEEDS_FMA_BUILD)
+    # fefw_hle.cpp's culling tests follow the lifted code's fused multiply-adds: the fma lifted libraries are compiled with -mfma
+    # (recomp/games/fefw/CMakeLists.txt), so this file is too; without it each of them would be a call into the CRT's fmaf.
+    set_source_files_properties(src/fefw_hle.cpp PROPERTIES COMPILE_OPTIONS "-mfma")
 endif()
 # The font and the site list are copied when the build is configured, not in a POST_BUILD step: CMake wraps that step in cmd.exe's
 # `cd /D "<build dir>"`, and an & in the checkout path splits the command (EmblemWeave issue 38).
