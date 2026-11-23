@@ -161,7 +161,7 @@ def tree_hash(root, rels):
 
 
 # The launcher's SHADER_TRANSLATOR_VERSION (launcher/src-tauri/src/setup.rs): keep the two equal.
-SHADER_TRANSLATOR_VERSION = 3
+SHADER_TRANSLATOR_VERSION = 4
 
 
 def tool_stamp(variant, patch_stamp=None, sites_stamp=None):

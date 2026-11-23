@@ -141,6 +141,7 @@ class Env:
         self.starts = []
         self.jt = {}                  # address of a `br` -> sorted list of target addresses (jumptables.py)
         self.tailbr = set()           # addresses of unresolved `br xN` that are indirect tail calls (jumptables.py)
+        self.nonabi = frozenset()     # entries reached by a branch inside one guest function, not by an ABI call (opt.temps_local)
         self.pads = []                # sorted landing pad addresses
         self.catchers = set()         # entries of functions entered through nx_catch_call
         self.eh_starts = set()        # entries of functions that have an LSDA
@@ -418,7 +419,7 @@ def lift_function(env, entry):
         if info.get('flag_entry') or info.get('flag_after_call'):
             env.opt_flag_notes.append((entry, bool(info.get('flag_entry')), bool(info.get('flag_after_call'))))
         if 'tregs' in env.opt and not info.get('skipped'):
-            text, _ = opt.temps_local(text)
+            text, _ = opt.temps_local(text, env.nonabi)
     if two:
         text += '\n%svoid f_%x(Ctx *__restrict NX_NOESC c) { %s }' % (sec, entry, 'nx_catch_call(c, u_%x);' % entry if entry in env.catchers else 'u_%x(c, 0);' % entry)
     return text, len(lines), bad, [(lp, entry) for lp in pads]
@@ -440,6 +441,7 @@ def make_env(spec):
     env.starts = sorted(env.ends)
     env.jt = {int(k): v for k, v in spec['jt'].items()}
     env.tailbr = set(spec.get('tailbr', ()))
+    env.nonabi = frozenset(spec.get('nonabi', ()))
     env.pads = spec['pads']
     env.catchers = set(spec['catchers'])
     env.full = True
@@ -600,8 +602,15 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
                     env.ends[a] = end
             pending = sorted(new | set(again))
         all_funcs.sort()
+        # Entries a plain branch reaches, with the caller's temporaries live (opt.temps_local): what discovery found (no listed
+        # function starts there) and the functions the hook sites make of their addresses. An entry hook on a real function entry
+        # is in the set too, and so is a real function that only tail calls reach: a branch there then syncs x9..x17 as well,
+        # which costs a few stores and is always right. PLT stubs are left out: a branch to one is a tail call of an import, and
+        # they are most of what discovery finds (5,509 branches to one stub in Fortune's Weave's main).
+        nonabi = sorted(a for a in found | set(env.sites['midhook']) | set(env.sites['entryhook']) if env.plt_symbol(a) is None)
         # workers must know the new entries too (their extents are by the next start): rebuild the spec
-        if len(all_funcs) != len(starts):
+        if len(all_funcs) != len(starts) or nonabi:
+            spec['nonabi'] = nonabi
             spec['ends'] = {a: env.ends.get(a, env.extent(a)) for a in all_funcs}
             if pool:
                 pool.close()

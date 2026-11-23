@@ -52,6 +52,18 @@ if(EXISTS "${NXRT_RECOMP_INCLUDE}")
     target_include_directories(nxrt PUBLIC "${NXRT_RECOMP_INCLUDE}")
 endif()
 target_link_libraries(nxrt PUBLIC psapi)
+# The known ini keys for config_log_unread (src/diag/config.cpp): regenerated when a source file or CONFIG.md changes.
+set(NXRT_CONFIG_KEYS "${CMAKE_CURRENT_BINARY_DIR}/generated/config_keys.inc")
+file(GLOB_RECURSE NXRT_CONFIG_KEY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
+     "${CMAKE_CURRENT_SOURCE_DIR}/games/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/../game-build/fefw/src/*.cpp")
+add_custom_command(OUTPUT "${NXRT_CONFIG_KEYS}"
+    COMMAND "${CMAKE_COMMAND}" "-DROOTS=${CMAKE_CURRENT_SOURCE_DIR}/src\;${CMAKE_CURRENT_SOURCE_DIR}/games\;${CMAKE_CURRENT_SOURCE_DIR}/../game-build/fefw/src"
+            "-DDOC=${CMAKE_CURRENT_SOURCE_DIR}/docs/CONFIG.md" "-DOUT=${NXRT_CONFIG_KEYS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config_keys.cmake"
+    DEPENDS ${NXRT_CONFIG_KEY_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/docs/CONFIG.md" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config_keys.cmake"
+    COMMENT "Listing the known ini keys" VERBATIM)
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/diag/config.cpp" PROPERTIES OBJECT_DEPENDS "${NXRT_CONFIG_KEYS}")
+target_sources(nxrt PRIVATE "${NXRT_CONFIG_KEYS}")
+target_include_directories(nxrt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 include(cmake/media_deps.cmake)   # libvpx for the Switch 2 video decoders (optional)
 
 if(NXRT_BUILD_TESTS)
