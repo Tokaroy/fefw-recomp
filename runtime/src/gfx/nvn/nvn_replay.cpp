@@ -6026,9 +6026,11 @@ void run_list(const CmdList& list, int depth) {
 // as nvn.census lines when a load starts and 20 s after it ends (the scene has streamed in by then). Once per load: a walk of the live textures
 // and pools on the render thread, a few milliseconds. 2: also hashes the stored bytes of every CPU-filled texture to count duplicate copies
 // (the same asset loaded twice), about a second per census; 0: off.
+// [diag] ram_census (default off): also sample the process/game-heap working set via QueryWorkingSetEx (can stall ~1–2 s under Wine/Proton).
 enum class CensusEvent { Tick, LoadStart, LoadEnd };
 void load_census(CensusEvent ev, uint64_t present) {
     static const bool on = nxrt::config_get_int("diag", "load_census", 1) != 0;
+    static const bool ram_on = nxrt::config_get_bool("diag", "ram_census", false);
     static uint64_t due = 0;
     static int loads = 0;
     if (!on) return;
@@ -6045,7 +6047,7 @@ void load_census(CensusEvent ev, uint64_t present) {
     log_pool_census(why);
     log_import_census(why);
     log_texture_census(why);
-    log_ram_census(why);
+    if (ram_on) log_ram_census(why);
     NXLOG_I("nvn.census", "%s: video memory: images %lld / %.0f MiB, buffers %lld / %.0f MiB (device-local), driver allocations %lld / %.0f MiB",
             why, static_cast<long long>(nxrt::vk_gauge_images().get()), nxrt::vk_gauge_image_bytes().get() / 1048576.0, static_cast<long long>(nxrt::vk_gauge_buffers().get()),
             nxrt::vk_gauge_buffer_bytes().get() / 1048576.0, static_cast<long long>(nxrt::vk_gauge_memory_allocs().get()), nxrt::vk_gauge_memory_bytes().get() / 1048576.0);
