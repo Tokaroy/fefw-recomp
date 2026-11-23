@@ -141,14 +141,17 @@ void log_system_memory() {
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof ms;
     if (!GlobalMemoryStatusEx(&ms)) return;
-    char video[192] = "";
+    char video[288] = "";
     if (auto fn = g_video.load()) {
         MemGuardVideo v;
         fn(&v);
         if (v.heap)
-            std::snprintf(video, sizeof video, "; video memory: %.2f GB in use of a %.2f GB budget (%s, heap %.1f GB), driver allocations %.2f GB",
+            std::snprintf(video, sizeof video,
+                          "; video memory: %.2f GB in use of a %.2f GB budget (%s, heap %.1f GB), driver allocations %.2f GB; allocator on that heap: "
+                          "%.2f GB taken, %.2f GB handed out",
                           static_cast<double>(v.usage) / kBytesPerGb, static_cast<double>(v.budget) / kBytesPerGb, v.exact ? "driver figures" : "estimates",
-                          static_cast<double>(v.heap) / kBytesPerGb, static_cast<double>(v.driver_bytes) / kBytesPerGb);
+                          static_cast<double>(v.heap) / kBytesPerGb, static_cast<double>(v.driver_bytes) / kBytesPerGb,
+                          static_cast<double>(v.alloc_taken) / kBytesPerGb, static_cast<double>(v.alloc_used) / kBytesPerGb);
     }
     NXLOG_I("memory", "system: RAM %.1f GB free of %.1f GB, commit %.1f GB free of %.1f GB%s", static_cast<double>(ms.ullAvailPhys) / kBytesPerGb,
             static_cast<double>(ms.ullTotalPhys) / kBytesPerGb, static_cast<double>(ms.ullAvailPageFile) / kBytesPerGb,

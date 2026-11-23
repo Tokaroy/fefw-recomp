@@ -4,6 +4,7 @@
 // the unhandled filter like any other exception. The layout of the report follows crash_build_report() in diag.h.
 // Idea from smo-recomp runtime/core/hostrt.c crash_filter; written here from scratch.
 #include "nxrt/diag.h"
+#include "nxrt/runtime.h"
 
 #include <windows.h>
 
@@ -185,6 +186,7 @@ std::string build_report(const EXCEPTION_RECORD* rec, const CONTEXT* cx, DWORD t
                 static_cast<unsigned long>(tid));
     }
     appendf(out, "  in %s\n", symbols_describe(rip).c_str());
+    if (*app_build()) appendf(out, "  build: %s\n", app_build());
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
         const ULONG_PTR kind = rec->ExceptionInformation[0];
         const char* what = kind == 0 ? "reading" : kind == 1 ? "writing" : kind == 8 ? "executing" : "accessing";

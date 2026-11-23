@@ -23,6 +23,7 @@
 #include <sstream>
 
 #include "fs_romfs.h"
+#include "nxrt/boot_timeline.h"
 #include "nxrt/nup.h"
 #include "fs_volume.h"
 #include "nxrt/config.h"
@@ -464,6 +465,7 @@ std::shared_ptr<fs::RomfsImage> rom_image() {
         st().rom_failed = true;
         return nullptr;
     }
+    boot_mark("RomFS ready (with its mods)");
     const fs::RomfsImage::Stats s = img->stats();
     NXLOG_I("fs", "RomFS image from %s: %u files, %u directories, %llu bytes of data, image size %llu", dir.c_str(), s.files, s.dirs,
             static_cast<unsigned long long>(s.data_bytes), static_cast<unsigned long long>(img->size()));

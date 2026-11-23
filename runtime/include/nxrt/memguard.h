@@ -24,7 +24,8 @@ void memguard_set_discount(uint64_t (*gpu_bytes)());
 // Video memory of the device the game renders on, for the 30 s log line (the Vulkan device sets it; null: not logged). usage and budget
 // describe the largest device-local heap as the driver reports them (VK_EXT_memory_budget; estimates without it), heap is that heap's
 // size, driver_bytes every vkAllocateMemory of this process (host imports included).
-struct MemGuardVideo { uint64_t usage = 0, budget = 0, heap = 0, driver_bytes = 0; bool exact = false; };
+// alloc_taken / alloc_used: what the video memory allocator took from the driver on that heap and what of it is handed out.
+struct MemGuardVideo { uint64_t usage = 0, budget = 0, heap = 0, driver_bytes = 0, alloc_taken = 0, alloc_used = 0; bool exact = false; };
 void memguard_set_video(void (*fn)(MemGuardVideo*));
 // Fills out with the current video-memory figures and returns true when a device has registered them. Safe from
 // the watchdog thread: the device's snapshot callback bounds its wait, so a stalled driver query cannot block a

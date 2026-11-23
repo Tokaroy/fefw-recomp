@@ -289,6 +289,11 @@ std::vector<Ref<Texture>> texture_registry_all();
 uint32_t texture_clock_ms();
 // Per-load census lines ([diag] load_census; nvn_objects.cpp, nvn_gpu_pool.cpp, nvn_gpu_texture.cpp): what is alive by kind and size.
 void log_pool_census(const char* why);
+// Where the RAM is: the process, the game's heap (sampled), the part of it under the game's GPU pools and texture storage, and our own host
+// buffers (texture preparation, the staging ring), plus outside-heap working set on a background thread.
+void log_ram_census(const char* why);   // nvn_gpu_texture.cpp
+// Every live non-virtual pool with storage, under the registry lock: kind 0 gpu only (CPU no access), 1 cpu cached, 2 cpu uncached, 3 shader code.
+void for_each_pool_range(void (*fn)(uint64_t lo, uint64_t size, int kind, void* user), void* user);
 
 // NVNtextureHandle = (sampler id << 20) | texture id
 constexpr uint64_t make_texture_handle(uint32_t tex_id, uint32_t sampler_id) { return (static_cast<uint64_t>(sampler_id) << 20) | (tex_id & 0xfffffu); }

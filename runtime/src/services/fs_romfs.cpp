@@ -308,6 +308,7 @@ struct FileRec {
     uint64_t src = 0;            // offset of the data in the host file
     std::string path;            // path inside the image ("/a/b.bin"), for the first-read note
     std::shared_ptr<const std::vector<uint8_t>> mem;   // set: the content is here (an edited file), the host file is not read
+    int16_t overlay = -1;        // the RomFS mod the file comes from (index into Layout::overlay_names), -1: the game's
 };
 
 // The whole of a file of the tree (a host file, or its range of a package). False when it cannot be read.
@@ -342,6 +343,7 @@ struct Layout {
     std::vector<Segment> segs;          // contiguous, covering [0, size)
     std::vector<FileRec> files;         // in data order
     std::map<std::string, uint32_t> by_path;
+    std::vector<std::string> overlay_names;   // per applied RomFS mod: its name (the folder holding its romfs folder), for the reports
 };
 
 // Lays out the host folder: entries sorted by full path in each table, file data in that order, 16-byte aligned.
@@ -368,6 +370,7 @@ bool make_layout(const std::string& host_dir, const std::vector<std::string>& ov
         return false;
     }
     uint32_t taken = 0;
+    std::vector<std::wstring> overlay_hosts;   // the applied overlays' folders, parallel to L.overlay_names
     for (const std::string& o : overlays) {
         std::wstring wo;
         std::error_code oec;
@@ -394,6 +397,17 @@ bool make_layout(const std::string& host_dir, const std::vector<std::string>& ov
         root = std::move(merged);
         taken += n;
         NXLOG_I("fs", "romfs overlay '%s': %u files", o.c_str(), n);
+        {   // the mod's name: "mods/<name>/romfs" gives <name>, any other folder its own name
+            std::filesystem::path q = oabs;
+            if (!q.has_filename()) q = q.parent_path();
+            std::string leaf;
+            const bool is_romfs = to_utf8(q.filename().wstring(), leaf) && same_name_nocase(leaf, "romfs");
+            const std::filesystem::path named = is_romfs && q.has_parent_path() ? q.parent_path().filename() : q.filename();
+            std::string name;
+            if (!to_utf8(named.wstring(), name) || name.empty()) name = o;
+            L.overlay_names.push_back(name);
+            overlay_hosts.push_back(ov.host);
+        }
     }
     if (!overlays.empty()) sort_tree(root);
 
@@ -536,6 +550,14 @@ bool make_layout(const std::string& host_dir, const std::vector<std::string>& ov
         if (img > cursor) L.segs.push_back({cursor, img - cursor, Segment::Kind::kZero, 0, 0});
         const uint32_t idx = static_cast<uint32_t>(L.files.size());
         L.files.push_back({f->host, f->size, img, f->src, f->path, f->mem});
+        // a file from a RomFS mod: its host path lies in that mod's folder (the last mod laid down wins, as in merge)
+        for (size_t o = overlay_hosts.size(); o-- > 0;) {
+            const std::wstring& oh = overlay_hosts[o];
+            if (f->host.size() > oh.size() && f->host.compare(0, oh.size(), oh) == 0 && (f->host[oh.size()] == L'\\' || f->host[oh.size()] == L'/')) {
+                L.files.back().overlay = static_cast<int16_t>(o);
+                break;
+            }
+        }
         if (f->size > 0) L.segs.push_back({img, f->size, f->mem ? Segment::Kind::kMem : Segment::Kind::kFile, f->mem ? 0 : f->src, idx});
         L.by_path[f->path] = idx;
         cursor = img + f->size;
@@ -584,9 +606,15 @@ struct RomfsImage::Impl {
             if (idx >= read_seen.size() || read_seen[idx]) return;
             read_seen[idx] = 1;
         }
-        const std::string& path = l.files[idx].path;
-        NXLOG_D("fs", "romfs: first read of %s", path.c_str());
-        diag_note_file("rom", path.c_str());
+        const FileRec& fr = l.files[idx];
+        NXLOG_D("fs", "romfs: first read of %s", fr.path.c_str());
+        // the crash and device-lost reports list these: a file from a mod, or changed by a code mod, says so
+        if (fr.overlay >= 0 && static_cast<size_t>(fr.overlay) < l.overlay_names.size())
+            diag_note_file("rom", (fr.path + "  [mod: " + l.overlay_names[static_cast<size_t>(fr.overlay)] + (fr.mem ? ", edited by a code mod]" : "]")).c_str());
+        else if (fr.mem)
+            diag_note_file("rom", (fr.path + "  [edited by a code mod]").c_str());
+        else
+            diag_note_file("rom", fr.path.c_str());
     }
     mutable std::vector<OpenSlot> cache;    // at most kOpenFiles entries
     mutable uint64_t tick = 0;
