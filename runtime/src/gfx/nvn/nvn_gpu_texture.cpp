@@ -2252,11 +2252,17 @@ void tex_residency_tick(Frame& f) {
         g_gauge_demotions.add(1);
     }
     static int logged = 0;
-    if (n && (logged++ < 40 || logged % 50 == 0))
-        NXLOG_I(kTag, "residency: video memory at %d%% of the %.2f GiB budget%s: %d textures unused for %u s and more demoted (%.0f MB given back; %zu demoted "
-                      "in all, %d of %zu candidates)%s", pct, static_cast<double>(budget) / (1024.0 * 1024.0 * 1024.0),
-                (sys_pressure && live_pct < cfg.percent && os_pct < os_trigger) ? " [system RAM pressure]" : "", n, idle_ms / 1000,
-                static_cast<double>(freed) / (1024.0 * 1024.0), g_demoted.size(), n, cand.size(), urgent ? " [urgent]" : "");
+    if (n && (logged++ < 40 || logged % 50 == 0)) {
+        const double budget_gib = static_cast<double>(budget) / (1024.0 * 1024.0 * 1024.0);
+        const double freed_mb = static_cast<double>(freed) / (1024.0 * 1024.0);
+        if (sys_pressure && live_pct < cfg.percent && os_pct < os_trigger)
+            NXLOG_I(kTag, "residency: system RAM at %d%% (video memory at %d%% of the %.2f GiB budget): %d textures unused for %u s and more demoted (%.0f MB given back; %zu demoted "
+                          "in all, %d of %zu candidates)%s", sys_pct, std::max(live_pct, os_pct), budget_gib, n, idle_ms / 1000, freed_mb, g_demoted.size(), n, cand.size(),
+                    urgent ? " [urgent]" : "");
+        else
+            NXLOG_I(kTag, "residency: video memory at %d%% of the %.2f GiB budget: %d textures unused for %u s and more demoted (%.0f MB given back; %zu demoted "
+                          "in all, %d of %zu candidates)%s", pct, budget_gib, n, idle_ms / 1000, freed_mb, g_demoted.size(), n, cand.size(), urgent ? " [urgent]" : "");
+    }
 }
 
 // Once per present: the demoted textures a draw used again (everything once the marks are incomplete) are made whole, the most recently
