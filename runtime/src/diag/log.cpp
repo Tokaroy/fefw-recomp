@@ -48,12 +48,15 @@ thread_local char t_name[64] = {};
 // log_flush and log_shutdown write everything queued and the line itself on the calling thread, in order, so a crash report is complete.
 // Warnings are queued too but the writer flushes at once. g_fmu orders the file: the writer and the synchronous paths take it, then take
 // the queue (g_qmu), so lines stay in the order they were logged. Read once at log start.
+constexpr size_t kMaxQueueBytes = 4u << 20;   // cap async queue at 4 MiB; overflow drains synchronously
 std::recursive_mutex g_fmu;                // the file writes (recursive: a crash inside fwrite may log again on the same thread)
 std::mutex g_qmu;
 std::condition_variable g_qcv;
 std::vector<std::string> g_queue;          // formatted lines, newline included
+size_t g_queue_bytes = 0;                  // total bytes currently held in g_queue
 bool g_queue_flush = false;                // a queued warning: the writer flushes after this batch
-bool g_writer_started = false;
+bool g_writer_stop = false;                // writer_loop exits once g_queue is drained
+std::thread g_writer;                      // joined on log_shutdown() and at process teardown
 int g_async = -1;                          // -1: not read yet
 
 // [log] repeat_limit (default 30; env NXRT_LOG_REPEAT_LIMIT; 0 = off): at most this many Info / Debug / Trace lines from one call site
@@ -81,6 +84,7 @@ void drain_sync(const std::string* extra, bool flush) {
     {
         std::lock_guard<std::mutex> q(g_qmu);
         batch.swap(g_queue);
+        g_queue_bytes = 0;
         g_queue_flush = false;
     }
     if (extra) batch.push_back(*extra);
@@ -92,22 +96,50 @@ void writer_loop() {
     for (;;) {
         {
             std::unique_lock<std::mutex> q(g_qmu);
-            g_qcv.wait(q, [] { return !g_queue.empty(); });
+            g_qcv.wait(q, [] { return !g_queue.empty() || g_writer_stop; });
+            if (g_queue.empty() && g_writer_stop) break;
         }
         std::lock_guard<std::recursive_mutex> f(g_fmu);
         bool flush;
+        bool stop;
         {
             std::lock_guard<std::mutex> q(g_qmu);
             batch.swap(g_queue);
+            g_queue_bytes = 0;
             flush = g_queue_flush;
             g_queue_flush = false;
+            stop = g_writer_stop;
         }
         // a batch is written and flushed whole: the file stays at most one batch behind, and a warning reaches the disk at once
-        write_lines_locked(batch, true);
+        if (!batch.empty()) {
+            write_lines_locked(batch, true);
+            batch.clear();
+        }
         (void)flush;
-        batch.clear();
+        if (stop) break;
     }
 }
+
+// Stops and joins the async writer before closing the file or destroying the synchronization objects. Caller holds g_mu (and not g_fmu).
+void stop_writer_locked() {
+    if (!g_writer.joinable()) return;
+    {
+        std::lock_guard<std::mutex> q(g_qmu);
+        g_writer_stop = true;
+    }
+    g_qcv.notify_one();
+    if (g_writer.get_id() != std::this_thread::get_id()) g_writer.join();
+    else g_writer.detach();
+    g_writer_stop = false;
+}
+
+// Declared after g_fmu/g_qmu/g_qcv/g_queue/g_writer so CRT teardown joins the worker before destroying them.
+struct WriterGuard {
+    ~WriterGuard() {
+        std::lock_guard<std::recursive_mutex> g(g_mu);
+        stop_writer_locked();
+    }
+} g_writer_guard;
 
 bool async_on() { return g_async > 0; }   // g_mu held
 
@@ -211,6 +243,7 @@ void log_init(const LogOptions& opt) {
 
 void log_shutdown() {
     std::lock_guard<std::recursive_mutex> g(g_mu);
+    stop_writer_locked();
     drain_sync(nullptr, true);
     std::lock_guard<std::recursive_mutex> f(g_fmu);
     if (g_file) {
@@ -371,16 +404,26 @@ void logv(LogLevel l, const char* tag, const char* fmt, va_list ap) {
         out += line;
         out += '\n';
         if (async && li > static_cast<int>(LogLevel::Error)) {
+            bool overflow = false;
             {
                 std::lock_guard<std::mutex> q(g_qmu);
-                g_queue.push_back(std::move(out));
-                if (li <= static_cast<int>(LogLevel::Warn)) g_queue_flush = true;
+                if (g_queue_bytes + out.size() <= kMaxQueueBytes) {
+                    g_queue_bytes += out.size();
+                    g_queue.push_back(std::move(out));
+                    if (li <= static_cast<int>(LogLevel::Warn)) g_queue_flush = true;
+                } else {
+                    overflow = true;
+                }
             }
-            if (!g_writer_started) {
-                g_writer_started = true;
-                std::thread(writer_loop).detach();
+            if (overflow) {
+                drain_sync(&out, true);
+            } else {
+                if (!g_writer.joinable()) {
+                    g_writer_stop = false;
+                    g_writer = std::thread(writer_loop);
+                }
+                g_qcv.notify_one();
             }
-            g_qcv.notify_one();
         } else {
             // synchronous: errors (a crash report must be on disk), or [log] async = false (the old path: flush on warnings and every 100 lines)
             const bool flush = li <= static_cast<int>(LogLevel::Warn) || ++g_since_flush >= kFlushEvery;
