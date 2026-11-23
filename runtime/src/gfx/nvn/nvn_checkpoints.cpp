@@ -57,7 +57,7 @@ void copy_hash(char (&dst)[20], const char* src) {
 const char* stage_name(VkPipelineStageFlagBits s) {
     switch (s) {
         case VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT: return "top of pipe (started)";
-        case VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT: return "bottom of pipe (finished)";
+        case VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT: return "bottom of pipe (work before marker finished)";
         default: return "stage";
     }
 }
@@ -139,10 +139,10 @@ std::string report() {
         if (d[i].stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) started = std::max(started, seq);
         if (d[i].stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT) finished = std::max(finished, seq);
     }
-    // the work between the last finished marker and the last started one was on the GPU when it failed
-    if (started > finished) {
-        const uint64_t first = std::max(finished + 1, started > 24 ? started - 24 : 1);
-        out += "    in flight (started, not finished):\n";
+    // the work from the bottom marker up to the top one had been reached by the GPU and is not known finished (marker N is recorded before op N)
+    if (started > 0 && started >= finished) {
+        const uint64_t first = std::max(finished ? finished : 1, started > 24 ? started - 24 : 1);
+        out += "    in flight (reached, not known finished), oldest first:\n";
         for (uint64_t s = first; s <= started; ++s) out += "      " + describe(s) + "\n";
     }
     return out;
