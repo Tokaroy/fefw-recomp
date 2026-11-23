@@ -311,6 +311,7 @@ void play_install(uint64_t base, play::GameHost*, const play::Settings&) {
     s.base = base;
     res_install(base);
     crowd_install(base);
+    filecache_install(base);
     detail_install();   // before the game's file system is set up: the graphics settings files are edited as the RomFS is laid out
     twprobe_start(base);
     s.fps60 = config_get_bool("fefw", "fps60", false);

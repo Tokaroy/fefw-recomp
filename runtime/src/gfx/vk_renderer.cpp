@@ -44,6 +44,26 @@ constexpr uint32_t kStallRecreate = 3;
 // cannot test (#100 windowed only on a Radeon 8060S, #92 / #65 on the Steam Deck) then say which GPU, driver, window mode and size.
 std::mutex g_lost_ctx_mu;
 std::string g_lost_ctx;
+// When a frame's fence was last seen signalled (steady clock, ns; 0: none yet). The device-lost report says how long before the loss that
+// was: Windows resets a GPU that does not finish its work within 2 s (TDR).
+std::atomic<int64_t> g_last_frame_done_ns{0};
+int64_t steady_ns() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+
+std::string gpu_timeout_hint() {
+    const int64_t done = g_last_frame_done_ns.load(std::memory_order_relaxed);
+    if (!done) return "";
+    const double s = static_cast<double>(steady_ns() - done) * 1e-9;
+    char b[640];
+    if (s >= 1.5)
+        std::snprintf(b, sizeof b,
+                      "  The GPU last finished a frame %.1f s before this. Windows resets a GPU that has not finished its work within 2 s (TDR): the GPU\n"
+                      "  was most likely still busy rather than faulted. On an older or slower GPU, a lower render resolution and [gfx] astc_gpu = off in\n"
+                      "  fefw.ini take work off it.\n",
+                      s);
+    else
+        std::snprintf(b, sizeof b, "  The GPU last finished a frame %.1f s before this.\n", s);
+    return b;
+}
 
 const char* window_mode_name() {
     switch (platform::fullscreen_mode()) {
@@ -65,6 +85,7 @@ const char* window_mode_name() {
         std::lock_guard<std::mutex> lk(g_lost_ctx_mu);
         ctx = g_lost_ctx;
     }
+    ctx += gpu_timeout_hint();
     const std::string text = diag_device_lost_dump(where, static_cast<int>(r), frames, ctx);
     for (size_t pos = 0; pos < text.size();) {
         size_t eol = text.find('\n', pos);
@@ -796,6 +817,7 @@ bool Renderer::begin_frame(FrameInfo* out) {
         }
         if (fr == VK_ERROR_DEVICE_LOST) device_lost("vkWaitForFences (frame slot)", fr, s.st.frames);
         if (fr != VK_SUCCESS) NXLOG_E(kTag, "vkWaitForFences failed (%d)", static_cast<int>(fr));
+        else g_last_frame_done_ns.store(steady_ns(), std::memory_order_relaxed);
     }
     s.read_timestamps(slot);
 
