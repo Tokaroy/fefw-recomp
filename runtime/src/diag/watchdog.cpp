@@ -195,9 +195,10 @@ std::string memory_text(const char* when) {
     out += (when && when[0]) ? when : "freeze";
     out += ":\n";
     if (got) {
+        const uint64_t priv = memguard_commit_bytes(pmc.PrivateUsage, pmc.PagefileUsage);
         std::snprintf(b, sizeof b,
                       "  private commit %.2f GB, working set %.2f GB, peak working set %.2f GB, pagefile %.2f GB\n",
-                      static_cast<double>(pmc.PrivateUsage) / gb, static_cast<double>(pmc.WorkingSetSize) / gb,
+                      static_cast<double>(priv) / gb, static_cast<double>(pmc.WorkingSetSize) / gb,
                       static_cast<double>(pmc.PeakWorkingSetSize) / gb, static_cast<double>(pmc.PagefileUsage) / gb);
         out += b;
     } else {
