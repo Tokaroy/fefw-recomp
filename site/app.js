@@ -110,6 +110,9 @@ function renderInlineMarkdown(raw) {
       s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
       s = s.replace(/(^|[\s(])\*([^*]+)\*(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>");
 
+      // Line breaks
+      s = s.replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+
       // Issue / PR references like (#123) or #123
       s = s.replace(/(^|[\s(])#(\d+)\b/g, (_, prefix, num) => {
         return `${prefix}<a href="${REPO_URL}/issues/${num}" target="_blank" rel="noopener noreferrer">#${num}</a>`;
@@ -118,6 +121,58 @@ function renderInlineMarkdown(raw) {
       return s;
     })
     .join("");
+}
+
+function splitTableRow(line) {
+  let trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+
+  if (trimmed.startsWith("|")) {
+    trimmed = trimmed.slice(1);
+  }
+  if (trimmed.endsWith("|")) {
+    let backslashes = 0;
+    for (let j = trimmed.length - 2; j >= 0 && trimmed[j] === "\\"; j--) {
+      backslashes++;
+    }
+    if (backslashes % 2 === 0) {
+      trimmed = trimmed.slice(0, -1);
+    }
+  }
+
+  const cells = [];
+  let current = "";
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === "\\" && trimmed[i + 1] === "|") {
+      current += "|";
+      i++;
+    } else if (ch === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTableDelimiter(line) {
+  const cells = splitTableRow(line);
+  if (!cells || !cells.length) return null;
+
+  const alignments = [];
+  for (const cell of cells) {
+    if (!/^:?-{1,}:?$/.test(cell)) return null;
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    if (left && right) alignments.push("center");
+    else if (right) alignments.push("right");
+    else if (left) alignments.push("left");
+    else alignments.push(null);
+  }
+  return alignments;
 }
 
 function renderMarkdown(md) {
@@ -144,7 +199,8 @@ function renderMarkdown(md) {
     listType = null;
   };
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (line.trim().startsWith("```")) {
       flushPara();
       closeList();
@@ -168,6 +224,64 @@ function renderMarkdown(md) {
       flushPara();
       closeList();
       continue;
+    }
+
+    // GFM Table (header row + delimiter row + optional body rows)
+    if (i + 1 < lines.length && trimmed.includes("|")) {
+      const headerCells = splitTableRow(line);
+      const alignments = parseTableDelimiter(lines[i + 1]);
+      if (headerCells && alignments && headerCells.length === alignments.length) {
+        flushPara();
+        closeList();
+
+        const bodyRows = [];
+        i += 2;
+        while (i < lines.length) {
+          const rowLine = lines[i];
+          const rowTrimmed = rowLine.trim();
+          if (
+            !rowTrimmed ||
+            !rowTrimmed.includes("|") ||
+            rowTrimmed.startsWith("```") ||
+            /^([-*_])\1{2,}$/.test(rowTrimmed) ||
+            /^#{1,6}\s+/.test(rowTrimmed) ||
+            /^>\s?/.test(rowTrimmed) ||
+            /^\s*[-*+]\s+/.test(rowLine) ||
+            /^\s*\d+\.\s+/.test(rowLine)
+          ) {
+            break;
+          }
+          const rowCells = splitTableRow(rowLine);
+          if (!rowCells) break;
+          bodyRows.push(rowCells);
+          i++;
+        }
+        i--;
+
+        const alignAttr = (idx) =>
+          alignments[idx] ? ` style="text-align:${alignments[idx]}"` : "";
+
+        const thead = `<thead><tr>${headerCells
+          .map((cell, idx) => `<th${alignAttr(idx)}>${renderInlineMarkdown(cell)}</th>`)
+          .join("")}</tr></thead>`;
+
+        const tbody = bodyRows.length
+          ? `<tbody>${bodyRows
+              .map(
+                (row) =>
+                  `<tr>${headerCells
+                    .map(
+                      (_, idx) =>
+                        `<td${alignAttr(idx)}>${renderInlineMarkdown(row[idx] ?? "")}</td>`
+                    )
+                    .join("")}</tr>`
+              )
+              .join("")}</tbody>`
+          : "";
+
+        out.push(`<div class="table-wrap"><table>${thead}${tbody}</table></div>`);
+        continue;
+      }
     }
 
     // Horizontal rule
