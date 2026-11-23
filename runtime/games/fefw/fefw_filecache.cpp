@@ -69,8 +69,10 @@ uint64_t rd64(uint64_t a) {
 void cache_thread(int period_s) {
     State& s = st();
     const double mib = 1048576.0;
-    // play mode starts before the game's modules are mapped: wait for main's code, then check this build's words
-    for (int i = 0; i < 20 * 60 && !mem::is_mapped(s.base + kUsedAdd, 4); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // play mode starts before the game's modules are mapped (and LoaderAccess commits the image before copying segments):
+    // wait until main's code words are actually populated, not just committed.
+    for (int i = 0; i < 20 * 60 && !(word_is(s.base + kUsedAdd, kUsedAddWord) && word_is(s.base + kBudgetStore, kBudgetStoreWord)); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     if (!word_is(s.base + kUsedAdd, kUsedAddWord) || !word_is(s.base + kBudgetStore, kBudgetStoreWord)) {
         uint32_t a = 0, b = 0;
         if (mem::is_mapped(s.base + kUsedAdd, 4)) std::memcpy(&a, reinterpret_cast<const void*>(s.base + kUsedAdd), 4);
@@ -80,11 +82,12 @@ void cache_thread(int period_s) {
         return;
     }
     s.ok.store(true);
-    // The entry holds the table's default (4000 MiB) until the set-up replaces it with the computed budget; after a minute with no change the
-    // default is taken as the budget
+    // The entry holds 0 (before data copy) or the table's default (4000 MiB) until the set-up replaces it with the computed budget;
+    // after a minute with no change the default is taken as the budget.
     const uint64_t initial = kTableDefault;
-    uint64_t budget = initial;
-    for (int i = 0; i < 20 * 60 && (budget = rd64(s.base + kFileBudget)) == initial; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    uint64_t budget = 0;
+    for (int i = 0; i < 20 * 60 && ((budget = rd64(s.base + kFileBudget)) == 0 || budget == initial); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     if (!budget) {
         NXLOG_W(kTag, "the file cache budget reads 0: nothing applied or logged");
         return;
