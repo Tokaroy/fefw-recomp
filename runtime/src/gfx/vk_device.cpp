@@ -15,6 +15,7 @@
 #include <mutex>
 #include <tuple>
 
+#include "nxrt/boot_timeline.h"
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
 #include "nxrt/gauge.h"
@@ -25,6 +26,7 @@
 #include "nxrt/platform.h"
 #include "vk_gauges.h"
 #include "vk_layer_filter.h"
+#include "video_alloc_stats.h"
 #include <unordered_map>
 #include "extras/framegen.h"
 #include "extras/framegen_ffx.h"
@@ -355,6 +357,8 @@ void video_for_guard(nxrt::MemGuardVideo* out) {
     out->heap = mp ? mp->memoryHeaps[g_video_heap].size : 0;
     out->driver_bytes = static_cast<uint64_t>(std::max<int64_t>(0, nxrt::vk_gauge_memory_bytes().get()));
     out->exact = g_budget_exact;
+    out->alloc_taken = b[g_video_heap].statistics.blockBytes;
+    out->alloc_used = b[g_video_heap].statistics.allocationBytes;
 }
 
 void register_vma_gauges(VmaAllocator a, VkPhysicalDeviceType type) {
@@ -633,6 +637,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     VkResult r = vkCreateInstance(&ici, nullptr, &instance_);
     if (r != VK_SUCCESS) return fail("vkCreateInstance failed (" + std::to_string(r) + ")");
     volkLoadInstance(instance_);
+    boot_mark("vulkan instance");
     features_.swapchain_colorspace = x_colorspace;
     if (debug_utils_) vkCreateDebugUtilsMessengerEXT(instance_, &dbg, nullptr, &messenger_);
 
@@ -782,6 +787,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     VkPhysicalDeviceMemoryPriorityFeaturesEXT ampri = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT apage = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT};
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT aaf = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+    VkPhysicalDeviceFaultFeaturesEXT afault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     std::vector<const char*> dev_exts;
     void* chain = nullptr;
     auto add_ext = [&](const char* name, void* feat_struct) {
@@ -795,6 +801,21 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     };
     const bool x_fsi = add_ext(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, &afsi);
     const bool x_af = add_ext(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &aaf);   // native float adds to buffers (spirv_native_float_add)
+    // after a device loss, what the driver knows about the fault (faulting address, the vendor's fault code) for the report.
+    // [gfx] device_fault = false: not enabled.
+    const bool x_fault = config_get_bool("gfx", "device_fault", true) && add_ext(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, &afault);
+    // [gfx] gpu_checkpoints (default off): NVIDIA's diagnostic checkpoints or AMD's buffer markers before every draw and dispatch;
+    // after a device loss the report names which marker the GPU last reached. Costs some GPU time: for diagnostic runs.
+    bool x_ckpt = false, x_amdmark = false;
+    if (config_get_bool("gfx", "gpu_checkpoints", false)) {
+        if (has_dext(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
+            dev_exts.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+            x_ckpt = true;
+        } else if (has_dext(VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) {
+            dev_exts.push_back(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+            x_amdmark = true;
+        }
+    }
     const bool x_dcc = add_ext(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, &adcc);
     const bool x_dce = add_ext(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME, &adce);
     const bool x_cbc = add_ext(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, &acbc);
@@ -851,6 +872,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     a13.dynamicRendering = VK_TRUE;
     a13.synchronization2 = VK_TRUE;
     a13.robustImageAccess = VK_FALSE;
+    afault.deviceFaultVendorBinary = VK_FALSE;   // only the fault descriptions, no vendor crash dump
     avail.features.robustBufferAccess = VK_FALSE;
     VkPhysicalDeviceFeatures2& en = avail;
     const VkPhysicalDeviceFeatures& af = avail.features;
@@ -898,6 +920,9 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     features_.transform_feedback = x_tfb && atfb.transformFeedback;
     features_.index_type_uint8 = x_u8 && au8.indexTypeUint8;
     features_.buffer_float32_atomic_add = x_af && aaf.shaderBufferFloat32AtomicAdd;
+    features_.device_fault = x_fault && afault.deviceFault;
+    features_.gpu_checkpoints = x_ckpt;
+    features_.buffer_marker_amd = x_amdmark;
     if (features_.transform_feedback) {   // transformFeedbackQueries is a property: the primitive counters of indirect draws under feedback need it
         VkPhysicalDeviceTransformFeedbackPropertiesEXT tfp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 tfpp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &tfp};
@@ -920,11 +945,11 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     features_.ubo_robustness = (x_prb && aprb.pipelineRobustness) ? (rba2 ? 2 : 1) : 0;   // robustBufferAccess itself is a required feature
     NXLOG_I(kTag, "texture compression on this GPU: BC %s, ASTC-LDR %s, ETC2 %s", features_.bc ? "yes" : "no",
             features_.astc_ldr ? "yes" : "no", features_.etc2 ? "yes" : "no");
-    NXLOG_I(kTag, "features: geometry %d float64 %d int64 %d dualSrc %d logicOp %d multiViewport %d drawParams %d descIndexing %d interlock %d depthClipControl %d customBorder %d hostMemImport %d pushDesc %d uboRobustness %d",
+    NXLOG_I(kTag, "features: geometry %d float64 %d int64 %d dualSrc %d logicOp %d multiViewport %d drawParams %d descIndexing %d interlock %d depthClipControl %d customBorder %d hostMemImport %d pushDesc %d uboRobustness %d deviceFault %d gpuCheckpoints %d amdMarkers %d",
             features_.geometry_shader, features_.shader_float64, features_.shader_int64, features_.dual_src_blend, features_.logic_op,
             features_.multi_viewport, features_.shader_draw_parameters, features_.descriptor_indexing, features_.fragment_shader_interlock,
             features_.depth_clip_control, features_.custom_border_color, features_.external_memory_host, features_.push_descriptor,
-            features_.ubo_robustness);
+            features_.ubo_robustness, features_.device_fault, features_.gpu_checkpoints, features_.buffer_marker_amd);
     {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT xh = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
         VkPhysicalDeviceVulkan11Properties p11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, features_.external_memory_host ? &xh : nullptr};
@@ -1087,6 +1112,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     VkFenceCreateInfo fci = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (vkCreateFence(device_, &fci, nullptr, &impl_->once_fence) == VK_SUCCESS) vk_gauge_fences().add(1);
 
+    boot_mark("vulkan device");
     NXLOG_I(kTag, "device ready: %s (vendor 0x%04x, device 0x%04x, Vulkan %u.%u.%u, driver %s [0x%08x]), queue family %u, validation %s, %s",
             props_.deviceName, props_.vendorID, props_.deviceID, VK_API_VERSION_MAJOR(props_.apiVersion), VK_API_VERSION_MINOR(props_.apiVersion),
             VK_API_VERSION_PATCH(props_.apiVersion), driver_text(props_).c_str(), props_.driverVersion, queue_family_, validation_ ? "on" : "off",
@@ -1128,6 +1154,42 @@ ValidationStats Device::validation_stats() const {
     std::lock_guard<std::mutex> lk(impl_->first_error_mu);
     s.first_error = impl_->first_error;
     return s;
+}
+
+void Device::alloc_stats(VideoAllocStats* out) const {
+    *out = VideoAllocStats{};
+    if (!vma_) return;
+    VmaTotalStatistics t{};
+    vmaCalculateStatistics(vma_, &t);
+    const uint32_t video = device_local_heap(vma_);
+    const VkPhysicalDeviceMemoryProperties* mp = nullptr;
+    vmaGetMemoryProperties(vma_, &mp);
+    for (uint32_t h = 0; mp && h < mp->memoryHeapCount; ++h) {
+        const VmaDetailedStatistics& d = t.memoryHeap[h];
+        VideoAllocGroup& g = h == video ? out->video : out->other;
+        g.block_bytes += d.statistics.blockBytes;
+        g.alloc_bytes += d.statistics.allocationBytes;
+        g.blocks += d.statistics.blockCount;
+        g.allocs += d.statistics.allocationCount;
+        if (h == video) {
+            out->video_free_ranges = d.unusedRangeCount;
+            out->video_largest_free = d.unusedRangeCount ? d.unusedRangeSizeMax : 0;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(impl_->small_pools_mu);
+        for (const auto& [mt, pool] : impl_->small_pools) {
+            if (!pool) continue;
+            VmaStatistics ps{};
+            vmaGetPoolStatistics(vma_, pool, &ps);
+            out->small.block_bytes += ps.blockBytes;
+            out->small.alloc_bytes += ps.allocationBytes;
+            out->small.blocks += ps.blockCount;
+            out->small.allocs += ps.allocationCount;
+        }
+    }
+    out->driver_bytes = static_cast<uint64_t>(std::max<int64_t>(0, vk_gauge_memory_bytes().get()));
+    out->valid = true;
 }
 
 void Device::validation_reset() {

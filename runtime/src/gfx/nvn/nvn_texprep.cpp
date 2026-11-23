@@ -837,6 +837,12 @@ void reopen_staging() {
     if (g_state) S().quiesced.store(false);
 }
 
+uint64_t held_bytes() {
+    if (!g_state) return 0;
+    std::lock_guard<std::mutex> lk(S().mu);
+    return S().held_bytes;
+}
+
 Stats stats() {
     if (!g_state) return Stats();
     std::lock_guard<std::mutex> lk(S().mu);

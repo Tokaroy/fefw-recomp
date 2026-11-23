@@ -3,6 +3,7 @@
 // the timeline semaphore, deferred destruction, barriers and the public backend API (include/nxrt/nvn_backend.h).
 // Design follows smo-recomp (record on game threads, replay on one render thread) and SuperMarioWonderRecomp docs/nvn (a submit
 // is replayed under one lock and never overlaps the next); the code is new.
+#include "nxrt/boot_timeline.h"
 #include "nxrt/nvn_backend.h"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -641,7 +642,7 @@ UploadAlloc ring_alloc(VkDeviceSize size, uint64_t serial) {
             if (g->dev->create_buffer(bytes, usage, gfx::MemoryUse::Staging, &r.buf, "nvn staging ring") == VK_SUCCESS && r.buf.mapped) {
                 std::memset(r.buf.mapped, 0, static_cast<size_t>(bytes));   // the pages are touched now, not by the first big upload
                 r.size = bytes;
-                NXLOG_I(kTag, "staging ring: %llu MB of host memory for texture uploads ([nvn] staging_ring_mb)", static_cast<unsigned long long>(bytes >> 20));
+                NXLOG_I(kTag, "staging ring: %llu MB of host memory for texture uploads ([nvn] staging_ring_mb), mapped at %p", static_cast<unsigned long long>(bytes >> 20), r.buf.mapped);
             } else {
                 if (r.buf.buffer) g->dev->destroy_buffer(r.buf);
                 r.buf = gfx::Buffer{};
@@ -687,6 +688,10 @@ UploadAlloc ring_alloc(VkDeviceSize size, uint64_t serial) {
     }
     return {};
 }
+
+// Host memory the staging ring holds (0 before the first upload or without a ring): the RAM census (nvn_gpu_texture.cpp).
+uint64_t staging_ring_size() { return g ? static_cast<uint64_t>(g->ring.size) : 0; }
+uint64_t staging_fallback_bytes() { return g_ring_fallback_bytes.load(std::memory_order_relaxed); }
 
 UploadAlloc Frame::staging(VkDeviceSize size) {
     Slot& s = *static_cast<Slot*>(slot);
@@ -1740,6 +1745,7 @@ bool install_backend(const BackendDesc& desc) {
     if (desc.register_entry_points) {
         install();
         register_all_impls();
+        boot_mark("NVN back end");
         NXLOG_I("nvn", "NVN back end installed: %zu of %zu entry points implemented", implemented_count(), entry_count());
     }
     return true;

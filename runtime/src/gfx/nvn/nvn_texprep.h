@@ -84,6 +84,8 @@ struct Stats {
     uint64_t scheduled = 0, hits = 0, waited_hits = 0, stale = 0, stolen = 0, deferred = 0, none = 0, mismatches = 0, verified = 0, crashes = 0, failed = 0, skipped_budget = 0, evicted = 0;
 };
 Stats stats();
+// Bytes the finished and queued results hold now (the [nvn] tex_prep_mb budget counts these).
+uint64_t held_bytes();
 // Test aid: returns when no job is queued or running (at most 10 s).
 void wait_idle_for_test();
 

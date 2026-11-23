@@ -413,6 +413,8 @@ void tex_shutdown();              // frees samplers and dummy resources (device 
 // Per-load census lines ([diag] load_census, render thread): live texture images by kind, the Vulkan side of the game pools.
 void log_texture_census(const char* why);
 void log_import_census(const char* why);
+uint64_t staging_ring_size();        // host memory of the staging ring (nvn_gpu.cpp)
+uint64_t staging_fallback_bytes();   // uploads that did not fit the ring and got a staging buffer of their own, in all
 // Image formats chosen: bool descriptor for tests and logs
 struct TexStats { uint64_t images = 0, uploads = 0, upload_bytes = 0, transcodes = 0, failed = 0; };
 TexStats tex_stats();

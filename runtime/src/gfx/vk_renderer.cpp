@@ -11,12 +11,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
+#include "nxrt/boot_timeline.h"
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
 #include "nxrt/ftrace.h"
@@ -24,6 +27,7 @@
 #include "nxrt/log.h"
 #include "nxrt/lowlat.h"
 #include "nxrt/platform.h"
+#include "nxrt/runtime.h"
 #include "extras/framegen.h"
 #include "extras/framegen_ffx.h"
 #include "extras/hdr_capture.h"
@@ -65,6 +69,69 @@ std::string gpu_timeout_hint() {
     return b;
 }
 
+std::atomic<const Device*> g_lost_dev{nullptr};   // the renderer's device, for the fault query in the report
+std::atomic<std::string (*)()> g_lost_extra{nullptr};   // extra section appended to the device-lost report (nvn_checkpoints.cpp)
+
+const char* fault_type_name(VkDeviceFaultAddressTypeEXT t) {
+    switch (t) {
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "none";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT: return "invalid read";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT: return "invalid write";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT: return "invalid execute";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT: return "instruction pointer (unknown)";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT: return "instruction pointer (invalid)";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT: return "instruction pointer (fault)";
+        default: return "unknown";
+    }
+}
+
+// VK_EXT_device_fault: what the driver says about the fault. An invalid read or write with an address points at memory a shader or a copy
+// reached outside its buffers; none at all, with a vendor code, at a hang or timeout.
+std::string device_fault_report() {
+    const Device* d = g_lost_dev.load();
+    if (!d) return "";
+    if (!d->features().device_fault || !vkGetDeviceFaultInfoEXT) return "  Device fault info: not offered by this driver (VK_EXT_device_fault).\n";
+    VkDeviceFaultCountsEXT counts = {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+    VkResult r = vkGetDeviceFaultInfoEXT(d->device(), &counts, nullptr);
+    char b[512];
+    if (r != VK_SUCCESS) {
+        std::snprintf(b, sizeof b, "  Device fault info: the query failed (%d).\n", static_cast<int>(r));
+        return b;
+    }
+    std::vector<VkDeviceFaultAddressInfoEXT> addrs(std::min<uint32_t>(counts.addressInfoCount, 64));
+    std::vector<VkDeviceFaultVendorInfoEXT> vendor(std::min<uint32_t>(counts.vendorInfoCount, 64));
+    counts.addressInfoCount = static_cast<uint32_t>(addrs.size());
+    counts.vendorInfoCount = static_cast<uint32_t>(vendor.size());
+    counts.vendorBinarySize = 0;
+    VkDeviceFaultInfoEXT info = {VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+    info.pAddressInfos = addrs.empty() ? nullptr : addrs.data();
+    info.pVendorInfos = vendor.empty() ? nullptr : vendor.data();
+    r = vkGetDeviceFaultInfoEXT(d->device(), &counts, &info);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+        std::snprintf(b, sizeof b, "  Device fault info: the query failed (%d).\n", static_cast<int>(r));
+        return b;
+    }
+    std::string out;
+    std::snprintf(b, sizeof b, "  Device fault info: \"%.*s\", %u address record(s), %u vendor record(s)\n", static_cast<int>(sizeof info.description),
+                  info.description, counts.addressInfoCount, counts.vendorInfoCount);
+    out += b;
+    for (uint32_t i = 0; i < counts.addressInfoCount && i < addrs.size(); ++i) {
+        const VkDeviceFaultAddressInfoEXT& a = addrs[i];
+        const uint64_t prec = a.addressPrecision ? a.addressPrecision : 1;
+        const uint64_t lo = a.reportedAddress & ~(prec - 1);
+        std::snprintf(b, sizeof b, "    address: %s at 0x%llx (range 0x%llx..0x%llx)\n", fault_type_name(a.addressType),
+                      static_cast<unsigned long long>(a.reportedAddress), static_cast<unsigned long long>(lo), static_cast<unsigned long long>(lo + prec));
+        out += b;
+    }
+    for (uint32_t i = 0; i < counts.vendorInfoCount && i < vendor.size(); ++i) {
+        const VkDeviceFaultVendorInfoEXT& v = vendor[i];
+        std::snprintf(b, sizeof b, "    vendor: \"%.*s\", code 0x%llx, data 0x%llx\n", static_cast<int>(sizeof v.description), v.description,
+                      static_cast<unsigned long long>(v.vendorFaultCode), static_cast<unsigned long long>(v.vendorFaultData));
+        out += b;
+    }
+    return out;
+}
+
 const char* window_mode_name() {
     switch (platform::fullscreen_mode()) {
         case platform::FullscreenMode::Windowed: return "windowed";
@@ -81,11 +148,14 @@ const char* window_mode_name() {
         for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));   // another thread is writing the report and ending the process
     }
     std::string ctx;
+    if (*app_build()) ctx += std::string("  build: ") + app_build() + "\n";
     {
         std::lock_guard<std::mutex> lk(g_lost_ctx_mu);
-        ctx = g_lost_ctx;
+        ctx += g_lost_ctx;
     }
     ctx += gpu_timeout_hint();
+    ctx += device_fault_report();
+    if (auto fn = g_lost_extra.load()) ctx += fn();
     const std::string text = diag_device_lost_dump(where, static_cast<int>(r), frames, ctx);
     for (size_t pos = 0; pos < text.size();) {
         size_t eol = text.find('\n', pos);
@@ -623,6 +693,7 @@ struct Renderer::Impl {
         }
         dirty = false;
         st.swapchain_creates++;
+        boot_mark("swapchain");
         NXLOG_I(kTag, "swapchain %ux%u, %u images, format %d, color space %d (%s), present mode %s%s", ext.width, ext.height, count, static_cast<int>(format),
                 static_cast<int>(color_space), extras::output_kind_name(kind), present_mode_name(active), active != requested ? " (requested mode not available)" : "");
         {
@@ -734,11 +805,14 @@ struct Renderer::Impl {
     }
 };
 
+void set_device_lost_extra(std::string (*fn)()) { g_lost_extra.store(fn); }
+
 std::unique_ptr<Renderer> Renderer::create(Device& dev, const RendererDesc& desc_in, std::string* error) {
     std::unique_ptr<Renderer> r(new Renderer());
     r->impl_ = new Impl();
     Impl& s = *r->impl_;
     s.dev = &dev;
+    g_lost_dev.store(&dev);
     s.desc = desc_in;
     s.desc.frames_in_flight = static_cast<uint32_t>(std::clamp<int64_t>(config_get_int("gfx", "frames_in_flight", desc_in.frames_in_flight), 1, 3));
     PresentMode pm = desc_in.present_mode;
@@ -770,6 +844,8 @@ std::unique_ptr<Renderer> Renderer::create(Device& dev, const RendererDesc& desc
 
 Renderer::~Renderer() {
     if (impl_) {
+        const Device* mine = impl_->dev;
+        g_lost_dev.compare_exchange_strong(mine, nullptr);
         impl_->destroy_all();
         delete impl_;
     }

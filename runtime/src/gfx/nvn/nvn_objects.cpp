@@ -160,4 +160,14 @@ void log_pool_census(const char* why) {
     NXLOG_I("nvn.census", "%s: game pools: %s", why, s.c_str());
 }
 
+void for_each_pool_range(void (*fn)(uint64_t lo, uint64_t size, int kind, void* user), void* user) {
+    std::shared_lock<std::shared_mutex> lk(g_pool_mu);
+    for (const auto& kv : g_pools) {
+        const MemoryPool* p = kv.second;
+        if (p->is_virtual || !p->base) continue;
+        const int kind = p->is_shader_code ? 3 : (p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? 0 : (p->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED) ? 2 : 1;
+        fn(reinterpret_cast<uint64_t>(p->base), p->size, kind, user);
+    }
+}
+
 }  // namespace nxrt::nvn::be

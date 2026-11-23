@@ -33,6 +33,7 @@
 #include "nxrt/log.h"
 #include "api_dlss.h"
 #include "nvn_astc_gpu.h"
+#include "nvn_checkpoints.h"
 #include "nvn_decoded.h"
 #include "nvn_enums.h"
 #include "nvn_framegen.h"
@@ -42,6 +43,7 @@
 #include "nvn_texprep.h"
 #include "nvn_tess_gen.h"
 #include "vk_gauges.h"
+#include "video_alloc_stats.h"
 #include "nxrt/lowlat.h"
 #include "extras/hdr_nvn.h"
 #include "extras/fsr1_spatial.h"
@@ -159,6 +161,56 @@ bool g_tracked = false;         // this submission uses tracked barriers
 bool g_pass_unsafe = false;     // a draw of the open pass may write memory other than its attachments
 bool g_prog_writes = false;     // the bound program has storage buffer or storage image bindings
 bool g_mirror_stale = false;    // a GPU write made pages of a pool copy stale while a draw was being set up: bind again at the next draw
+
+// [nvn] pass_labels (default 0; a profiling aid for GPU capture tools such as Nsight GPU Trace). 1: every render pass and every compute
+// dispatch of the replay gets a Vulkan debug label of its own, inside the game's own debug groups, so a capture splits a command list by
+// pass. A pass is "pNNN WxH cN:format dFormat" (Vulkan format numbers; NNN counts the frame's passes, so the same pass has the same name
+// in the next frame); a dispatch is "cs <first 8 digits of the shader's hash>". 2: also, inside a pass, one label "fs <hash>" per run of
+// draws with the same fragment shader, so the capture gives the time per shader. Labels are a stack: when the game pushes or pops a
+// group of its own in the middle of a pass, the pass's labels are closed first and opened again after it.
+int pass_labels_level() {
+    static const int level = device().features().debug_labels && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT
+                                 ? static_cast<int>(std::clamp<int64_t>(config_get_int("nvn", "pass_labels", 0), 0, 2))
+                                 : 0;
+    return level;
+}
+bool pass_labels_on() { return pass_labels_level() > 0; }
+char g_pass_label[64], g_fs_label[16];
+bool g_pass_label_open = false, g_fs_label_open = false;
+const void* g_fs_label_of = nullptr;     // the fragment shader the open "fs" label names
+void label_begin(VkCommandBuffer cb, const char* name) {
+    VkDebugUtilsLabelEXT l = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
+    l.pLabelName = name;
+    vkCmdBeginDebugUtilsLabelEXT(cb, &l);     // the recording worker copies the name (nvn_cmdq.cpp)
+}
+void pass_label_begin(VkCommandBuffer cb) {
+    label_begin(cb, g_pass_label);
+    g_pass_label_open = true;
+}
+void fs_label_end(VkCommandBuffer cb) {
+    if (!g_fs_label_open) return;
+    vkCmdEndDebugUtilsLabelEXT(cb);
+    g_fs_label_open = false;
+}
+// Closes the pass's labels; returns what pass_labels_resume opens again (bit 0: the pass, bit 1: the shader run).
+int pass_labels_suspend(VkCommandBuffer cb) {
+    const int was = (g_pass_label_open ? 1 : 0) | (g_fs_label_open ? 2 : 0);
+    fs_label_end(cb);
+    if (g_pass_label_open) vkCmdEndDebugUtilsLabelEXT(cb);
+    g_pass_label_open = false;
+    return was;
+}
+void pass_labels_resume(VkCommandBuffer cb, int was) {
+    if (was & 1) pass_label_begin(cb);
+    if (was & 2) {
+        label_begin(cb, g_fs_label);
+        g_fs_label_open = true;
+    }
+}
+void pass_label_end(VkCommandBuffer cb) {
+    pass_labels_suspend(cb);
+    g_fs_label_of = nullptr;
+}
 
 uint32_t g_pass_draws = 0;      // draws recorded in the open pass (GPU pass profiler)
 uint64_t g_pass_verts = 0;      // vertices (indices for indexed draws) times instances of those draws
@@ -660,6 +712,7 @@ void end_pass(bool to_pass = false) {
         return;
     }
     xfb_end_in_pass();
+    pass_label_end(F->cb);
     vkCmdEndRendering(F->cb);
     P.open = false;
     if (gpass_on()) {
@@ -935,6 +988,18 @@ bool ensure_pass(bool depth_ro = false, bool writes = false) {
     gstamp("pass setup");
     vkCmdBeginRendering(F->cb, &ri);
     P.open = true;
+    if (pass_labels_on()) {
+        static uint64_t frame = ~0ull;
+        static uint32_t seq = 0;
+        const uint64_t now = counters().presents.load(std::memory_order_relaxed);
+        if (now != frame) {
+            frame = now;
+            seq = 0;
+        }
+        std::snprintf(g_pass_label, sizeof g_pass_label, "p%03u %ux%u c%u:%d d%d", seq++, extent.width, extent.height, P.ncolor,
+                      static_cast<int>(P.color_fmt[0]), static_cast<int>(P.depth_fmt));
+        pass_label_begin(F->cb);
+    }
     counters().passes.fetch_add(1, std::memory_order_relaxed);
     g_bound_pipeline = VK_NULL_HANDLE;
     return true;
@@ -3958,6 +4023,20 @@ bool begin_draw(int mode, bool indexed, int index_type, VkPrimitiveTopology* top
     }
     g_dirty = g_mirror_stale ? (kVb | kDesc) : 0;     // a storage buffer of this draw made copied pages stale: the next draw binds again
     g_mirror_stale = false;
+    {
+        auto h = [&](int st) { return S.stage[st] ? S.stage[st]->hash.c_str() : nullptr; };
+        ckpt_draw(F->cb, h(kVertex), h(kFragment), h(kGeometry));     // [gfx] gpu_checkpoints (no-op when off)
+    }
+    if (g_pass_label_open && pass_labels_level() >= 2) {     // [nvn] pass_labels = 2: a label per run of draws with one fragment shader
+        const ShaderInfo* f = S.stage[kFragment];
+        if (!g_fs_label_open || g_fs_label_of != f) {
+            fs_label_end(F->cb);
+            std::snprintf(g_fs_label, sizeof g_fs_label, "fs %.8s", f ? f->hash.c_str() : "-");
+            label_begin(F->cb, g_fs_label);
+            g_fs_label_open = true;
+            g_fs_label_of = f;
+        }
+    }
     *topo_out = topo;
     rs_mark(kRsVb);
     ++g_rs.draws;
@@ -4092,6 +4171,7 @@ void do_draw_arrays(const P_DrawArrays& p) {
     const PrimConversion conv = prim_conversion(static_cast<int>(p.mode));
     if (conv == PrimConversion::None) {
         TRACE("    vertices %u instances %u first %u", p.count, p.instance_count, p.first);
+        ckpt_args("draw", p.count, p.instance_count, p.first, 0, p.base_instance);
         vkCmdDraw(F->cb, p.count, std::max<uint32_t>(1, p.instance_count), p.first, p.base_instance);
     } else {
         // QUADS / QUAD_STRIP / POLYGON / LINE_LOOP: generate an index buffer
@@ -4100,6 +4180,7 @@ void do_draw_arrays(const P_DrawArrays& p) {
         const std::vector<uint32_t> idx = convert_prim_indices(conv, in);
         if (idx.empty()) return;
         if (!bind_u32_indices(idx)) return;
+        ckpt_args("draw-conv", static_cast<uint32_t>(idx.size()), p.instance_count, p.first, 0, p.base_instance);
         vkCmdDrawIndexed(F->cb, static_cast<uint32_t>(idx.size()), std::max<uint32_t>(1, p.instance_count), 0, 0, p.base_instance);
     }
     rs_mark(kRsCall);
@@ -4188,10 +4269,12 @@ void do_draw_elements(const P_DrawElements& p) {
         const std::vector<uint32_t> idx = convert_prim_indices(conv, in);
         if (idx.empty()) return;
         if (!bind_u32_indices(idx)) return;
+        ckpt_args("idx-conv", static_cast<uint32_t>(idx.size()), p.instance_count, static_cast<uint32_t>(p.type), static_cast<uint32_t>(p.base_vertex), p.base_instance);
         vkCmdDrawIndexed(F->cb, static_cast<uint32_t>(idx.size()), std::max<uint32_t>(1, p.instance_count), 0, p.base_vertex, p.base_instance);
     } else {
         BufRef br = resolve_read(p.index_address, static_cast<uint64_t>(p.count) * isz, kReadIndex);
         vkCmdBindIndexBuffer(F->cb, br.buffer, br.offset, vk_index_type(static_cast<int>(p.type)));
+        ckpt_args("indexed", p.count, p.instance_count, static_cast<uint32_t>(p.type), static_cast<uint32_t>(p.base_vertex), p.base_instance, p.index_address);
         vkCmdDrawIndexed(F->cb, p.count, std::max<uint32_t>(1, p.instance_count), 0, p.base_vertex, p.base_instance);
     }
     rs_mark(kRsCall);
@@ -4267,6 +4350,7 @@ void draw_indirect_cpu(const P_DrawIndirect& p, PrimConversion conv, uint32_t is
         count_primitives(p.mode, count, instances);
         const std::vector<uint32_t> idx = convert_prim_indices(conv, in);
         if (idx.empty() || !bind_u32_indices(idx)) continue;
+        ckpt_args("ind-cpu", static_cast<uint32_t>(idx.size()), instances, 0, static_cast<uint32_t>(base_vertex), base_instance);
         vkCmdDrawIndexed(F->cb, static_cast<uint32_t>(idx.size()), instances, 0, base_vertex, base_instance);
         drew = true;
     }
@@ -4301,14 +4385,27 @@ void do_draw_indirect(const P_DrawIndirect& p) {
         BufRef xb = resolve_buffer(p.index_address, 4);
         vkCmdBindIndexBuffer(F->cb, xb.buffer, xb.offset, vk_index_type(static_cast<int>(p.type)));
     }
+    // Optional CPU snapshot of indirect arguments/count for [gfx] gpu_checkpoints: only read CPU-accessible non-virtual pool memory
+    // that is not currently guarded by deferred compute output, so unresolved/virtual addresses never fault.
+    auto ckpt_snap = [](uint64_t addr, uint64_t size) -> const void* {
+        if (!addr || !size) return nullptr;
+        const PoolHit hit = pool_lookup(addr);
+        if (!hit.pool || hit.pool->is_virtual || !hit.pool->base || hit.offset + size > hit.pool->size) return nullptr;
+        if (hit.pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) return nullptr;
+        if (out_any() && out_overlaps(addr, size)) return nullptr;
+        return static_cast<const uint8_t*>(hit.pool->base) + hit.offset;
+    };
     if (p.multi && p.count_address) {
         BufRef cb = held_or_pool(p.count_address, 4, kOutIndirect, false);
         const uint32_t stride = static_cast<uint32_t>(p.stride ? p.stride : cmd_size);
+        ckpt_args(indexed ? "idx-ind-count" : "ind-count", p.max_count, stride, static_cast<uint32_t>(p.type), 0, 0, p.indirect_address, ckpt_snap(p.count_address, 4), 1);
         if (indexed) vkCmdDrawIndexedIndirectCount(F->cb, ib.buffer, ib.offset, cb.buffer, cb.offset, p.max_count, stride);
         else vkCmdDrawIndirectCount(F->cb, ib.buffer, ib.offset, cb.buffer, cb.offset, p.max_count, stride);
     } else if (indexed) {
+        ckpt_args("idx-indirect", 1, 20, static_cast<uint32_t>(p.type), 0, 0, p.indirect_address, ckpt_snap(p.indirect_address, 20), 5);
         vkCmdDrawIndexedIndirect(F->cb, ib.buffer, ib.offset, 1, 20);
     } else {
+        ckpt_args("indirect", 1, 16, 0, 0, 0, p.indirect_address, ckpt_snap(p.indirect_address, 16), 4);
         vkCmdDrawIndirect(F->cb, ib.buffer, ib.offset, 1, 16);
     }
     rs_mark(kRsCall);
@@ -4340,6 +4437,7 @@ void do_draw_xfb(const P_DrawXfb& p) {
     uint32_t stride = g_key_attr_count ? S.stream[g_key_binding[0]].stride : 0;
     for (uint32_t b = 0; !stride && b < 16; ++b) stride = S.stream[b].stride;
     if (!stride) { note_unsupported("DrawTransformFeedback with no vertex stream stride"); counters().draws_skipped.fetch_add(1); return; }
+    ckpt_args("xfb", stride, slot, 0, 0, 0);   // [gfx] gpu_checkpoints: the vertex count comes from the section's GPU byte counter
     vkCmdDrawIndirectByteCountEXT(F->cb, 1, 0, g_xfb_counter.buffer, static_cast<VkDeviceSize>(slot) * kXfbSlotBytes, 0, stride);
     rs_mark(kRsCall);
     counters().draws.fetch_add(1, std::memory_order_relaxed);
@@ -4811,6 +4909,12 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
         n.flags = (indirect ? nxrt::DispatchNote::kIndirect : 0) | (g_sh_barrier ? nxrt::DispatchNote::kBarrierBefore : 0);
         nxrt::diag_note_dispatch(n);
     }
+    ckpt_dispatch(F->cb, cs->hash.c_str());     // [gfx] gpu_checkpoints (no-op when off)
+    const bool cs_label = pass_labels_on();
+    if (cs_label) {
+        const std::string name = "cs " + cs->hash.substr(0, 8);
+        label_begin(F->cb, name.c_str());
+    }
     if (indirect) {
         vkCmdDispatchIndirect(F->cb, ind.buffer, ind.offset);
         if (gpass_on()) {
@@ -4826,6 +4930,7 @@ void do_dispatch(uint32_t x, uint32_t y, uint32_t z, uint64_t indirect) {
             gstamp(lb);
         }
     }
+    if (cs_label) vkCmdEndDebugUtilsLabelEXT(F->cb);
     shadows_after_dispatch();
     cs_after_dispatch();
     if (g_trace) trace_snap_after_dispatch(*cs, *pl);
@@ -5627,14 +5732,21 @@ void run_list(const CmdList& list, int depth) {
             case Op::DrawXfb: do_draw_xfb(r.payload<P_DrawXfb>()); break;
             case Op::PushDebugGroup:
                 if (device().features().debug_labels && vkCmdBeginDebugUtilsLabelEXT) {
+                    const int reopen = pass_labels_suspend(F->cb);     // [nvn] pass_labels: the game's group goes under the pass's labels, not inside them
                     VkDebugUtilsLabelEXT l = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
                     l.pLabelName = reinterpret_cast<const char*>(r.blob<P_DebugGroup>());
                     vkCmdBeginDebugUtilsLabelEXT(F->cb, &l);
                     ++g_dbg_depth;
+                    pass_labels_resume(F->cb, reopen);
                 }
                 break;
             case Op::PopDebugGroup:
-                if (g_dbg_depth > 0 && vkCmdEndDebugUtilsLabelEXT) { vkCmdEndDebugUtilsLabelEXT(F->cb); --g_dbg_depth; }   // a pop whose push was in an earlier submission has nothing to close
+                if (g_dbg_depth > 0 && vkCmdEndDebugUtilsLabelEXT) {     // a pop whose push was in an earlier submission has nothing to close
+                    const int reopen = pass_labels_suspend(F->cb);
+                    vkCmdEndDebugUtilsLabelEXT(F->cb);
+                    --g_dbg_depth;
+                    pass_labels_resume(F->cb, reopen);
+                }
                 break;
             case Op::DrawTexture: note_unsupported("DrawTexture"); break;
             case Op::ClearColor: do_clear_color(r.payload<P_ClearColor>()); break;
@@ -5933,9 +6045,15 @@ void load_census(CensusEvent ev, uint64_t present) {
     log_pool_census(why);
     log_import_census(why);
     log_texture_census(why);
+    log_ram_census(why);
     NXLOG_I("nvn.census", "%s: video memory: images %lld / %.0f MiB, buffers %lld / %.0f MiB (device-local), driver allocations %lld / %.0f MiB",
             why, static_cast<long long>(nxrt::vk_gauge_images().get()), nxrt::vk_gauge_image_bytes().get() / 1048576.0, static_cast<long long>(nxrt::vk_gauge_buffers().get()),
             nxrt::vk_gauge_buffer_bytes().get() / 1048576.0, static_cast<long long>(nxrt::vk_gauge_memory_allocs().get()), nxrt::vk_gauge_memory_bytes().get() / 1048576.0);
+    // What the allocator took from the driver against what it handed out.
+    gfx::VideoAllocStats as;
+    device().alloc_stats(&as);
+    char at[512];
+    if (gfx::video_alloc_text(as, at, sizeof at) > 0) NXLOG_I("nvn.census", "%s: %s", why, at);
 }
 
 // [display] unpaced_loading (default on): the limiter stops waiting while the game loads, since its loading code advances once per

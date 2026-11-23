@@ -12,6 +12,7 @@
 #include "nvn_shaders.h"
 #include "nvn_spirv_patch.h"
 #include "nvn_residency.h"
+#include "nxrt/boot_timeline.h"
 
 #include <windows.h>
 
@@ -1231,6 +1232,7 @@ void ShaderCache::pack_prefetch() {
     }
     CloseHandle(f);
     const uint64_t ms = std::max<uint64_t>(1, now_ms() - t0);
+    boot_mark("shader pack read");
     NXLOG_I("nvn", "shader pack: read %llu MiB in %.1f s (%.0f MB/s)%s", static_cast<unsigned long long>(off >> 20), ms / 1000.0,
             static_cast<double>(off) / 1000.0 / static_cast<double>(ms), pack_mem_ ? ", kept in memory" : "");
 }

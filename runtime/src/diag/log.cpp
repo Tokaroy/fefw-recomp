@@ -236,6 +236,8 @@ double seconds_since_init_locked() {
 
 }  // namespace
 
+double log_uptime() { return g_inited.load(std::memory_order_acquire) ? seconds_since_init_locked() : 0.0; }
+
 void log_init(const LogOptions& opt) {
     Resolved r = resolve(opt);  // config reads happen before the log lock is taken
     apply(r, false);

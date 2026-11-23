@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nxrt/boot_timeline.h"
 #include "nxrt/abi.h"
 #include "nxrt/config.h"
 #include "nxrt/dispatch.h"
@@ -409,6 +410,7 @@ void start_all() {
 int frame_hook(::Ctx* c, uint64_t, void*) {
     if (!st().started) {
         st().started = true;
+        boot_mark("game's first frame update");
         start_all();
     }
     std::vector<FrameFn> fns;
