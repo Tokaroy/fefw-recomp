@@ -52,7 +52,7 @@ pub struct Paths {
     pub repo: PathBuf,
     pub exefs: PathBuf,
     pub romfs: PathBuf,
-    /// the dump's dlc/ folder (add-on content the player dumped), when it holds any
+    /// the dump's dlc/ folder (add-on content the player dumped), when it holds any; or the folder given with `--prepare --dlc`
     pub dlc: Option<PathBuf>,
     pub game_dir: PathBuf,
     /// the release package's tools/ folder (tools/build/fefw_build.py next to the launcher); None in a checkout

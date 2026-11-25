@@ -883,6 +883,21 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     if let Some(why) = cpu::check() {
         return prepare_fail(&why);
     }
+    let mut dlc_dir = None;
+    if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
+        let d = match std::path::absolute(d.trim()) {
+            Ok(d) => d,
+            Err(e) => return prepare_fail(&format!("Cannot use the DLC folder {}: {e}", d.trim())),
+        };
+        let ours = |id: &String| u64::from_str_radix(id, 16).is_ok_and(|id| id & !0xFFF == setup::PROGRAM_ID + 0x1000 && id & 0xFFF != 0);
+        if !dump::scan_dlc(&d).iter().any(ours) {
+            return prepare_fail(&format!(
+                "No add-ons for this game found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.",
+                d.display()
+            ));
+        }
+        dlc_dir = Some(d);
+    }
     let mut cfg = Config { dump_dir: game.trim().to_string(), ..Default::default() };
     let mut base = 0.0f64;
     let src = PathBuf::from(&cfg.dump_dir);
@@ -920,19 +935,8 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
         Ok(p) => p,
         Err(e) => return prepare_fail(&e),
     };
-    if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
-        let d = match std::path::absolute(d.trim()) {
-            Ok(d) => d,
-            Err(e) => return prepare_fail(&format!("Cannot use the DLC folder {}: {e}", d.trim())),
-        };
-        let ours = |id: &String| u64::from_str_radix(id, 16).is_ok_and(|id| id & !0xFFF == setup::PROGRAM_ID + 0x1000 && id & 0xFFF != 0);
-        if !dump::scan_dlc(&d).iter().any(ours) {
-            return prepare_fail(&format!(
-                "No add-ons for this game found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.",
-                d.display()
-            ));
-        }
-        p.dlc = Some(d);
+    if dlc_dir.is_some() {
+        p.dlc = dlc_dir;
     }
     let shared = Arc::new(setup::Shared::default());
     *shared.progress.lock().unwrap() =
