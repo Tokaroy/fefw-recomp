@@ -226,9 +226,8 @@ size_t pick_gpu(const std::vector<GpuCandidate>& gpus, const char* want, bool* m
 
 // ---- private state ----------------------------------------------------------------------------------------------------
 struct Device::Impl {
-    std::mutex small_pools_mu;                       // ImageDesc::small_pool (16 MiB blocks) and demotable_pool (32-64 MiB blocks)
+    std::mutex small_pools_mu;                       // ImageDesc::small_pool: one VMA pool of 16 MiB blocks per memory type
     std::map<uint32_t, VmaPool> small_pools;
-    std::map<uint32_t, VmaPool> demotable_pools;
     uint64_t video_heap_bytes = 0;                   // size of the largest device-local heap (for VMA block sizing)
     // validation counters (written from any thread by the layer callback)
     std::atomic<uint64_t> errors{0}, warnings{0}, infos{0}, verbose{0};
@@ -1100,7 +1099,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     aci.pVulkanFunctions = &vf;
     aci.preferredLargeHeapBlockSize = vma_preferred_block_size(impl_->video_heap_bytes);
     if (aci.preferredLargeHeapBlockSize)
-        NXLOG_I(kTag, "video memory allocator: preferred block size %llu MiB (video memory heap %.2f GiB)",
+        NXLOG_I(kTag, "video memory allocator: preferred block size %llu MiB in every heap over 1 GiB (video memory heap %.2f GiB)",
                 static_cast<unsigned long long>(aci.preferredLargeHeapBlockSize >> 20),
                 static_cast<double>(impl_->video_heap_bytes) / (1024.0 * 1024.0 * 1024.0));
     if (x_membudget) aci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
@@ -1160,12 +1159,9 @@ Device::~Device() {
     unregister_vma_gauges();   // before the allocator goes: the gauges read it (the registry lock makes this wait for a running read)
     extras::framegen_shutdown(this);
     extras::xess_shutdown();   // the XeSS context holds device memory
-    if (impl_ && vma_) {
+    if (impl_ && vma_)
         for (auto& [mt, pool] : impl_->small_pools)
             if (pool) vmaDestroyPool(vma_, pool);
-        for (auto& [mt, pool] : impl_->demotable_pools)
-            if (pool) vmaDestroyPool(vma_, pool);
-    }
     if (vma_) vmaDestroyAllocator(vma_);
     extras::streamline_shutdown();
     if (device_) vkDestroyDevice(device_, nullptr);
@@ -1220,15 +1216,6 @@ void Device::alloc_stats(VideoAllocStats* out) const {
             out->small.alloc_bytes += ps.allocationBytes;
             out->small.blocks += ps.blockCount;
             out->small.allocs += ps.allocationCount;
-        }
-        for (const auto& [mt, pool] : impl_->demotable_pools) {
-            if (!pool) continue;
-            VmaStatistics ps{};
-            vmaGetPoolStatistics(vma_, pool, &ps);
-            out->demotable.block_bytes += ps.blockBytes;
-            out->demotable.alloc_bytes += ps.allocationBytes;
-            out->demotable.blocks += ps.blockCount;
-            out->demotable.allocs += ps.allocationCount;
         }
     }
     out->driver_bytes = static_cast<uint64_t>(std::max<int64_t>(0, vk_gauge_memory_bytes().get()));
@@ -1326,10 +1313,6 @@ VkResult Device::create_image(const ImageDesc& d, Image* out, std::string* why) 
     // VK_EXT_memory_priority (used for a dedicated allocation; ignored without the extension): what is rendered to stays in video memory
     // before what is only sampled. Zero, the default, would make every large image the first to go.
     ai.priority = (d.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) ? 1.0f : 0.5f;
-    Image img;
-    VkImage handle = VK_NULL_HANDLE;
-    VmaAllocation alloc = nullptr;
-    VkResult r = VK_SUCCESS;
     if (d.small_pool) {
         uint32_t mt = 0;
         if (vmaFindMemoryTypeIndexForImageInfo(vma_, &ci, &ai, &mt) == VK_SUCCESS) {
@@ -1344,48 +1327,11 @@ VkResult Device::create_image(const ImageDesc& d, Image* out, std::string* why) 
             }
             ai.pool = pool;
         }
-        r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
-    } else if (d.demotable_pool) {
-        // Query the image's actual memory size and dedicated-allocation requirement before choosing the fixed-block
-        // demotable pool: VMA asserts if a fixed-block pool is passed for an image that requiresDedicatedAllocation,
-        // and using the driver's real memoryRequirements.size guarantees no image exceeds the pool's blockSize.
-        r = vkCreateImage(device_, &ci, nullptr, &handle);
-        if (r == VK_SUCCESS) {
-            VkMemoryDedicatedRequirements ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
-            VkMemoryRequirements2 mr2 = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &ded};
-            VkImageMemoryRequirementsInfo2 ri = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};
-            ri.image = handle;
-            vkGetImageMemoryRequirements2(device_, &ri, &mr2);
-            const uint64_t pool_block = vma_demotable_pool_block_size(impl_->video_heap_bytes);
-            if (ded.requiresDedicatedAllocation || vma_use_dedicated_for_demotable(mr2.memoryRequirements.size, pool_block)) {
-                ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-            } else {
-                uint32_t mt = 0;
-                if (vmaFindMemoryTypeIndexForImageInfo(vma_, &ci, &ai, &mt) == VK_SUCCESS) {
-                    std::lock_guard<std::mutex> lk(impl_->small_pools_mu);
-                    VmaPool& pool = impl_->demotable_pools[mt];
-                    if (!pool) {
-                        VmaPoolCreateInfo pci = {};
-                        pci.memoryTypeIndex = mt;
-                        pci.blockSize = pool_block;
-                        pci.priority = 0.5f;
-                        if (vmaCreatePool(vma_, &pci, &pool) != VK_SUCCESS) pool = nullptr;
-                    }
-                    ai.pool = pool;
-                }
-            }
-            r = vmaAllocateMemoryForImage(vma_, handle, &ai, &alloc, nullptr);
-            if (r == VK_SUCCESS) r = vmaBindImageMemory(vma_, alloc, handle);
-            if (r != VK_SUCCESS) {
-                if (alloc) vmaFreeMemory(vma_, alloc);
-                vkDestroyImage(device_, handle, nullptr);
-                handle = VK_NULL_HANDLE;
-                alloc = nullptr;
-            }
-        }
-    } else {
-        r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
     }
+    Image img;
+    VkImage handle = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    VkResult r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
     if (r != VK_SUCCESS) {
         if (why) *why = "vmaCreateImage failed (" + std::to_string(r) + ")";
         return r;

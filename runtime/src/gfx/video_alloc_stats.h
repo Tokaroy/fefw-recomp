@@ -18,10 +18,9 @@ struct VideoAllocGroup {
 
 struct VideoAllocStats {
     bool valid = false;
-    VideoAllocGroup video;        // the largest device-local heap (small-texture and demotable-texture pools included)
+    VideoAllocGroup video;        // the largest device-local heap (small-texture pools included)
     VideoAllocGroup other;        // every other heap (host-visible memory: staging, mapped buffers)
     VideoAllocGroup small;        // of `video` and `other`: the small-texture pools (16 MiB blocks)
-    VideoAllocGroup demotable;    // of `video` and `other`: the residency-demotable texture pools (32-64 MiB blocks)
     uint32_t video_free_ranges = 0;       // free ranges inside the video heap's blocks
     uint64_t video_largest_free = 0;      // the largest of them
     uint64_t driver_bytes = 0;            // every vkAllocateMemory alive (the gauge), the allocator's and the others'
@@ -32,25 +31,14 @@ struct VideoAllocStats {
     }
 };
 
-// VMA default-pool block size for the largest device-local heap (#114, #148): on 4-6 GiB cards/APUs, VMA's 256 MiB default blocks are
-// 4-8% of the entire budget, so a single surviving allocation pins a huge block of VRAM. 0 keeps VMA's default (256 MiB).
+// VMA's preferred block size, chosen by the size of the largest device-local heap (#114, #148): on 4-6 GiB cards/APUs, VMA's 256 MiB
+// default blocks are 4-8% of the entire budget, so a single surviving allocation pins a huge block of VRAM. VMA has one setting for all
+// heaps over 1 GiB, so system-memory heaps get the smaller blocks too. 0 keeps VMA's default (256 MiB).
 inline uint64_t vma_preferred_block_size(uint64_t video_heap_bytes) {
     if (video_heap_bytes == 0) return 0;
     if (video_heap_bytes <= (4608ull << 20)) return 32ull << 20;   // <= 4.5 GiB (4 GB cards)
     if (video_heap_bytes <= (7168ull << 20)) return 64ull << 20;   // <= 7 GiB (6 GB cards / Steam Deck)
     return 0;
-}
-
-// Block size for the dedicated VMA pool of residency-demotable textures (ImageDesc::demotable_pool).
-inline uint64_t vma_demotable_pool_block_size(uint64_t video_heap_bytes) {
-    if (video_heap_bytes && video_heap_bytes <= (4608ull << 20)) return 32ull << 20;
-    return 64ull << 20;
-}
-
-// Images at or above half the demotable pool's block size get a dedicated VkDeviceMemory allocation so demoting them immediately
-// returns 100% of their bytes to the OS and no image can exceed the pool's fixed blockSize.
-inline bool vma_use_dedicated_for_demotable(uint64_t est_bytes, uint64_t pool_block_size) {
-    return pool_block_size > 0 && est_bytes >= pool_block_size / 2;
 }
 
 inline int video_alloc_free_percent(const VideoAllocGroup& g) {
@@ -63,17 +51,13 @@ inline int video_alloc_text(const VideoAllocStats& s, char* out, size_t n) {
     out[0] = 0;
     if (!s.valid) return 0;
     const double mib = 1048576.0;
-    char dem[128] = "";
-    if (s.demotable.blocks > 0)
-        std::snprintf(dem, sizeof dem, "; demotable-texture pools %u blocks / %.0f MiB, %.0f MiB free",
-                      s.demotable.blocks, s.demotable.block_bytes / mib, s.demotable.free_bytes() / mib);
     return std::snprintf(out, n,
                          "allocator: video heap %u blocks / %.0f MiB taken, %u allocations / %.0f MiB handed out, %.0f MiB free inside the blocks (%d%%, "
-                         "%u ranges, largest %.0f MiB); of it small-texture pools %u blocks / %.0f MiB, %.0f MiB free%s; other heaps %.0f MiB taken, "
+                         "%u ranges, largest %.0f MiB); of it small-texture pools %u blocks / %.0f MiB, %.0f MiB free; other heaps %.0f MiB taken, "
                          "%.0f MiB free; outside the allocator %.0f MiB",
                          s.video.blocks, s.video.block_bytes / mib, s.video.allocs, s.video.alloc_bytes / mib, s.video.free_bytes() / mib,
                          video_alloc_free_percent(s.video), s.video_free_ranges, s.video_largest_free / mib, s.small.blocks, s.small.block_bytes / mib,
-                         s.small.free_bytes() / mib, dem, s.other.block_bytes / mib, s.other.free_bytes() / mib, s.outside_bytes() / mib);
+                         s.small.free_bytes() / mib, s.other.block_bytes / mib, s.other.free_bytes() / mib, s.outside_bytes() / mib);
 }
 
 }  // namespace nxrt::gfx

@@ -85,9 +85,6 @@ struct ImageDesc {
     // [gfx] residency's demoted textures: placed in a pool of small blocks of their own, so they do not fill the room their whole images
     // left in the shared blocks (which then empty and go back to the OS)
     bool small_pool = false;
-    // [gfx] residency-demotable textures: placed in a separate VMA pool (or dedicated allocation for very large images) away from render
-    // targets, buffers and non-demotable textures so demoting idle textures empties whole VMA blocks back to the OS (#114, #148).
-    bool demotable_pool = false;
 };
 
 struct Image {
