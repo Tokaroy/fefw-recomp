@@ -237,7 +237,8 @@ data files as they are loaded. A mod can also show its own settings on a **Mods*
 interface as EmblemWeave and ObeliskChamber. A mod that needs hook sites of its own lists them in `exefs\<any name>.sites` next to
 its DLL; Set up lifts the game with them, so press **Set up** again after adding or removing such a mod. A DLL runs with the same
 rights as the game: only install mods you trust. `[fs] dll_mods = false` in `fefw.ini` turns them off. Writing one:
-[runtime/include/nxrt/mod_api.h](runtime/include/nxrt/mod_api.h).
+[runtime/include/nxrt/mod_api.h](runtime/include/nxrt/mod_api.h), with a sample in
+[examples/mods/panel-demo](examples/mods/panel-demo/README.md).
 
 ### Updating to a new release
 
