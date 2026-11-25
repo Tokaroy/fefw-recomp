@@ -478,6 +478,7 @@ void vib_sink(uint32_t slot, int hand, const hid::VibrationValue& v, void*) {
 [[noreturn]] void exit_process(int code, const char* verdict, const std::string& message) {
     G& st = g();
     NXLOG_I(kTag, "ending the process (%s): %s", verdict, message.c_str());
+    NXLOG_I("runtime", "session: %s", nxrt::session_stamp().c_str());
     if (st.dirty) {
         std::string err;
         std::lock_guard<std::mutex> lk(st.mu);
