@@ -11,13 +11,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "nxrt/diag.h"
@@ -69,7 +74,7 @@ uint64_t bucket_count(uint64_t n) {
     return c;
 }
 
-bool to_utf8(const std::wstring& w, std::string& out) {
+bool to_utf8(std::wstring_view w, std::string& out) {
     out.clear();
     if (w.empty()) return true;
     const int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
@@ -115,63 +120,146 @@ struct Node {
 
 std::string shown(const Node& n) { return n.path.empty() ? std::string("/") : n.path; }
 
-// Fills dir.kids from the host folder dir.host, recursively. False with msg set at the first entry that cannot be described.
-bool scan(Node& dir, std::string& msg) {
-    std::error_code ec;
-    std::filesystem::directory_iterator it(std::filesystem::path(dir.host), ec);
-    if (ec) {
+std::wstring join_host(const std::wstring& dir, const wchar_t* name) {
+    std::wstring out;
+    out.reserve(dir.size() + 1 + std::wcslen(name));
+    out = dir;
+    if (!out.empty() && out.back() != L'\\' && out.back() != L'/') out.push_back(L'\\');
+    out.append(name);
+    return long_path(std::move(out));
+}
+
+// Enumerates the direct children of dir.host into dir.kids (sorted by name bytes) using FindFirstFileExW, which returns attributes,
+// reparse tag and 64-bit file size in one batched directory call instead of per-entry stat calls.
+bool scan_dir_entries(Node& dir, std::string& msg) {
+    const std::wstring pattern = join_host(dir.host, L"*");
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_FILE_NOT_FOUND) return true;   // empty folder with no . / .. entries
         msg = "cannot read folder " + shown(dir);
         return false;
     }
-    const std::filesystem::directory_iterator end;
+    struct Finder {
+        HANDLE h;
+        ~Finder() { FindClose(h); }
+    } guard{h};
+
     for (;;) {
-        if (ec) {
+        const wchar_t* wname = fd.cFileName;
+        const bool dot = wname[0] == L'.' && (wname[1] == L'\0' || (wname[1] == L'.' && wname[2] == L'\0'));
+        if (!dot) {
+            std::string name;
+            if (!to_utf8(wname, name) || name.empty() || name.size() > kMaxName) {
+                msg = "name cannot be stored in a RomFS (1 to 255 bytes of UTF-8): " + shown(dir) + "/" + name;
+                return false;
+            }
+            Node k;
+            k.name = std::move(name);
+            k.path = dir.path + "/" + k.name;
+            if (k.path.size() > kMaxPath) {
+                msg = "path too long for a RomFS (0x300 bytes): " + k.path;
+                return false;
+            }
+            k.host = join_host(dir.host, wname);
+            const DWORD attr = fd.dwFileAttributes;
+            if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+                (fd.dwReserved0 == IO_REPARSE_TAG_SYMLINK || fd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT)) {
+                msg = "symbolic link cannot be described: " + k.path;
+                return false;
+            }
+            if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                k.is_dir = true;
+            } else if ((attr & FILE_ATTRIBUTE_DEVICE) != 0) {
+                msg = "not a file or folder: " + k.path;
+                return false;
+            } else {
+                k.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | static_cast<uint64_t>(fd.nFileSizeLow);
+            }
+            dir.kids.push_back(std::move(k));
+        }
+        if (!FindNextFileW(h, &fd)) {
+            const DWORD err = GetLastError();
+            if (err == ERROR_NO_MORE_FILES) break;
             msg = "cannot read folder " + shown(dir);
             return false;
         }
-        if (it == end) break;
-        const std::filesystem::directory_entry& e = *it;
-        std::string name;
-        if (!to_utf8(e.path().filename().wstring(), name) || name.empty() || name.size() > kMaxName) {
-            msg = "name cannot be stored in a RomFS (1 to 255 bytes of UTF-8): " + shown(dir) + "/" + name;
-            return false;
-        }
-        Node k;
-        k.name = name;
-        k.path = dir.path + "/" + name;
-        if (k.path.size() > kMaxPath) {
-            msg = "path too long for a RomFS (0x300 bytes): " + k.path;
-            return false;
-        }
-        k.host = long_path(e.path().wstring());
-        std::error_code sec;
-        const std::filesystem::file_status st = e.symlink_status(sec);
-        if (sec) {
-            msg = "cannot stat " + k.path;
-            return false;
-        }
-        if (std::filesystem::is_symlink(st)) {
-            msg = "symbolic link cannot be described: " + k.path;
-            return false;
-        }
-        if (std::filesystem::is_directory(st)) {
-            k.is_dir = true;
-            if (!scan(k, msg)) return false;
-        } else if (std::filesystem::is_regular_file(st)) {
-            k.size = e.file_size(sec);
-            if (sec) {
-                msg = "cannot read the size of " + k.path;
-                return false;
-            }
-        } else {
-            msg = "not a file or folder: " + k.path;
-            return false;
-        }
-        dir.kids.push_back(std::move(k));
-        it.increment(ec);
     }
     // std::string's operator< compares unsigned char values, which is the byte order the RomFS hash tables expect.
     std::sort(dir.kids.begin(), dir.kids.end(), [](const Node& a, const Node& b) { return a.name < b.name; });
+    return true;
+}
+
+// Fills root.kids from the host folder root.host, recursively, using a bounded worker pool so directory enumeration overlaps I/O
+// latency (important on Wine/FUSE/network drives with 20k+ folders). Calls diag_progress() periodically so a slow-but-moving scan
+// never trips the freeze watchdog. False with msg set at the first entry that cannot be described.
+bool scan(Node& root, std::string& msg) {
+    if (!scan_dir_entries(root, msg)) return false;
+
+    std::deque<Node*> queue;
+    for (Node& k : root.kids) {
+        if (k.is_dir) queue.push_back(&k);
+    }
+    if (queue.empty()) return true;
+
+    constexpr size_t kMaxWorkers = 8;
+    const unsigned hw = std::thread::hardware_concurrency();
+    const size_t total_threads = std::min<size_t>(kMaxWorkers, std::max<size_t>(2, hw ? hw : 4));
+    const size_t helper_count = total_threads > 1 ? total_threads - 1 : 0;
+
+    std::mutex mu;
+    std::condition_variable cv;
+    size_t active = 0;
+    std::atomic<bool> failed{false};
+    std::atomic<uint32_t> dirs_done{1};
+    std::string err_msg;
+
+    auto worker = [&] {
+        for (;;) {
+            Node* cur = nullptr;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [&] { return failed.load(std::memory_order_relaxed) || !queue.empty() || active == 0; });
+                if (failed.load(std::memory_order_relaxed) || (queue.empty() && active == 0)) return;
+                cur = queue.front();
+                queue.pop_front();
+                active++;
+            }
+
+            std::string local_err;
+            const bool ok = scan_dir_entries(*cur, local_err);
+            if ((dirs_done.fetch_add(1, std::memory_order_relaxed) & 63u) == 0) diag_progress();
+
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                active--;
+                if (!ok) {
+                    if (!failed.exchange(true, std::memory_order_relaxed)) err_msg = std::move(local_err);
+                    cv.notify_all();
+                    return;
+                }
+                bool pushed = false;
+                for (Node& k : cur->kids) {
+                    if (k.is_dir) {
+                        queue.push_back(&k);
+                        pushed = true;
+                    }
+                }
+                if (pushed || (queue.empty() && active == 0)) cv.notify_all();
+            }
+        }
+    };
+
+    std::vector<std::thread> helpers;
+    helpers.reserve(helper_count);
+    for (size_t i = 0; i < helper_count; i++) helpers.emplace_back(worker);
+    worker();
+    for (std::thread& t : helpers) t.join();
+
+    if (failed.load(std::memory_order_relaxed)) {
+        msg = std::move(err_msg);
+        return false;
+    }
     return true;
 }
 

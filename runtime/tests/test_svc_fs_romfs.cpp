@@ -847,3 +847,24 @@ NXTEST(romfs_overlay_file_replaces_folder) {
     REQUIRE(img.build(utf8(base.root), &err, {utf8(mod.root)}));
     check_tree(img, {{"/a", false, pattern(5, 3)}, {"/c.bin", false, pattern(10, 2)}});
 }
+
+// Many subdirectories across multiple depths: exercises the parallel directory scanner and verifies deterministic output.
+NXTEST(romfs_parallel_scan_many_dirs) {
+    TempTree t;
+    std::vector<Item> items;
+    for (int d = 0; d < 12; d++) {
+        for (int s = 0; s < 8; s++) {
+            char p[64];
+            std::snprintf(p, sizeof p, "/d%02d/s%02d/f.bin", d, s);
+            items.push_back({p, false, pattern(static_cast<size_t>(16 + d * 7 + s), static_cast<uint32_t>(d * 16 + s))});
+        }
+    }
+    write_host(t.root, items);
+    RomfsImage a, b;
+    REQUIRE(build_from(t.root, a));
+    REQUIRE(build_from(t.root, b));
+    CHECK_EQ(a.stats().files, static_cast<uint32_t>(items.size()));
+    CHECK_EQ(a.stats().dirs, 1u + 12u + 12u * 8u);
+    check_tree(a, items);
+    CHECK(read_all(a) == read_all(b));
+}
