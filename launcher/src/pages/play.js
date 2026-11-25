@@ -94,8 +94,12 @@ export async function render(el, ctx) {
         <p class="faint">${esc(t('play.footer'))}</p>
       </div>`;
     refreshIcons();
-    el.querySelector('#play')?.addEventListener('click', async () => {
-      if (!(await confirmUpscalerFiles(isLinux))) return;
+    el.querySelector('#play')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      const go = await confirmUpscalerFiles(isLinux);
+      btn.disabled = false;
+      if (!go) return;
       api('play').catch((e) => toast(errText(e), 'error'));
     });
     el.querySelector('#to-setup')?.addEventListener('click', () => ctx.go('setup'));

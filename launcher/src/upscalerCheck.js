@@ -1,40 +1,55 @@
 import { api, esc, icon, refreshIcons, toast, errText } from './util.js';
 import { t } from './i18n.js';
+import { fileDetail } from './rusttext.js';
 
 const fwd = (s) => String(s || '').trim().replace(/\\/g, '/');
-const KIND_OF = { dlss: 'dlss', dlss_framegen: 'dlss_framegen', fsr: 'fsr', xess: 'xess' };
 const ASK_OF = { dlss: 'dlss', dlss_framegen: 'dlssFg', fsr: 'fsr', xess: 'xess' };
-const BUTTON_OF = { dlss: 'dlss', dlss_framegen: 'dlssFg', fsr: 'fsr', xess: 'xess' };
+const BUTTON_OF = ASK_OF;
 
 /**
- * What the saved settings select that the game would not find: the feature names, the missing-files detail and the one download that fixes it.
- * The Play page asks before launching, so a missing DLL is no longer discovered as a slow game.
+ * What the saved settings select that the game would not find: for each, the feature name, the missing-files detail, the download that fixes it
+ * and the setting that selects it (`upscaler` or `frame_gen`). The Play page asks before launching, so a missing DLL is no longer discovered as a slow game.
  */
 async function missingFiles(isLinux) {
-  const [cfg, data] = await Promise.all([api('get_config'), api('read_settings')]);
+  const data = await api('read_settings');
   const g = data.game || {};
-  // the runtime's own reading of the values (framegen.cpp fg_setting, temporal_dlss.cpp, extras_state.cpp): 1/2 are DLSS frame generation, 3 is FSR 3
+  // the runtime's own reading of the values (framegen.cpp fg_setting, temporal_dlss.cpp, api_dlss_replay.cpp): 1/2 are DLSS frame generation, 3 is FSR 3
   const up = String(g['dlss.upscaler'] ?? 'taau').trim().toLowerCase();
   const upscaler = up === 'fsr' ? 'fsr3' : up;
   const fg = String(g['dlss.frame_gen'] ?? '0').trim().toLowerCase();
   const frameGen = ['1', '2', 'dlss', 'dlssg', 'on'].includes(fg) ? 'dlss' : ['3', 'fsr3', 'fsr'].includes(fg) ? 'fsr3' : '0';
-  const r = await api('upscaler_files', { fsrDir: fwd(g['upscale.fsr_dll']), dlssDir: fwd(g['upscale.dlss_dll']), xessDir: fwd(g['upscale.xess_dll']) });
-  const dirs = { fsr: g['upscale.fsr_dll'], xess: g['upscale.xess_dll'], dlss: g['upscale.dlss_dll'], dlss_framegen: g['upscale.dlss_dll'] };
+  const r = await api('upscaler_files', {
+    fsrDir: fwd(g['upscale.fsr_dll']), dlssDir: fwd(g['upscale.dlss_dll']), xessDir: fwd(g['upscale.xess_dll']), frameGenDir: fwd(g['dlss.frame_gen_dll']),
+  });
+  // a download goes where the game looks: the setting's folder, else the Streamline folder the game already picked (it may not be the launcher's)
+  const dirs = { fsr: g['upscale.fsr_dll'], xess: g['upscale.xess_dll'], dlss: g['upscale.dlss_dll'] || r.dlss_dir, dlss_framegen: g['upscale.dlss_dll'] || r.dlss_dir };
   const missing = [];
-  const need = (feature, file, kind) => { if (!file.found) missing.push({ feature, detail: file.detail, kind }); };
-  if (frameGen === 'dlss') need(t('settings.files.dlssFrameGen'), r.dlss_framegen, 'dlss_framegen');
-  else if (upscaler === 'dlss') need(t('settings.files.dlss'), r.dlss, 'dlss');
-  if (upscaler === 'fsr3') need(`FSR 3 ${t('settings.files.upscaling').toLowerCase()}`, r.fsr_upscaling, 'fsr');
-  if (frameGen === 'fsr3' && !isLinux) need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr');
-  if (upscaler === 'xess') need(t('settings.files.xess'), r.xess, 'xess');
-  return { missing, dirs, cfg, upscaler, frameGen };
+  const need = (feature, file, kind, setting) => { if (!file.found) missing.push({ feature, detail: file.detail, kind, setting }); };
+  if (frameGen === 'dlss') need(t('settings.files.dlssFrameGen'), r.dlss_framegen, 'dlss_framegen', 'frame_gen');
+  if (upscaler === 'dlss') need(t('settings.files.dlss'), r.dlss, 'dlss', 'upscaler');
+  if (upscaler === 'fsr3') need(`FSR 3 ${t('settings.files.upscaling').toLowerCase()}`, r.fsr_upscaling, 'fsr', 'upscaler');
+  if (frameGen === 'fsr3' && !isLinux) need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr', 'frame_gen');
+  if (upscaler === 'xess') need(t('settings.files.xess'), r.xess, 'xess', 'upscaler');
+  return { missing, dirs };
 }
+
+let open = false;
 
 /**
  * Resolves true when the game may be launched: nothing is missing, the player downloaded the files, switched to TAAU, or chose to play anyway.
- * Resolves false when the dialog was dismissed.
+ * Resolves false when the dialog was dismissed (or one is already open).
  */
 export async function confirmUpscalerFiles(isLinux) {
+  if (open) return false;
+  open = true;
+  try {
+    return await run(isLinux);
+  } finally {
+    open = false;
+  }
+}
+
+async function run(isLinux) {
   let st;
   try {
     st = await missingFiles(isLinux);
@@ -52,7 +67,7 @@ export async function confirmUpscalerFiles(isLinux) {
   return new Promise((resolve) => {
     const box = document.createElement('div');
     box.className = 'modal-backdrop';
-    box.innerHTML = '<div class="modal card" role="dialog" aria-modal="true"></div>';
+    box.innerHTML = '<div class="modal card" role="dialog" aria-modal="true" tabindex="-1"></div>';
     document.body.appendChild(box);
     const card = box.firstElementChild;
     let asking = false;
@@ -68,7 +83,7 @@ export async function confirmUpscalerFiles(isLinux) {
     document.addEventListener('keydown', onKey);
 
     function draw(prog) {
-      const list = st.missing.map((m) => `<li><strong>${esc(m.feature)}</strong><div class="faint">${esc(m.detail)}</div></li>`).join('');
+      const list = st.missing.map((m) => `<li><strong>${esc(m.feature)}</strong><div class="faint">${esc(fileDetail(m.detail))}</div></li>`).join('');
       let body;
       if (prog) {
         const pct = prog.total ? Math.min(100, Math.round((prog.done / prog.total) * 100)) : 0;
@@ -94,16 +109,16 @@ export async function confirmUpscalerFiles(isLinux) {
       on('#m-anyway', () => close(true));
       on('#m-cancel', () => close(false));
       on('#m-taau', useTaau);
+      (card.querySelector('.btn.primary') || card.querySelector('.btn') || card).focus();
     }
 
+    // only the settings whose files are missing: a working upscaler stays when only its frame generation lacks files, and the other way round
     async function useTaau() {
       const edits = [];
-      if (st.upscaler === 'dlss' || st.upscaler === 'fsr3' || st.upscaler === 'xess') edits.push({ file: 'game', section: 'dlss', key: 'upscaler', value: 'taau' });
-      if (st.missing.some((m) => m.kind === 'dlss_framegen') || (st.frameGen === 'fsr3' && st.missing.some((m) => m.kind === 'fsr'))) {
-        edits.push({ file: 'game', section: 'dlss', key: 'frame_gen', value: '0' });
-      }
+      if (st.missing.some((m) => m.setting === 'upscaler')) edits.push({ file: 'game', section: 'dlss', key: 'upscaler', value: 'taau' });
+      if (st.missing.some((m) => m.setting === 'frame_gen')) edits.push({ file: 'game', section: 'dlss', key: 'frame_gen', value: '0' });
       try {
-        if (edits.length) await api('write_settings', { edits });
+        await api('write_settings', { edits });
       } catch (e) {
         toast(errText(e), 'error');
         return;
@@ -114,7 +129,7 @@ export async function confirmUpscalerFiles(isLinux) {
     async function start() {
       asking = false;
       try {
-        await api('fetch_upscaler', { kind: KIND_OF[kind], dir: fwd(st.dirs[kind]) });
+        await api('fetch_upscaler', { kind, dir: fwd(st.dirs[kind]) });
       } catch (e) {
         toast(errText(e), 'error');
         draw();
@@ -131,15 +146,15 @@ export async function confirmUpscalerFiles(isLinux) {
       } catch (e) {
         s = { state: 'error', message: errText(e) };
       }
-      if (s.state === 'running' || s.state === 'idle') {
+      if (s.state === 'running') {
         draw(s);
         timer = setTimeout(poll, 400);
         return;
       }
       busy = false;
+      // idle: another page's poll loop took the finished state (it is reported once), so the files are what tell
       if (s.state === 'cancelled') { draw(); return; }
-      toast(s.message, s.state === 'done' ? 'ok' : 'error');
-      if (s.state !== 'done') { draw(); return; }
+      if (s.state === 'done' || s.state === 'error') toast(s.message, s.state === 'done' ? 'ok' : 'error');
       try {
         st = await missingFiles(isLinux);
       } catch (e) {
