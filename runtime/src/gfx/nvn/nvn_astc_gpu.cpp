@@ -1414,11 +1414,12 @@ void astc_gpu_pump(Frame& f) {
             continue;
         }
         // handed back to the CPU: what is still queued goes the CPU way too (as a failed pass)
+        const size_t first = w.next;
         const Pass p = s.handoff.load(std::memory_order_acquire) ? Pass::Failed : run_work(w, f, true);
-        if (gpass_on() && p != Pass::Failed) {
+        if (gpass_on() && w.next != first) {
             char lb[48];
             std::snprintf(lb, sizeof lb, "astc gpu texture %u", t->id);
-            gpass_stamp(f, lb, 0);
+            gpass_stamp(f, "astc gpu texture", 0, false, lb);
         }
         if (p == Pass::More) break;        // the budget is used up
         if (p == Pass::Finished) {

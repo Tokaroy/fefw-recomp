@@ -2342,7 +2342,7 @@ void tex_residency_restore(Frame& f) {
                 if (gpass_on()) {
                     char lb[48];
                     std::snprintf(lb, sizeof lb, "restore texture %u", d.t->id);
-                    gpass_stamp(f, lb, 0);
+                    gpass_stamp(f, "restore texture", 0, false, lb);
                 }
                 bytes += d.full;
                 const uint32_t waited = now - d.want_ms;

@@ -113,7 +113,8 @@ uint64_t current_serial();        // the serial of the submission being recorded
 // Writes a GPU timestamp (pass profiler) and/or a serialising vkCmdFillBuffer step marker (breadcrumbs, outside a render pass).
 // No-ops when both are off.
 bool gpass_on();
-void gpass_stamp(Frame& f, const char* label, uint32_t arg = 0, bool in_pass = false);
+// detail: what the breadcrumb report prints instead of label (the profiler keeps the constant label as its key)
+void gpass_stamp(Frame& f, const char* label, uint32_t arg = 0, bool in_pass = false, const char* detail = nullptr);
 
 // ---- barriers ---------------------------------------------------------------------------------------------------------------
 void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayout to, VkImageAspectFlags aspect,
