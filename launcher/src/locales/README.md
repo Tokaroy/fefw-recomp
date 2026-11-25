@@ -10,6 +10,10 @@ locales/
   de.json         <- example: German
 ```
 
+Release packages include every `.json` file in the repository's
+`launcher/locales/` folder, so a translation committed there ships with the
+next release.
+
 ## Making a translation
 
 1. Copy `template.json` to `<code>.json` (`de.json`, `fr.json`, ...).

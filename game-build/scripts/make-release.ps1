@@ -122,6 +122,9 @@ Put "$root\tools\shaders\licenses\LICENSE.Ryubing.MIT" 'licenses\LICENSE.Ryujinx
 $tables = Get-ChildItem "$root\locales" -Filter '*.ini' -File -ErrorAction SilentlyContinue
 if ($tables) { foreach ($t in $tables) { Put $t.FullName "locales\$($t.Name)" } }
 Put "$root\locales\README.md" 'locales\README.md'
+# the launcher reads its language packs (<code>.json, and template.json to start one from) from locales\ next to fefw-launcher.exe
+$packs = Get-ChildItem "$root\launcher\locales" -Filter '*.json' -File -ErrorAction SilentlyContinue
+if ($packs) { foreach ($j in $packs) { Put $j.FullName "locales\$($j.Name)" } }
 
 # --- the shader translator, self-contained (no .NET install needed on the player's PC)
 $harness = Join-Path $Out 'harness'
