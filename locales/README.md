@@ -56,17 +56,22 @@ yet, when it opens, on a language switch, on Set up and before every Play. A
 table that is already there is left alone, so a translation the player edited or
 added wins over the shipped one.
 
-## Keeping the shipped table up to date
+## Keeping the shipped files up to date
 
-`zh.ini` is the exception: the launcher carries the current one inside itself and
+An update does not replace a file in `locales/`, so the launcher carries every
+language file of its release inside itself: the `.ini` tables here and the
+launcher's `.json` packs. When it opens, and before the game uses a table, it
 replaces a copy the player never edited. It knows an untouched copy from the
-hash it records in `zh.ini.shipped` beside it, or, for releases before that
-record existed, from a built-in list. An edited `zh.ini` is kept as it is; to
-take the new translations instead, delete it and open the launcher, or merge
-the two by hand.
+hash it records beside it (`zh.ini.shipped`, `<name>.json.shipped`), or, for
+`zh.ini` from releases before that record existed, from a built-in list.
 
-Only the launcher does this. A newly shipped table that the launcher does not
-carry has to be handled the same way before updates can fix it.
+An edited file is kept as it is; to take the new translations instead, delete it
+and its `.shipped` record, then restore the file from the release package, or
+merge the two by hand. A new file added to either folder of the repository is
+covered from the release that first ships it, with nothing else to change.
+
+Only the launcher does this: a game started without ever opening the new
+launcher keeps its old tables.
 
 ## Two kinds of language packs
 

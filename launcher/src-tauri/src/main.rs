@@ -16,6 +16,7 @@ mod play;
 mod screen;
 mod settings;
 mod setup;
+mod shipped;
 mod steam;
 mod update;
 
@@ -257,6 +258,13 @@ fn set_language(app: AppHandle, code: String) -> Result<(), String> {
     cfg.lang = code;
     store_config(&app, &cfg)?;
     sync_run_folder(&cfg)
+}
+
+/// A release package's own language files, brought up to this launcher's (shipped.rs). A checkout's are the sources: left alone.
+fn refresh_package_locales() {
+    if package_tools().is_some() {
+        shipped::refresh(&locale::locales_dir());
+    }
 }
 
 /// The run folder's language tables and [gfx] ui_language, brought in step with the launcher (settings.rs).
@@ -964,6 +972,7 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
         }
         dlc_dir = Some(d);
     }
+    refresh_package_locales();
     let mut cfg = Config { dump_dir: game.trim().to_string(), ..Default::default() };
     let mut base = 0.0f64;
     let src = PathBuf::from(&cfg.dump_dir);
@@ -1060,7 +1069,9 @@ fn main() {
         .manage(Arc::new(update::Shared::default()))
         .manage(Arc::new(fetch::Shared::default()))
         .setup(|app| {
-            // at every start, so that an update or a new default also reaches a game started without Play
+            // at every start, so that an update or a new default also reaches a game started without Play; the package first,
+            // as the run folder takes its tables from there
+            refresh_package_locales();
             if let Err(e) = sync_run_folder(&load_config(app.handle())) {
                 eprintln!("[locales] {e}");
             }
