@@ -897,7 +897,7 @@ std::string gpu_breadcrumb_report() {
 }
 }  // namespace
 
-void gpass_stamp(Frame& f, const char* label, uint32_t arg, bool in_pass) {
+void gpass_stamp(Frame& f, const char* label, uint32_t arg, bool in_pass, const char* detail) {
     if (!g || !f.slot) return;
     Slot& s = *static_cast<Slot*>(f.slot);
     if (g->gpool && s.gp_n < kGpMax) {
@@ -905,7 +905,7 @@ void gpass_stamp(Frame& f, const char* label, uint32_t arg, bool in_pass) {
         s.gp_labels.emplace_back(label, arg);
         s.gp_n++;
     }
-    if (g->crumbs.buffer && !in_pass && f.serial && s.crumb_serial == f.serial) crumb_stamp(f, s, label, arg);
+    if (g->crumbs.buffer && !in_pass && f.serial && s.crumb_serial == f.serial) crumb_stamp(f, s, detail ? detail : label, arg);
 }
 
 namespace {
