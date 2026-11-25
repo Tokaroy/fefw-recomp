@@ -346,6 +346,8 @@ struct UpscalerFiles {
     fsr_framegen: FeatureFiles,
     dlss: FeatureFiles,
     dlss_framegen: FeatureFiles,
+    /// the Streamline folder the game uses (the one holding sl.interposer.dll), empty when none does: where a download has to go
+    dlss_dir: String,
     /// NVIDIA files in the Streamline folder the game does not use (not needed by DLSS, nor by frame generation when it is off)
     dlss_unused: Vec<String>,
     xess: FeatureFiles,
@@ -390,19 +392,45 @@ fn files_in(dirs: &[PathBuf], sets: &[&[&str]], what: &str) -> FeatureFiles {
 }
 
 #[tauri::command]
-fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: Option<String>) -> Result<UpscalerFiles, String> {
+fn upscaler_files(
+    app: AppHandle,
+    fsr_dir: String,
+    dlss_dir: String,
+    xess_dir: Option<String>,
+    frame_gen_dir: Option<String>,
+) -> Result<UpscalerFiles, String> {
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let game = game_dir_of(&cfg, &repo);
     let exe = if package_tools().is_some() { game.join("fefw.exe") } else { setup::exe_path(&repo) };
-    let fsr = upscaler_dirs(&fsr_dir, "fsr", &game, &exe);
+    let with_extra_defaults = |mut v: Vec<PathBuf>| {
+        if let Some(d) = exe.parent() {
+            for extra in [d.join("upscalers").join("fsr3"), d.to_path_buf()] {
+                if !v.contains(&extra) {
+                    v.push(extra);
+                }
+            }
+        }
+        v
+    };
+    // ffx_files.cpp default_dirs also looks in upscalers/fsr3 and in the executable's own folder
+    let fsr = with_extra_defaults(upscaler_dirs(&fsr_dir, "fsr", &game, &exe));
+    // frame generation: [dlss] frame_gen_dll, else the FSR folder setting (never both), then the same defaults
+    let fg_setting = frame_gen_dir.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&fsr_dir);
+    let fsr_fg = with_extra_defaults(upscaler_dirs(fg_setting, "fsr", &game, &exe));
     // Streamline: the game takes the setting's folder, else the first default folder holding sl.interposer.dll, and needs every file there
     let sl = upscaler_dirs(&dlss_dir, "streamline", &game, &exe);
     let sl_pick: Vec<PathBuf> = if !dlss_dir.trim().is_empty() {
         sl[..1].to_vec()
     } else {
-        sl.iter().find(|d| d.join("sl.interposer.dll").is_file()).cloned().map(|d| vec![d]).unwrap_or(sl.clone())
+        // none holds sl.interposer.dll: temporal_dlss.cpp sl_dir() then settles on the executable's own folder
+        let mut all = sl.clone();
+        if let Some(d) = exe.parent() {
+            all.push(d.to_path_buf());
+        }
+        sl.iter().find(|d| d.join("sl.interposer.dll").is_file()).cloned().map(|d| vec![d]).unwrap_or(all)
     };
+    let dlss_dir_used = sl_pick.iter().find(|d| d.join("sl.interposer.dll").is_file()).map(|d| dump::fwd(d)).unwrap_or_default();
     // XeSS (runtime/src/gfx/extras/temporal_xess.cpp): libxess.dll in the setting's folder, upscalers/xess, else next to the game
     let mut xess = upscaler_dirs(xess_dir.as_deref().unwrap_or(""), "xess", &game, &exe);
     if let Some(d) = exe.parent() {
@@ -431,9 +459,10 @@ fn upscaler_files(app: AppHandle, fsr_dir: String, dlss_dir: String, xess_dir: O
     };
     Ok(UpscalerFiles {
         fsr_upscaling: files_in(&fsr, &[&["amd_fidelityfx_upscaler_vk.dll"], &["amd_fidelityfx_vk.dll"]], "amd_fidelityfx_upscaler_vk.dll"),
-        fsr_framegen: files_in(&fsr, &[&["amd_fidelityfx_vk.dll"]], "amd_fidelityfx_vk.dll (FidelityFX SDK v1.1.4)"),
+        fsr_framegen: files_in(&fsr_fg, &[&["amd_fidelityfx_vk.dll"]], "amd_fidelityfx_vk.dll (FidelityFX SDK v1.1.4)"),
         dlss: files_in(&sl_pick, &[&DLSS], "the Streamline files"),
         dlss_framegen: files_in(&sl_pick, &[&DLSS_G], "the Streamline frame generation files"),
+        dlss_dir: dlss_dir_used,
         dlss_unused,
         xess: files_in(&xess, &[&["libxess.dll"]], "libxess.dll"),
     })
