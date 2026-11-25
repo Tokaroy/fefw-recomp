@@ -387,6 +387,7 @@ int fefw_run(int argc, char** argv) {
         if (gfxmode != "none") {
             const bool headless = gfxmode != "window";
             nxrt::play::DisplayConfig disp;
+            if (prepare_mode) nxrt::play::load();   // controls.ini's [display] gpu becomes [gfx] gpu before the device is created, so the shader cache is built for the card the game will use
             if (!headless) {
                 disp = nxrt::play::display();       // controls.ini: window size, present mode, frame cap
                 nxrt::platform::init();
