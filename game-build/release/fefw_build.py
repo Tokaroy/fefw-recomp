@@ -564,6 +564,9 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
     # its memory size but rodata starts at the next page, and likewise rodata and data. The loader maps those gaps (as zeros), so a
     # record there is valid. Widen the segment before the gap to reach the next one (the file grows by zero bytes, the header's
     # offsets, sizes and hashes follow) when a record needs it; text widened this way is lifted with the rest of text.
+    # Two patch files may not write the same gap bytes: mods put their own code there, and "the later mod wins" would leave the
+    # earlier mod's hooks jumping into the later one's code.
+    gaps = [(segs[i][1] + segs[i][2], segs[i + 1][1]) for i in (0, 1)]    # as the dump has them, before widening
     widen = [False, False]
     for where, mem in ((w, m) for _, w, m in patches):
         for off, b in mem:
@@ -602,7 +605,12 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
                 if a in sites:
                     raise Fail('%s patches 0x%x, where this release has a main.sites %s site: the two cannot be combined. '
                                'Remove the patch or ask for the site to be moved.' % (where, a, sites[a]))
-            clash = next((owner[a] for a in range(off, off + len(b)) if owner.get(a, where) != where), None)
+            shared = next((a for lo, hi in gaps for a in range(max(off, lo), min(off + len(b), hi))
+                           if owner.get(a, where) != where), None)
+            if shared is not None:
+                raise Fail('%s and %s both write the alignment gap in main at 0x%x, so one would overwrite the other. '
+                           'Remove or switch off one of them.' % (owner[shared], where, shared))
+            clash =next((owner[a] for a in range(off, off + len(b)) if owner.get(a, where) != where), None)
             if clash:
                 progress('verify', 0, 1, 'Note: %s overwrites bytes %s patched at 0x%x (the later mod wins)' % (where, clash, off))
             for a in range(off, off + len(b)):

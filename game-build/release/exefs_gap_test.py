@@ -25,14 +25,16 @@ def seg(o, i):
     return fo, mo, sz
 
 
-def run(recs):
+def run(*files):
+    """Apply one patch file per list of records (named w0, w1, ... in order) to a synthetic NSO -> the patched bytes."""
     segs = [(0x100, 0, 0xD00), (0x100 + 0xD00, 0x1000, 0x800), (0x100 + 0x1500, 0x2000, 0x400)]
-    p = tempfile.mktemp()
-    open(p, 'wb').write(make(segs, b'T' * 0xD00 + b'R' * 0x800 + b'D' * 0x400 + b'TAIL'))
-    f.apply_exefs_patches(p, [('m', 'w', recs)])
-    o = open(p, 'rb').read()
-    os.remove(p)
-    return o
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'main')
+        with open(p, 'wb') as out:
+            out.write(make(segs, b'T' * 0xD00 + b'R' * 0x800 + b'D' * 0x400 + b'TAIL'))
+        f.apply_exefs_patches(p, [('m%d' % i, 'w%d' % i, recs) for i, recs in enumerate(files)])
+        with open(p, 'rb') as patched:
+            return patched.read()
 
 
 def main():
@@ -50,6 +52,16 @@ def main():
         assert False
     except f.Fail:
         pass
+    for gap in (0xE00, 0x1900):                                  # two files on the same gap bytes (after text, after rodata): refused
+        try:
+            run([(gap, b'\xaa' * 8)], [(gap + 4, b'\xbb' * 8)])
+            assert False
+        except f.Fail as e:
+            assert 'w0 and w1' in str(e) and '0x%x' % (gap + 4) in str(e)
+    run([(0xE00, b'\xaa' * 4)], [(0xE04, b'\xbb' * 4)])          # separate gap bytes: both apply
+    run([(0xE00, b'\xaa' * 8), (0xE04, b'\xbb' * 4)])            # one file may rewrite its own gap bytes
+    o = run([(0x10, b'\xaa')], [(0x10, b'\xbb')])                # inside a segment the later file still wins
+    assert o[0x100 + 0x10] == 0xBB
     print('exefs_gap_test: ok')
 
 
