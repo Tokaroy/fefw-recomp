@@ -248,6 +248,20 @@ jobs:
           name: win64-symbols
           path: work/base
 
+      # Zig and the Python build make-release-linux.sh downloads: it only fetches what is missing, and checks both hashes either way.
+      # ziglang.org can be very slow (13 minutes seen). The key follows the script's pinned versions and hashes.
+      - name: Cache key inputs
+        id: ver
+        run: |
+          pins=$(grep -E '^(ZIG|PYTHON)_[A-Z0-9_]+=' game-build/scripts/make-release-linux.sh)
+          echo "downloads=$(printf '%s' "$pins" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Downloads cache
+        uses: actions/cache@v4
+        with:
+          path: work/release/cache
+          key: release-linux-downloads-${{ steps.ver.outputs.downloads }}
+
       - name: Package (game-build/scripts/make-release-linux.sh)
         run: game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
 
