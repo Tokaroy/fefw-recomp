@@ -12,7 +12,8 @@ locales/
 
 Release packages include every `.json` file in the repository's
 `launcher/locales/` folder, so a translation committed there ships with the
-next release.
+next release. The launcher also keeps a shipped pack up to date on players'
+machines, unless they edited it (see `locales/README.md`).
 
 ## Making a translation
 
