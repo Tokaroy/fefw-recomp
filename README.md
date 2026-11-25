@@ -49,6 +49,9 @@ software and draws with Vulkan. It is not an emulator.
 
 Your saves are in the `save\` folder next to the launcher.
 
+On a screen smaller than 2560x1440, such as a handheld's, the first **Set up** lowers the output resolution to 1080p or 720p to
+suit it. **Settings > Display > Output resolution** changes it.
+
 ### Linux and Steam Deck
 
 Download `fefw-recomp-<version>-linux-x64.tar.gz` instead, extract it and run `fefw-launcher.AppImage`; the steps are the same. The

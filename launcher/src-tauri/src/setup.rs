@@ -945,7 +945,9 @@ fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize, runner_se
         return Ok(false);
     }
     r.progress("ini", 0, 0, "Writing fefw.ini");
-    crate::settings::ensure_play_paths(&p.game_dir, p)?;
+    if let Some(note) = crate::settings::ensure_play_paths(&p.game_dir, p)? {
+        r.log(vec![note]);
+    }
     prepare_step(r, p, jobs, runner_setting)
 }
 
@@ -1206,7 +1208,9 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize, runner_setting: &str) -> Result
         return Ok(false);
     }
     r.progress("ini", 0, 0, "Writing fefw.ini");
-    crate::settings::ensure_play_paths(&p.game_dir, p)?;
+    if let Some(note) = crate::settings::ensure_play_paths(&p.game_dir, p)? {
+        r.log(vec![note]);
+    }
     r.log(vec![format!("fefw.ini is in {}", crate::dump::fwd(&p.game_dir))]);
     prepare_step(r, p, jobs, runner_setting)
 }
