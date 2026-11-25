@@ -73,6 +73,12 @@ the overlay. Every option is described in [runtime/docs/CONFIG.md](runtime/docs/
 The launcher and the F1 menu come in English and Simplified Chinese and start in your system's language. To change it, use the
 language button at the foot of the launcher's sidebar; the choice covers both.
 
+**Translations are welcome.** The launcher and the F1 menu each take their own file: start from
+[template.json](launcher/locales/template.json) for the launcher ([how](launcher/src/locales/README.md)) and from
+[zh.ini](locales/zh.ini) for the menu ([how](locales/README.md)). Send them as a pull request or attach them to an
+[issue](../../issues). A partial translation is fine, as anything missing shows in English. The F1 menu may not yet display scripts
+such as Korean or Japanese properly; if yours looks wrong, say so.
+
 ### Game language
 
 **Settings > Language** (or **F1 > Game**) picks the language of the game's text and voices: Japanese, English (US or UK), French,
