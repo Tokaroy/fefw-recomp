@@ -1005,6 +1005,7 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
             if (g->retry_at) g->retry_at = now + (kTexRetryPresents << std::min<uint32_t>(retries, 4));
             return nullptr;
         }
+        t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
         static int logged = 0;
         if (logged++ < 60) NXLOG_I(kTag, "texture %u: image made on retry %u after running out of memory", t->id, retries);
         pool_texture_remade(t);
@@ -1017,6 +1018,7 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
             // object); what the image holds is as current for this object as for the one it was made for
             t->gpu = ag;
             ++ag->refs;
+            t->image_format.store(static_cast<uint32_t>(ag->format), std::memory_order_release);
             if (ag->uploaded || ag->gpu_written) t->cpu_dirty.store(false);
             static int logged = 0;
             if (logged++ < 20) NXLOG_I(kTag, "texture %u shares the image of texture %u (the same storage)", t->id, alias->id);
@@ -1025,7 +1027,9 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
     }
     NXFT_MIN("tex.create", 30000);
     TexGpu* g = create_texture_gpu(t, want_scale);
-    return g->failed ? nullptr : g;
+    if (g->failed) return nullptr;
+    t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
+    return g;
 }
 
 // The resolution scale: the game's play settings ([display] render_scale, turned into a factor by the game module and handed over in
