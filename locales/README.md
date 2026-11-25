@@ -5,9 +5,15 @@ next to `fefw_rt.dll` (or `fefw.exe`, wherever the binary lives).
 
 ## Enabling a language
 
-Set `[gfx] ui_language` in `fefw.ini` to the table name without `.ini`
-(`zh` loads `locales/zh.ini`). `auto`, `en`, or an empty value keeps the
-built-in English strings.
+By default (`[gfx] ui_language = auto` in `fefw.ini`, or no entry) the menu uses
+the table for the Windows display language when there is one: `zh.ini` for
+Simplified Chinese, and for any other language a table named after it
+(`pt-BR.ini`, then `pt.ini`). Otherwise it is in English.
+
+A language picked in the launcher (the button at the foot of its sidebar) is
+written to `ui_language` and covers the menu as well. Setting the key by hand to
+a table name without `.ini` also works; the launcher keeps a name it does not
+know about. `en` forces English. The menu reads the setting when the game starts.
 
 ## Table format
 
@@ -33,6 +39,9 @@ English source string = Translated string
   become `%.2f`. Both sides are compared as a list of arguments
   (`%*d` is `*` then `d`, `%ls` is `ls`), so moving an argument from the width
   to the value, or reordering two conversions, is caught as well.
+- A space is a printf flag, so `99% de` reads as the conversion `% d`: such a
+  translation is dropped. Write the percent as `%%` in a string that has format
+  specifiers.
 - `%n` is refused outright: it writes through a pointer the caller never
   passed, and no menu string uses one, so any entry that contains it is dropped
   whatever the English key says.
@@ -41,27 +50,23 @@ English source string = Translated string
 
 ## Where the tables live
 
-`make-release.ps1` puts this folder into the release package, and the launcher
-copies any `<name>.ini` it finds there into the run folder
-(`<game folder>/locales/`) before the first start and before every Play. A file
-that is already there is left alone, so a translation the player edited or
+`make-release.ps1` puts this folder into the release package. The launcher
+copies any `<name>.ini` the run folder (`<game folder>/locales/`) does not have
+yet, when it opens, on a language switch, on Set up and before every Play. A
+table that is already there is left alone, so a translation the player edited or
 added wins over the shipped one.
 
 ## Keeping the shipped table up to date
 
-Because an existing file is never replaced, a new release cannot push fixes
-into `zh.ini` on its own. To pick up the translations from a newer build, copy
-the table out of the package over the one in the run folder:
+`zh.ini` is the exception: the launcher carries the current one inside itself and
+replaces a copy the player never edited. It knows an untouched copy from the
+hash it records in `zh.ini.shipped` beside it, or, for releases before that
+record existed, from a built-in list. An edited `zh.ini` is kept as it is; to
+take the new translations instead, delete it and open the launcher, or merge
+the two by hand.
 
-```
-<package>/locales/zh.ini   ->   <game folder>/locales/zh.ini
-```
-
-Delete the file instead if the player's own copy is the one to keep. Both the
-package copy and the run-folder copy are plain text, so a local edit can be
-merged by hand before it is dropped in. The same rule holds for a table the
-player wrote themselves: it lives in the run folder, and the launcher never
-touches it.
+Only the launcher does this. A newly shipped table that the launcher does not
+carry has to be handled the same way before updates can fix it.
 
 ## Two kinds of language packs
 
@@ -71,12 +76,13 @@ The project has two independent language systems; they do not share files:
 | --- | --- | --- |
 | File | `locales/<code>.ini` (next to `fefw_rt.dll`) | `locales/<code>.json` (next to `fefw-launcher.exe`) |
 | Format | `English string = translation` lines | JSON object with `code`, `name`, `strings` |
-| Selected by | `[gfx] ui_language` in `fefw.ini` | `lang` in `launcher.json` |
+| Selected by | `[gfx] ui_language` in `fefw.ini` (`auto`: the system language) | `lang` in `launcher.json` (empty: the system language) |
 | Shipped here | `zh.ini` | `template.json` (an empty starting point) |
 
 `zh.ini` and the launcher's JSON packs are separate features: this folder holds
 the in-game table, and the launcher's packs live in its own install folder. A
-translation of one does not translate the other.
+translation of one does not translate the other. One
+language choice in the launcher selects both.
 
 ## Font
 
