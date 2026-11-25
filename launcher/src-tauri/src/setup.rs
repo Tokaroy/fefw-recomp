@@ -1252,6 +1252,11 @@ pub fn run(
     let file = fs::OpenOptions::new().create(true).append(true).open(p.log()).ok();
     let r = Runner { shared, emit, emit_log, log_file: Mutex::new(file), log_path: p.log() };
     r.log(vec![format!("--- setup: dump exefs {}, romfs {}", crate::dump::fwd(&p.exefs), crate::dump::fwd(&p.romfs))]);
+    // Clear any cached base RomFS tree so re-running Set up after updating/re-dumping the game always rescans fresh.
+    let _ = fs::remove_file(p.game_dir.join("romfs_cache.bin"));
+    if let Some(exe_dir) = p.exe().parent() {
+        let _ = fs::remove_file(exe_dir.join("romfs_cache.bin"));
+    }
     #[cfg(target_os = "linux")]
     let _inhibit = SleepInhibit::acquire();
     #[cfg(target_os = "linux")]
