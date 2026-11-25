@@ -960,7 +960,7 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     if !setup::complete(&p) {
         return prepare_fail("Setup ended, but the game is not ready. See setup.log.");
     }
-    // a setup without a DLC folder starts from the dump's own: a path an earlier setup wrote is dropped
+    // a setup without a DLC folder starts from the dump's own: any [aoc] dir already in fefw.ini is reset, however it got there
     if p.dlc.is_none() {
         if let Err(e) = settings::clear_dlc_path(&p.game_dir) {
             return prepare_fail(&e);
