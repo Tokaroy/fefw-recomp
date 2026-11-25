@@ -1326,6 +1326,10 @@ VkResult Device::create_image(const ImageDesc& d, Image* out, std::string* why) 
     // VK_EXT_memory_priority (used for a dedicated allocation; ignored without the extension): what is rendered to stays in video memory
     // before what is only sampled. Zero, the default, would make every large image the first to go.
     ai.priority = (d.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) ? 1.0f : 0.5f;
+    Image img;
+    VkImage handle = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    VkResult r = VK_SUCCESS;
     if (d.small_pool) {
         uint32_t mt = 0;
         if (vmaFindMemoryTypeIndexForImageInfo(vma_, &ci, &ai, &mt) == VK_SUCCESS) {
@@ -1340,34 +1344,46 @@ VkResult Device::create_image(const ImageDesc& d, Image* out, std::string* why) 
             }
             ai.pool = pool;
         }
+        r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
     } else if (d.demotable_pool) {
-        const uint64_t pool_block = vma_demotable_pool_block_size(impl_->video_heap_bytes);
-        if (vma_use_dedicated_for_demotable(d.est_bytes, pool_block)) {
-            ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        } else {
-            uint32_t mt = 0;
-            if (vmaFindMemoryTypeIndexForImageInfo(vma_, &ci, &ai, &mt) == VK_SUCCESS) {
-                std::lock_guard<std::mutex> lk(impl_->small_pools_mu);
-                VmaPool& pool = impl_->demotable_pools[mt];
-                if (!pool) {
-                    VmaPoolCreateInfo pci = {};
-                    pci.memoryTypeIndex = mt;
-                    pci.blockSize = pool_block;
-                    pci.priority = 0.5f;
-                    if (vmaCreatePool(vma_, &pci, &pool) != VK_SUCCESS) pool = nullptr;
+        // Query the image's actual memory size and dedicated-allocation requirement before choosing the fixed-block
+        // demotable pool: VMA asserts if a fixed-block pool is passed for an image that requiresDedicatedAllocation,
+        // and using the driver's real memoryRequirements.size guarantees no image exceeds the pool's blockSize.
+        r = vkCreateImage(device_, &ci, nullptr, &handle);
+        if (r == VK_SUCCESS) {
+            VkMemoryDedicatedRequirements ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+            VkMemoryRequirements2 mr2 = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &ded};
+            VkImageMemoryRequirementsInfo2 ri = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};
+            ri.image = handle;
+            vkGetImageMemoryRequirements2(device_, &ri, &mr2);
+            const uint64_t pool_block = vma_demotable_pool_block_size(impl_->video_heap_bytes);
+            if (ded.requiresDedicatedAllocation || vma_use_dedicated_for_demotable(mr2.memoryRequirements.size, pool_block)) {
+                ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            } else {
+                uint32_t mt = 0;
+                if (vmaFindMemoryTypeIndexForImageInfo(vma_, &ci, &ai, &mt) == VK_SUCCESS) {
+                    std::lock_guard<std::mutex> lk(impl_->small_pools_mu);
+                    VmaPool& pool = impl_->demotable_pools[mt];
+                    if (!pool) {
+                        VmaPoolCreateInfo pci = {};
+                        pci.memoryTypeIndex = mt;
+                        pci.blockSize = pool_block;
+                        pci.priority = 0.5f;
+                        if (vmaCreatePool(vma_, &pci, &pool) != VK_SUCCESS) pool = nullptr;
+                    }
+                    ai.pool = pool;
                 }
-                ai.pool = pool;
+            }
+            r = vmaAllocateMemoryForImage(vma_, handle, &ai, &alloc, nullptr);
+            if (r == VK_SUCCESS) r = vmaBindImageMemory(vma_, alloc, handle);
+            if (r != VK_SUCCESS) {
+                if (alloc) vmaFreeMemory(vma_, alloc);
+                vkDestroyImage(device_, handle, nullptr);
+                handle = VK_NULL_HANDLE;
+                alloc = nullptr;
             }
         }
-    }
-    Image img;
-    VkImage handle = VK_NULL_HANDLE;
-    VmaAllocation alloc = nullptr;
-    VkResult r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
-    if (r != VK_SUCCESS && d.demotable_pool && ai.pool != nullptr) {
-        // Safety fallback if driver alignment/tiling made the image larger than the fixed pool blockSize.
-        ai.pool = nullptr;
-        ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    } else {
         r = vmaCreateImage(vma_, &ci, &ai, &handle, &alloc, nullptr);
     }
     if (r != VK_SUCCESS) {

@@ -965,7 +965,6 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
         if (g->transcoded) est_native_bytes = estimate_image_bytes(is.base, s.levels, s.layers, s.samples, g->fmt->block_w, g->fmt->block_h, g->fmt->bytes);
     }
     gfx::ImageDesc desc = make_desc(is, chosen, usage, flags);
-    desc.est_bytes = est_bytes;
     // Place textures that residency can later demote in their own VMA pool (or dedicated allocation if very large),
     // separate from render targets, buffers and non-demotable textures, so demotions empty whole VMA blocks back to the OS (#114, #148).
     const bool maybe_target = !is_block_format(chosen) && (t->b.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_COMPRESSIBLE));
