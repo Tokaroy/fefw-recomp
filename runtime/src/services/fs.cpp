@@ -469,7 +469,7 @@ std::shared_ptr<fs::RomfsImage> rom_image() {
     edits.wants = &modapi::file_edit_wanted;
     edits.edit = &modapi::file_edit_run;
     std::string cache_path;
-    if (!nup::is_nup(dir) && config_get_bool("fs", "romfs_cache", false)) {
+    if (!nup::is_nup(dir) && config_get_bool("fs", "romfs_cache", true)) {
         wchar_t exe[32768];
         const DWORD n = GetModuleFileNameW(nullptr, exe, 32768);
         if (n > 0 && n < 32768) {
