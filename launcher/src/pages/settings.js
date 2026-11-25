@@ -126,6 +126,9 @@ const TABS = [
           { id: 'astc_bc', type: 'select', label: 'settings.astcBc.label', sec: 'gfx', key: 'astc_bc', def: 'auto',
             options: [['auto', 'settings.astcBc.auto'], ['off', 'settings.astcBc.off'], ['bc1', 'settings.astcBc.bc1']],
             hint: 'settings.astcBc.hint', restart: true },
+          { id: 'gpu', type: 'select', file: 'controls', label: 'settings.gpu.label', sec: 'display', key: 'gpu', def: 'auto',
+            options: [['auto', 'settings.gpu.auto'], ['discrete', 'settings.gpu.discrete'], ['integrated', 'settings.gpu.integrated']],
+            hint: 'settings.gpu.hint', restart: true },
         ],
       },
       {

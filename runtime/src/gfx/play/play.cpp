@@ -1174,6 +1174,13 @@ public:
         return s;
     }
     std::string settings_path() const override { return g().path; }
+    std::vector<std::string> gpu_names() const override {
+        std::vector<std::string> names;
+        if (!g().device) return names;
+        for (const gfx::GpuInfo& gi : g().device->gpus())
+            if (gi.can_present) names.push_back(gi.name);
+        return names;
+    }
     void begin_capture() override {
         G& st = g();
         std::lock_guard<std::mutex> lk(st.cap_mu);
@@ -1344,6 +1351,8 @@ bool load() {
     if (!config_has("gfx", "astc_quality")) config_set("gfx", "astc_quality", st.settings.display.astc_quality.c_str());
     // ASTC storage (BC1 for opaque textures on small GPUs): the same, as [gfx] astc_bc (read once, at the first ASTC image).
     if (!config_has("gfx", "astc_bc")) config_set("gfx", "astc_bc", st.settings.display.astc_bc.c_str());
+    // Graphics card: the file's choice becomes [gfx] gpu unless the ini or the environment set it (read once, when the Vulkan device is created, after this).
+    if (!config_has("gfx", "gpu") && st.settings.display.gpu != "auto") config_set("gfx", "gpu", st.settings.display.gpu.c_str());
     // Audio: a volume or device set in the ini or the environment wins over the file; the page then shows what is in force.
     if (config_has("audio", "volume")) st.settings.audio.volume = audio::master_volume();
     else audio::set_master_volume(static_cast<float>(st.settings.audio.volume));
