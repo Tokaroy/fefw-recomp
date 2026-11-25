@@ -610,7 +610,7 @@ def apply_exefs_patches(main_path, patches, mod_sites=()):
             if shared is not None:
                 raise Fail('%s and %s both write the alignment gap in main at 0x%x, so one would overwrite the other. '
                            'Remove or switch off one of them.' % (owner[shared], where, shared))
-            clash =next((owner[a] for a in range(off, off + len(b)) if owner.get(a, where) != where), None)
+            clash = next((owner[a] for a in range(off, off + len(b)) if owner.get(a, where) != where), None)
             if clash:
                 progress('verify', 0, 1, 'Note: %s overwrites bytes %s patched at 0x%x (the later mod wins)' % (where, clash, off))
             for a in range(off, off + len(b)):
