@@ -213,7 +213,7 @@ On battle maps, hold **Y** (keyboard **F**) to move the cursor faster with the s
 
 DLC is used when you dump it from your own copy, like the game. Put each add-on in `dlc\<title id>\romfs` of your dump folder (next
 to `exefs\` and `romfs\`, or next to `base\` and `updates\`). A `.nup` with add-ons is unpacked that way on its own. The **Play**
-page lists the DLC it found. RecompLauncher's Easy Setup can also take a folder of add-ons kept elsewhere (the `dlc` folder, one folder per title id); setup points `fefw.ini` at it. Running Set up again without that folder goes back to the dump's own `dlc\`.
+page lists the DLC it found. RecompLauncher's Easy Setup can also take a folder of add-ons kept elsewhere (the `dlc` folder, one folder per title id); setup points `fefw.ini` at it. This is for RecompLauncher only: this launcher's own Play page expects the dump's `dlc\` and asks you to run Set up again, which goes back to it.
 
 ### Mods
 
