@@ -772,6 +772,11 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
     g->layers = s.layers;
     g->cube = s.cube;
     g->seen_ms.store(resid_ms(), std::memory_order_relaxed);   // [gfx] residency: a new image counts as used
+    // every image made (first use, retry, residency restore) tells the background jobs its format (nvn_texprep.h)
+    auto made = [&]() -> TexGpu* {
+        t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
+        return g;
+    };
     auto fail = [&](const std::string& why) -> TexGpu* {
         NXLOG_E(kTag, "texture %u: no image (%s): the texture is not usable on the GPU", t->id, why.c_str());
         g->failed = true;
@@ -787,7 +792,7 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
         if (max_mb && (t->storage_size >> 20) > max_mb && s.type == VK_IMAGE_TYPE_2D && !s.cube && s.samples == 1 &&
             device().features().sparse_binding && device().features().sparse_residency_image2d && config_get_bool("nvn", "sparse_residency", true)) {
             std::string why;
-            if (create_sparse_texture(t, g, s, &why)) return g;
+            if (create_sparse_texture(t, g, s, &why)) return made();
             return fail("sparse residency image: " + why);
         }
         if (max_mb && (t->storage_size >> 20) > max_mb)
@@ -980,7 +985,7 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
     }
     g_live_images.fetch_add(1);
     counters().textures_created.fetch_add(1);
-    return g;
+    return made();
 }
 
 // The texture's image, created on first use. Null when the texture has no usable image (the failure is counted and logged once).
@@ -1005,7 +1010,6 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
             if (g->retry_at) g->retry_at = now + (kTexRetryPresents << std::min<uint32_t>(retries, 4));
             return nullptr;
         }
-        t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
         static int logged = 0;
         if (logged++ < 60) NXLOG_I(kTag, "texture %u: image made on retry %u after running out of memory", t->id, retries);
         pool_texture_remade(t);
@@ -1027,9 +1031,7 @@ TexGpu* tex_or_null(Texture* t, float want_scale = 1.0f) {
     }
     NXFT_MIN("tex.create", 30000);
     TexGpu* g = create_texture_gpu(t, want_scale);
-    if (g->failed) return nullptr;
-    t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
-    return g;
+    return g->failed ? nullptr : g;
 }
 
 // The resolution scale: the game's play settings ([display] render_scale, turned into a factor by the game module and handed over in
@@ -2174,6 +2176,8 @@ bool tex_promote(Texture* t, Frame& f) {
     return true;
 }
 }  // namespace
+
+bool tex_promote_for_test(Texture* t, Frame& f) { return tex_promote(t, f); }
 
 void tex_mark_seen(Texture* t) {
     if (t && t->gpu && !t->gpu->failed) t->gpu->seen_ms.store(resid_ms(), std::memory_order_relaxed);
