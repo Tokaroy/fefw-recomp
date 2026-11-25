@@ -921,7 +921,10 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
         Err(e) => return prepare_fail(&e),
     };
     if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
-        let d = PathBuf::from(d.trim());
+        let d = match std::path::absolute(d.trim()) {
+            Ok(d) => d,
+            Err(e) => return prepare_fail(&format!("Cannot use the DLC folder {}: {e}", d.trim())),
+        };
         if dump::scan_dlc(&d).is_empty() {
             return prepare_fail(&format!(
                 "No add-ons found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.",
@@ -956,6 +959,12 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     }
     if !setup::complete(&p) {
         return prepare_fail("Setup ended, but the game is not ready. See setup.log.");
+    }
+    // a setup without a DLC folder starts from the dump's own: a path an earlier setup wrote is dropped
+    if p.dlc.is_none() {
+        if let Err(e) = settings::clear_dlc_path(&p.game_dir) {
+            return prepare_fail(&e);
+        }
     }
     // what the Play button does before it starts fefw.exe: point fefw.ini at the dump
     if let Err(e) = settings::ensure_play_paths(&p.game_dir, &p) {

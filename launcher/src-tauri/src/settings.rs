@@ -157,6 +157,17 @@ pub fn install_locales(dir: &Path, p: &Paths) {
     }
 }
 
+/// Empties fefw.ini's `[aoc] dir`, so the next `ensure_play_paths` does not keep the DLC folder an earlier setup wrote.
+pub fn clear_dlc_path(dir: &Path) -> Result<(), String> {
+    let path = dir.join(GAME_INI);
+    let Some(mut ini) = load(&path) else { return Ok(()) };
+    if ini.get("aoc", "dir").unwrap_or_default().is_empty() {
+        return Ok(());
+    }
+    ini.set("aoc", "dir", "");
+    write_atomic(&path, &ini.to_text())
+}
+
 /// Writes fefw.ini's paths (kept: every other key, and a save folder the player chose). Used by setup and before every Play.
 pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<(), String> {
     let path = dir.join(GAME_INI);
