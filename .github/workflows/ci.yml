@@ -75,6 +75,9 @@ jobs:
       - name: Python compiles
         run: python -m compileall -q recomp tools
 
+      - name: Lifter worker tests
+        run: python recomp/tests/lift_workers_test.py
+
   changes:
     runs-on: ubuntu-latest
     permissions:

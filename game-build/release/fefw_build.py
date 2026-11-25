@@ -859,7 +859,8 @@ def lift(runner, exefs, gen, jobs, sites):
         if name == 'main':
             args += ['--sites', sites]
         cmd = [sys.executable, '-I', os.path.abspath(__file__), '--lift-one', json.dumps(args)]
-        rc, tail = runner.run(cmd, cwd=RECOMP)
+        # the lifter's warnings (a worker process died, the lift goes on with fewer) reach setup.log as they happen
+        rc, tail = runner.run(cmd, cwd=RECOMP, on_line=lambda s: s.startswith('nxrecomp: warning:') and print(s, flush=True))
         if rc != 0:
             raise Fail('Translating %s failed (exit %d):\n%s' % (name, rc, tail))
         open(marker, 'w').write('ok\n')

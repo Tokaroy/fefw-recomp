@@ -15,12 +15,13 @@ Generated files, in <outdir>:
 """
 import bisect
 import collections
-import multiprocessing
+import concurrent.futures
 import os
 import re
 import struct
 import sys
 import time
+from concurrent.futures.process import BrokenProcessPool
 
 from .image import Image
 from .lift import Lifter, Fn, Unimpl, bits, sext
@@ -529,6 +530,73 @@ def inline_copy(env, callee):
     return 'static inline void fi_%x(Ctx *__restrict NX_NOESC c) {' % callee + t[len(head):]
 
 
+# ProcessPoolExecutor refuses more workers than this on Windows (it waits on all of them with one WaitForMultipleObjects)
+WINDOWS_MAX_WORKERS = 61
+
+
+class Workers:
+    """The worker processes of lift_module; jobs <= 1 runs the tasks in this process.
+
+    A worker can die without raising anything: a native crash on a machine that is not stable with every core busy, or a kill
+    by the system or a security tool (GitHub issue #105). multiprocessing.Pool replaces such a worker and waits for its task
+    for ever. A ProcessPoolExecutor reports it, so the tasks without a result run again, in a new pool with fewer processes.
+    The lift gives up only when a single process dies without finishing any task."""
+
+    def __init__(self, jobs, spec, log=print, init=_worker_init):
+        self.jobs = min(jobs, WINDOWS_MAX_WORKERS) if sys.platform == 'win32' else jobs
+        self.local = jobs <= 1
+        self.spec, self.log, self.init = spec, log, init
+        self.pool = None
+        if self.local:
+            init(spec)
+
+    def reset(self, spec):
+        """Workers from here on are set up from `spec`."""
+        self.close()
+        self.spec = spec
+        if self.local:
+            self.init(spec)
+
+    def map(self, fn, items):
+        """[fn(item) for item in items], in that order."""
+        if self.local:
+            return [fn(i) for i in items]
+        results = {}
+        todo = list(range(len(items)))
+        while todo:
+            if self.pool is None:
+                self.pool = concurrent.futures.ProcessPoolExecutor(self.jobs, initializer=self.init, initargs=(self.spec,))
+            futures = {}
+            try:
+                for i in todo:
+                    futures[self.pool.submit(fn, items[i])] = i
+            except BrokenProcessPool:       # a worker died while the tasks were being handed out
+                pass
+            for f in concurrent.futures.as_completed(futures):
+                if not isinstance(f.exception(), BrokenProcessPool):
+                    results[futures[f]] = f.result()         # raises what the task raised
+            left = [i for i in todo if i not in results]
+            if left:
+                self.close()
+                if self.jobs == 1 and len(left) == len(todo):
+                    raise RuntimeError('the lifter\'s worker process stopped unexpectedly, also when only one was running. '
+                                       'Check that the PC is stable (CPU overclock or undervolt, memory) and that no security '
+                                       'software stops python.exe.')
+                jobs = max(1, self.jobs * 3 // 4)
+                self.log('nxrecomp: warning: a worker process stopped unexpectedly; running the %d unfinished tasks again with '
+                         '%d processes instead of %d. If this keeps happening, check the CPU overclock or undervolt, the memory '
+                         'and the security software.' % (len(left), jobs, self.jobs))
+                sys.stdout.flush()          # fefw_build.py reads a pipe and passes this line on while the lift still runs
+                self.jobs = jobs
+            todo = left
+        return [results[i] for i in range(len(items))]
+
+    def close(self):
+        if self.pool:
+            self.pool.shutdown(cancel_futures=True)
+            self.pool = None
+
+
 def _write_if_changed(path, content):
     if os.path.exists(path):
         with open(path, encoding='utf-8', newline='') as f:
@@ -568,11 +636,8 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
     known = set(starts)
     pending = list(starts)
     all_funcs, total, bad = [], 0, 0
-    pool = multiprocessing.Pool(jobs, _worker_init, (spec,)) if jobs > 1 else None
-    if pool is None:
-        _worker_init(spec)
+    workers = Workers(jobs, spec, log)
     try:
-        mapper = pool.imap_unordered if pool else map
         # discovery: lifting finds branch targets that are not listed functions (tail calls, fall-through ends).
         # A found entry has no exact end (no FDE covers it): it ends at the next known entry and falls through into it. Each round can
         # find entries inside earlier found ones (code without unwind tables); those shrink and are scanned again, so no stretch of
@@ -582,7 +647,7 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
             pending.sort()
             parts = [[(a, env.ends.get(a) if a in found else None) for a in pending[i:i + 400]] for i in range(0, len(pending), 400)]
             new = set()
-            for n, b, wanted in mapper(_worker_scan, parts):
+            for n, b, wanted in workers.map(_worker_scan, parts):
                 total += n
                 bad += b
                 new.update(w for w in wanted if w not in known and env.text_lo <= w < env.text_hi)
@@ -612,12 +677,7 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
         if len(all_funcs) != len(starts) or nonabi:
             spec['nonabi'] = nonabi
             spec['ends'] = {a: env.ends.get(a, env.extent(a)) for a in all_funcs}
-            if pool:
-                pool.close()
-                pool = multiprocessing.Pool(jobs, _worker_init, (spec,))
-                mapper = pool.imap_unordered
-            else:
-                _worker_init(spec)
+            workers.reset(spec)
         # shard assignment
         sizes = {a: max(1, (spec['ends'][a] - a) // 4) for a in all_funcs}
         groups = collections.OrderedDict()
@@ -638,7 +698,7 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
             names = {k: 'c_%04x.cpp' % k for k in groups}
         jobs_list = [(k, v) for k, v in groups.items()]
         resume, files, changed, insns, notes, mism = [], [], 0, 0, [], []
-        for (k, entries), (text, res, n, (nt, mm)) in zip(jobs_list, map_ordered(pool, _worker_text, [v for _, v in jobs_list])):
+        for (k, entries), (text, res, n, (nt, mm)) in zip(jobs_list, workers.map(_worker_text, [v for _, v in jobs_list])):
             resume += res
             insns += n
             notes += nt
@@ -647,8 +707,7 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
             files.append(names[k])
             changed += _write_if_changed(os.path.join(outdir, names[k]), content)
     finally:
-        if pool:
-            pool.close()
+        workers.close()
     first = {}
     for lp, e in sorted(resume):
         first.setdefault(lp, e)
@@ -672,10 +731,6 @@ def lift_module(spec, outdir, jobs=8, shards=0, bucket=0xC000, log=print):
             '; NOT replaced (instruction words differ, lifted as usual): ' + ' '.join('%x' % a for a in sorted(mism))) if mism else ''))
     return {'functions': len(all_funcs), 'files': files, 'instructions': insns, 'not_translated': bad, 'opt_flag_notes': sorted(notes),
             'replace_mismatch': sorted(mism)}
-
-
-def map_ordered(pool, fn, items):
-    return pool.map(fn, items) if pool else [fn(i) for i in items]
 
 
 def write_module_files(env, outdir, all_funcs, resume, catchers):
