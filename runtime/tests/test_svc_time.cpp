@@ -34,6 +34,10 @@ constexpr uint8_t kSourceId[16] = {'n', 'x', 'r', 't', '-', 's', 't', 'e', 'a', 
 int64_t host_unix() {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
+int64_t raw_ticks_ns() {
+    const uint64_t t = kernel::system_tick(), hz = kernel::tick_hz();
+    return static_cast<int64_t>((t / hz) * 1000000000ull + (t % hz) * 1000000000ull / hz);
+}
 int64_t abs64(int64_t v) { return v < 0 ? -v : v; }
 
 // Ryujinx TimeSharedMemory.ReadObjectFromSharedMemory: live slot = off + 4 + pad + (index & 1) * size.
@@ -41,6 +45,26 @@ const uint8_t* live_slot(const uint8_t* base, uint32_t off, uint32_t pad, uint32
     uint32_t idx = 0;
     std::memcpy(&idx, base + off, 4);
     return base + off + 4 + pad + (idx & 1) * size;
+}
+
+// The numeric fields of a ContinuousAdjustmentTimePoint slot (the source uuid follows at +40).
+struct AdjustPoint {
+    int64_t clock_offset, diff_scale, shift_amount, base, limit;
+};
+AdjustPoint adjust_of(const uint8_t* slot) {
+    AdjustPoint p{};
+    static_assert(sizeof p == 40);
+    std::memcpy(&p, slot, sizeof p);
+    return p;
+}
+
+// Steady seconds as nn::time::detail::SharedMemoryClient computes them from that time point (read from the SDK's code): the scaled
+// elapsed time plus `base`, bounded on one side by `limit`, added to the raw tick in ns.
+int64_t sdk_steady_secs(const AdjustPoint& p, int64_t now_ns) {
+    const int64_t v = (((now_ns - p.clock_offset) * p.diff_scale) >> p.shift_amount) + p.base;
+    const bool floor = p.diff_scale < 0;
+    const int64_t corr = floor ? (v > p.limit ? v : p.limit) : (v < p.limit ? v : p.limit);
+    return (now_ns + corr) / 1000000000;
 }
 
 // The shared memory object behind GetSharedMemoryNativeHandle (cmd 20 on IStaticService).
@@ -237,17 +261,21 @@ NXTEST(svc_time_shared_memory_layout) {
     // Automatic correction flag: counter at 0xC8, one byte per slot at 0xCC / 0xCD, fresh state = 0.
     CHECK_EQ(*live_slot(base, 0xC8, 0, 1), 0u);
 
-    // ContinuousAdjustmentTimePoint, pad 4 at 0xD0, 0x38 per slot: {u64 clock_offset, i64 multiplier, i64 divisor_log2,
-    // SystemClockContext {i64 offset, {i64 time_point, uuid}}}: multiplier 1, divisor 0, context steady time point 0, source uuid.
+    // ContinuousAdjustmentTimePoint, pad 4 at 0xD0, 0x38 per slot: {u64 clock_offset, i64 diff_scale, i64 shift_amount,
+    // i64 base, i64 limit, uuid}: constant correction (diff_scale 0, shift 0, base == limit == epoch - tick0).
     const uint8_t* adj = live_slot(base, 0xD0, 4, 0x38);
-    int64_t mult = 0, div = -1, ctx_tp = -1;
-    std::memcpy(&mult, adj + 8, 8);
-    std::memcpy(&div, adj + 16, 8);
-    std::memcpy(&ctx_tp, adj + 32, 8);
-    CHECK_EQ(mult, 1);
-    CHECK_EQ(div, 0);
-    CHECK_EQ(ctx_tp, 0);
+    const AdjustPoint p = adjust_of(adj);
+    CHECK_EQ(p.diff_scale, 0);
+    CHECK_EQ(p.shift_amount, 0);
+    CHECK_EQ(p.base, p.limit);
+    CHECK_EQ(p.base, kSteadyEpochNs - p.clock_offset);
     CHECK(std::memcmp(adj + 40, kSourceId, 16) == 0);
+
+    // The posix time the SDK's shared-memory reader gets: local context offset + its steady seconds.
+    const uint8_t* local = live_slot(base, 0x38, 4, 0x20);
+    int64_t local_offset = 0;
+    std::memcpy(&local_offset, local, 8);
+    CHECK(abs64(local_offset + sdk_steady_secs(p, raw_ticks_ns()) - host_unix()) <= 3);
 }
 
 NXTEST(svc_time_shared_memory_follows_set_current_time) {
@@ -282,6 +310,11 @@ NXTEST(svc_time_shared_memory_keeps_posix_across_steady_offset) {
     int64_t internal = 0;
     std::memcpy(&internal, steady_ctx, 8);
     CHECK_EQ(internal, kSteadyEpochNs + 1000000000000ll);
+
+    const AdjustPoint p = adjust_of(live_slot(base, 0xD0, 4, 0x38));
+    CHECK_EQ(p.base, p.limit);
+    CHECK_EQ(p.base, kSteadyEpochNs + 1000000000000ll - p.clock_offset);
+    CHECK(abs64(offset + sdk_steady_secs(p, raw_ticks_ns()) - host_unix()) <= 3);
 }
 
 NXTEST(svc_time_automatic_correction_flag) {
