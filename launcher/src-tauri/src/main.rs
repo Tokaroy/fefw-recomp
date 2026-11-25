@@ -873,15 +873,30 @@ fn prepare_fail(msg: &str) -> i32 {
     1
 }
 
-/// --prepare --game <dump folder or .nup>: the same setup the Setup page runs (setup::run), without a window.
+/// --prepare --game <dump folder or .nup> [--dlc <folder of add-ons>]: the same setup the Setup page runs (setup::run), without a window.
 /// Prints `progress <0..1> <text>` lines; returns the exit code.
-fn prepare_headless(game: Option<String>) -> i32 {
+fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     let game = match game.filter(|g| !g.trim().is_empty()) {
         Some(g) => g,
         None => return prepare_fail("--prepare needs --game <dump folder or .nup file>."),
     };
     if let Some(why) = cpu::check() {
         return prepare_fail(&why);
+    }
+    let mut dlc_dir = None;
+    if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
+        let d = match std::path::absolute(d.trim()) {
+            Ok(d) => d,
+            Err(e) => return prepare_fail(&format!("Cannot use the DLC folder {}: {e}", d.trim())),
+        };
+        let ours = |id: &String| u64::from_str_radix(id, 16).is_ok_and(|id| id & !0xFFF == setup::PROGRAM_ID + 0x1000 && id & 0xFFF != 0);
+        if !dump::scan_dlc(&d).iter().any(ours) {
+            return prepare_fail(&format!(
+                "No add-ons for this game found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.",
+                d.display()
+            ));
+        }
+        dlc_dir = Some(d);
     }
     let mut cfg = Config { dump_dir: game.trim().to_string(), ..Default::default() };
     let mut base = 0.0f64;
@@ -916,10 +931,13 @@ fn prepare_headless(game: Option<String>) -> i32 {
             Err(e) => return prepare_fail(&e),
         }
     }
-    let p = match paths(&cfg) {
+    let mut p = match paths(&cfg) {
         Ok(p) => p,
         Err(e) => return prepare_fail(&e),
     };
+    if dlc_dir.is_some() {
+        p.dlc = dlc_dir;
+    }
     let shared = Arc::new(setup::Shared::default());
     *shared.progress.lock().unwrap() =
         setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
@@ -959,7 +977,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_arg = arg_value(&args, "--game");
     if args.iter().any(|a| a == "--prepare") {
-        std::process::exit(prepare_headless(game_arg));
+        std::process::exit(prepare_headless(game_arg, arg_value(&args, "--dlc")));
     }
     if let Some(g) = game_arg.filter(|g| PathBuf::from(g.trim()).is_dir()) {
         let _ = GAME_ARG.set(g.trim().to_string());

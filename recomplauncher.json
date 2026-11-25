@@ -31,6 +31,19 @@
             "nup_build_id": "db93b0125f4850601d61c3edde012f8eb2ecfe77"
         }
     },
+    "inputs": [
+        {
+            "id": "dlc",
+            "label": "Your dumped DLC (optional): the dlc folder with one folder per title id, each with a romfs folder in it. Leave empty to use dlc/ inside your game dump.",
+            "role": "dlc",
+            "optional": true,
+            "formats": [
+                {
+                    "type": "folder"
+                }
+            ]
+        }
+    ],
     "prepare": {
         "program": [
             "fefw-launcher.exe",
@@ -39,7 +52,8 @@
         "args": [
             "--prepare",
             "--game",
-            "{game}"
+            "{game}",
+            "--dlc={input:dlc}"
         ],
         "label": "Building the game from your dump",
         "timeout": 7200,
