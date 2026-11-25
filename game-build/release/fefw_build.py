@@ -187,9 +187,10 @@ def host_features():
     """This processor's features as the bundled Zig detects them (`zig targets`: .native .cpu .features), or None when that
     cannot be read. Zig leaves AVX and FMA out when the operating system does not save the YMM registers, as the check in
     fefw_rt.dll does. FEFW_CPU_FORCE_MISSING (a test hook, as for the launcher and fefw_rt.dll) hides features."""
+    kw = {'creationflags': CREATE_NO_WINDOW} if WINDOWS else {}
     try:
         out = subprocess.run([ZIG, 'targets'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                             creationflags=CREATE_NO_WINDOW, timeout=120).stdout.decode('utf-8', 'replace')
+                             timeout=120, **kw).stdout.decode('utf-8', 'replace')
     except (OSError, subprocess.SubprocessError):
         return None
     i = out.find('.native')
