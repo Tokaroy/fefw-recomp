@@ -244,10 +244,12 @@ an instruction this port hooks makes Set up stop and name it.
 Code mods made for this port can also be DLLs in the mod's `exefs\` folder (`mods\<mod name>\exefs\<mod>.dll`), so one mod folder can
 carry an emulator's patches and this port's DLL side by side. They load when the game starts and can hook the game at the sites it was
 built with, call the game's functions, give the game functions of their own to call (what a new menu entry needs) and edit the game's
-data files as they are loaded. A mod that needs hook sites of its own lists them in `exefs\<any name>.sites` next to its DLL; Set up
-lifts the game with them, so press **Set up** again after adding or removing such a mod. A DLL runs with the same rights as the game:
-only install mods you trust. `[fs] dll_mods = false` in `fefw.ini` turns them off. Writing one:
-[runtime/include/nxrt/mod_api.h](runtime/include/nxrt/mod_api.h).
+data files as they are loaded. A mod can also show its own settings on a **Mods** tab in the **F1** menu, through the same panel
+interface as EmblemWeave and ObeliskChamber. A mod that needs hook sites of its own lists them in `exefs\<any name>.sites` next to
+its DLL; Set up lifts the game with them, so press **Set up** again after adding or removing such a mod. A DLL runs with the same
+rights as the game: only install mods you trust. `[fs] dll_mods = false` in `fefw.ini` turns them off. Writing one:
+[runtime/include/nxrt/mod_api.h](runtime/include/nxrt/mod_api.h), with a sample in
+[examples/mods/panel-demo](examples/mods/panel-demo/README.md).
 
 ### Updating to a new release
 
@@ -279,6 +281,8 @@ This project stands on the work of others. Thank you.
   (fixes, performance and frame pacing changes), [stephenjayakar/fefw-recomp](https://github.com/stephenjayakar/fefw-recomp) (Stephen
   Jayakar: the recompiler, stutter and PGO performance work) and [Kompas9/fefw-recomp](https://github.com/Kompas9/fefw-recomp) (Paulius:
   the alpha test shader variant, shader preparation at Set up, the tutorial pager's D-pad prompts and quieter logs).
+- [XiONDiGiTaL/EmblemWeave](https://github.com/XiONDiGiTaL/EmblemWeave): the settings panels for code mods, by
+  [Mi-Kel](https://github.com/Mi-Kel), taken here by way of ObeliskChamber.
 - Everyone who has sent changes to this repository, among them moistman7, Paulius, Stellarznith, Abubakar-ux, ranbinrang-rgb, itaskaev2
   and Ruben Ripalda.
 - [nxrecomp](https://github.com/drakolordx7/nxrecomp) by drakolordx7: the recompiler this is built on.
