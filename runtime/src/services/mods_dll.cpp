@@ -25,6 +25,7 @@
 #include "nxrt/dispatch.h"
 #include "nxrt/game.h"
 #include "nxrt/hooks.h"
+#include "nxrt/kernel.h"
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/mod_api.h"
@@ -611,6 +612,13 @@ bool file_edit_run(const std::string& image_path, std::vector<uint8_t>& data) {
 }
 
 int add_panel(const char* title, NxModPanelFn fn, void* user) {
+    // ObeliskChamber's version 4 has open_list(Ctx* c, item, list) in this slot, and a mod built for it calls it with its game
+    // thread's Ctx, which arrives here as the title. Refused, so the mod sees that no screen opened: taken as a panel, the menu item
+    // (a guest address) would be called as the panel's function.
+    if (title && static_cast<const void*>(title) == static_cast<const void*>(kernel::current_ctx())) {
+        NXLOG_W(kTag, "a code mod called open_list (ObeliskChamber's list screen), which this port does not have");
+        return 0;
+    }
     if (!title || !*title || !fn) return 0;
     std::lock_guard<std::mutex> lk(st().mu);
     // added from nxmod_early / nxmod_init: kept back until nxmod_init returns 0, so the overlay never calls into a mod that is still

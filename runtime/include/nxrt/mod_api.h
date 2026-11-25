@@ -194,7 +194,10 @@ typedef struct NxModApi {
      * and the section is unfolded. From nxmod_early, nxmod_init or later. One added by either, on the thread that called it, is shown
      * once nxmod_init has returned 0 and dropped if the mod declines; one added from any other thread, or later, is shown at once and
      * stays. The tab appears once a mod has a panel. Returns 1, 0 when an argument is missing. Without an overlay (headless runs, or the
-     * overlay switched off) the panel is never drawn. */
+     * overlay switched off) the panel is never drawn.
+     *
+     * ObeliskChamber's version 4 has another function, open_list, in this slot. A call whose title is the calling game thread's Ctx
+     * (that function's first argument) adds nothing and returns 0. */
     int (*add_panel)(const char* title, NxModPanelFn fn, void* user);
 
     /* 1 while a mod's panel is on screen (the game gets no input meanwhile). Any thread. */

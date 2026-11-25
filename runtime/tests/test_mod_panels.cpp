@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The code mods' panels (mod API version 4): the interface's layout, which EmblemWeave and ObeliskChamber share member for member,
 // and add_panel.
+#include <atomic>
 #include <cstddef>
 #include <string>
+#include <thread>
 
+#include "nxrt/diag.h"
+#include "nxrt/kernel.h"
+#include "nxrt/memory.h"
 #include "nxrt/mod_api.h"
 #include "nxrt/mod_panels.h"
 #include "test_framework.h"
@@ -65,4 +70,31 @@ NXTEST(panel_visible_follows_the_overlay) {
     CHECK_EQ(modapi::panel_visible(), 1);
     modapi::set_panel_visible(false);
     CHECK_EQ(modapi::panel_visible(), 0);
+}
+
+// A mod built for ObeliskChamber's version 4 calls open_list(c, item, list) in this slot: c is its game thread's Ctx.
+NXTEST(open_list_call_adds_nothing) {
+    namespace k = nxrt::kernel;
+    k::kernel_reset();
+    nxrt::mem::shutdown();
+    nxrt::mem::init();
+    static int user = 0;
+    const size_t before = modapi::panels().size();
+    std::atomic<int> adopted{0}, as_list{-1}, as_panel{-1};
+    std::thread guest([&] {
+        adopted = k::main_thread_adopt(0x100000) != 0;
+        if (::Ctx* c = k::current_ctx()) {
+            c->x[0] = 0x4141414141414141ull;   // read as a title, the Ctx begins with this register: not an empty string
+            // the item and the list are what open_list is given in the function and user places
+            as_list = modapi::add_panel(reinterpret_cast<const char*>(c), reinterpret_cast<NxModPanelFn>(0x1234000ull), &user);
+            as_panel = modapi::add_panel("A panel from a game thread", &panel, &user);
+        }
+        nxrt::diag_unregister_thread();
+    });
+    guest.join();
+    k::kernel_reset();
+    CHECK_EQ(adopted.load(), 1);
+    CHECK_EQ(as_list.load(), 0);
+    CHECK_EQ(as_panel.load(), 1);   // an ordinary panel from the same thread is added
+    CHECK_EQ(modapi::panels().size(), before + 1);
 }
