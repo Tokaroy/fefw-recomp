@@ -57,6 +57,8 @@ pub struct Paths {
     pub game_dir: PathBuf,
     /// the release package's tools/ folder (tools/build/fefw_build.py next to the launcher); None in a checkout
     pub package: Option<PathBuf>,
+    /// the launcher's picked interface language (launcher.json `lang`; empty: none picked), for the F1 menu
+    pub lang: String,
 }
 
 impl Paths {
@@ -1350,7 +1352,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let repo = root.join("repo");
         let game = root.join("play");
-        let p = Paths { repo: repo.clone(), exefs: root.join("dump"), romfs: root.join("dump"), dlc: None, game_dir: game.clone(), package: None };
+        let p = Paths {
+            repo: repo.clone(),
+            exefs: root.join("dump"),
+            romfs: root.join("dump"),
+            dlc: None,
+            game_dir: game.clone(),
+            package: None,
+            lang: String::new(),
+        };
         // main's NSO header: .text size at +0x18 covering every site below, the build ID at +0x40
         let mut nso = vec![0u8; 0x60];
         nso[0x18..0x1C].copy_from_slice(&0x0200_0000u32.to_le_bytes());
@@ -1488,6 +1498,7 @@ mod tests {
             dlc: None,
             game_dir: game.clone(),
             package: Some(root.join("tools")),
+            lang: String::new(),
         };
         fs::create_dir_all(p.spirv()).unwrap();
         fs::write(p.exe(), b"MZ").unwrap(); // non-executable PE stub: fails if invoked directly without a runner

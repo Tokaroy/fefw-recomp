@@ -87,7 +87,7 @@ function updateCard(cfg) {
     </div>`;
 }
 
-export async function render(el) {
+export async function render(el, ctx) {
   let version = '';
   try {
     version = await getVersion();
@@ -149,5 +149,6 @@ export async function render(el) {
     draw();
   };
   upd.listeners.add(listener);
+  ctx.onLanguage(draw);
   draw();
 }

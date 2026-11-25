@@ -229,3 +229,22 @@ progress::-webkit-progress-value { background: var(--color-accent); }
 .modal-backdrop { position: fixed; inset: 0; z-index: 9; display: grid; place-items: center; padding: var(--space-4); background: rgba(0, 0, 0, 0.6); }
 .modal { max-width: 640px; width: 100%; max-height: 90vh; overflow: auto; display: grid; gap: var(--space-3); }
 .modal .missing-list { margin: 0; padding-left: var(--space-4); display: grid; gap: var(--space-2); }
+
+/* the sidebar's language list, above its button */
+.lang-menu {
+  position: fixed;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 180px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.lang-menu .nav-item { flex: none; }
+.lang-menu .blank { visibility: hidden; }

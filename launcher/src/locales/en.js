@@ -421,8 +421,6 @@ export const en = {
     'settings.logLevel.debug': 'Debug',
 
     // launcher
-    'settings.lang.label': 'Interface language',
-    'settings.lang.hint': 'Switches at once, without restarting. Packs in locales/ are found on the next start.',
     'settings.repoDir.label': 'Repository folder',
     'settings.repoDir.placeholder': "found from the launcher's location",
     'settings.repoDir.hint': 'The checkout of this project that setup builds in.',

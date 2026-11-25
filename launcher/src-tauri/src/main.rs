@@ -8,6 +8,7 @@ mod dump;
 mod fetch;
 mod gpu;
 mod ini;
+mod lang;
 mod locale;
 mod lsfg;
 mod nup;
@@ -46,7 +47,8 @@ struct Config {
     /// Linux: the command that starts fefw.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
     /// installed, else umu-run, else wine. Unused on Windows.
     runner: String,
-    /// The launcher's own interface language ("en", "zh", or the code of a language pack in locales/). Empty: English.
+    /// The picked interface language ("en", "zh", or the code of a language pack in locales/), for the launcher and the F1 menu.
+    /// Empty: none picked, so both follow the system (lang.rs). Only set_language changes it.
     lang: String,
     /// Linux: LSFG-VK frame generation on top of the game (lsfg.rs)
     lsfg: bool,
@@ -183,6 +185,7 @@ fn paths(cfg: &Config) -> Result<setup::Paths, String> {
         dlc: report.dlc_dir.map(PathBuf::from),
         game_dir,
         package: package_tools(),
+        lang: cfg.lang.clone(),
     })
 }
 
@@ -226,8 +229,41 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     if GAME_ARG.get().is_some_and(|g| *g == config.dump_dir) {
         config.dump_dir = load_saved_config(&app).dump_dir;
     }
-    let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    settings::write_atomic(&config_path(&app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
+    // a page holding an older configuration must not undo a language switch made since it loaded
+    config.lang = load_saved_config(&app).lang;
+    store_config(&app, &config)
+}
+
+fn store_config(app: &AppHandle, config: &Config) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    settings::write_atomic(&config_path(app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
+}
+
+/// The language the launcher shows: the picked one, else the system's.
+#[tauri::command]
+fn ui_language(app: AppHandle) -> String {
+    let picked = load_saved_config(&app).lang;
+    if picked.is_empty() {
+        lang::system_choice()
+    } else {
+        picked
+    }
+}
+
+/// A language picked in the sidebar: saved, and written to fefw.ini for the F1 menu when the file is there.
+#[tauri::command]
+fn set_language(app: AppHandle, code: String) -> Result<(), String> {
+    let mut cfg = load_saved_config(&app);
+    cfg.lang = code;
+    store_config(&app, &cfg)?;
+    sync_run_folder(&cfg)
+}
+
+/// The run folder's language tables and [gfx] ui_language, brought in step with the launcher (settings.rs).
+fn sync_run_folder(cfg: &Config) -> Result<(), String> {
+    // no checkout or package found: no run folder to keep in step
+    let Some(repo) = repo_of(cfg) else { return Ok(()) };
+    settings::apply_menu_language(&game_dir_of(cfg, &repo), &repo, package_tools().as_deref(), &cfg.lang)
 }
 
 #[tauri::command]
@@ -1023,6 +1059,13 @@ fn main() {
         .manage(Arc::new(setup::Shared::default()))
         .manage(Arc::new(update::Shared::default()))
         .manage(Arc::new(fetch::Shared::default()))
+        .setup(|app| {
+            // at every start, so that an update or a new default also reaches a game started without Play
+            if let Err(e) = sync_run_folder(&load_config(app.handle())) {
+                eprintln!("[locales] {e}");
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             // closing the window pauses a running setup rather than leaving its compilers behind
             if let tauri::WindowEvent::Destroyed = event {
@@ -1034,6 +1077,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            ui_language,
+            set_language,
             get_overview,
             pick_folder,
             pick_nup,

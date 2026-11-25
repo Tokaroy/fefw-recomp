@@ -250,5 +250,6 @@ export async function render(el, ctx) {
       draw();
     }
   });
+  ctx.onLanguage(draw);
   draw();
 }

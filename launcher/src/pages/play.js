@@ -128,5 +128,6 @@ export async function render(el, ctx) {
     status = s;
     draw();
   });
+  ctx.onLanguage(draw);
   draw();
 }

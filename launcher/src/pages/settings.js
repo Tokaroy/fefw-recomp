@@ -1,11 +1,11 @@
 import { api, esc, icon, refreshIcons, toast, errText } from '../util.js';
-import { t, getLang, listLangs, setLang } from '../i18n.js';
+import { t } from '../i18n.js';
 import { fileDetail } from '../rusttext.js';
 
 /*
  * Settings schema. Every key is described in runtime/docs/CONFIG.md.
  *   file: "game" (fefw.ini), "controls" (controls.ini, written by the game on its first start) or "config" (the launcher's own options)
- * Types: select, toggle, size, autonum, range (0 to `max`, default 1, shown as a percentage), path, text, number, language. A toggle with `on` / `off` writes those words
+ * Types: select, toggle, size, autonum, range (0 to `max`, default 1, shown as a percentage), path, text, number. A toggle with `on` / `off` writes those words
  * instead of 1 / 0 (`off`, 0, false or no read as off, anything else as on).
  * Text is a key into src/locales: `label` and `hint` are always translated, and an option name that contains a dot is a key
  * too (a plain name such as "720p" or "DLAA" is shown as it is).
@@ -222,8 +222,6 @@ const TABS = [
       {
         title: 'settings.sec.general', icon: 'sliders-horizontal', file: 'config',
         fields: [
-          // The launcher's own interface language: kept in launcher.json, applied at once, no file patching involved.
-          { id: 'lang', type: 'language', label: 'settings.lang.label', hint: 'settings.lang.hint' },
           { id: 'minimize_on_play', type: 'toggle', label: 'settings.minimizeOnPlay.label', sec: '', key: 'minimize_on_play', def: '0' },
         ],
       },
@@ -315,7 +313,6 @@ export async function render(el, ctx) {
     path: (f) => get(f, f.key, f.def),
     text: (f) => get(f, f.key, f.def),
     number: (f) => String(get(f, f.key, f.def)),
-    language: () => getLang(),
     preset: () => '', // shown from the fields it sets (presetOf), never stored
   };
   const WRITE = {
@@ -331,7 +328,6 @@ export async function render(el, ctx) {
     path: (f, x) => [[f.sec, f.key, fwd(x)]],
     text: (f, x) => [[f.sec, f.key, String(x).trim()]],
     number: (f, x) => [[f.sec, f.key, String(clamp(parseInt(x, 10) || 0, f.min, f.max))]],
-    language: () => [],
     preset: () => (fixedRender ? [['fefw', 'render', '']] : []), // a preset was picked: the fixed render size would win over it
   };
 
@@ -372,7 +368,6 @@ export async function render(el, ctx) {
       const custom = cur ? '' : `<option value="" selected disabled>${esc(t('settings.preset.custom'))}</option>`;
       return `<select id="f-${f.id}" data-f="${f.id}" ${dis(f)}>${custom}${PRESETS.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${esc(t(l))}</option>`).join('')}</select>`;
     },
-    language: (f, x) => `<select id="f-${f.id}" data-f="${f.id}">${listLangs().map((l) => `<option value="${esc(l.code)}" ${l.code === x ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>`,
   };
 
   /** The short form of a hint, or '' when it has none (or it would say the same as the full one). */
@@ -483,39 +478,6 @@ export async function render(el, ctx) {
       }
     }
     updateBar();
-  }
-
-  /**
-   * Switches the interface language: saved at once, then the page is redrawn in the new language with the
-   * unsaved edits kept. `draw()` rebuilds the markup from `model`, and `applyModel()` puts the edited values
-   * back into it, so nothing has to be read from disk again. Only the shell (navigation, window title) is
-   * repainted; the page itself is not re-rendered, or the edits kept here would be dropped with this closure.
-   */
-  async function liveLang(code) {
-    if (code === getLang()) return;
-    const keep = { ...model };
-    try {
-      await api('save_config', { config: { ...cfg, lang: code } });
-    } catch (e) {
-      toast(errText(e), 'error');
-      return;
-    }
-    cfg.lang = code;
-    // Keep the in-game F1 menu in step: it reads [gfx] ui_language from fefw.ini.
-    // zh maps to the zh pack; any other launcher language falls back to English there.
-    try {
-      await api('write_settings', { edits: [{ file: 'game', section: 'gfx', key: 'ui_language', value: code === 'zh' ? 'zh' : 'auto' }] });
-    } catch (e) { /* fefw.ini may not exist yet; the menu keeps its current language */ }
-    await setLang(code, () => {
-      for (const id of Object.keys(keep)) model[id] = keep[id];
-      // The switch was saved above, so it is not a pending edit: the picker shows the new language and the
-      // save bar does not count it. Everything else keeps the value it had before the switch.
-      model.lang = code;
-      orig.lang = JSON.stringify(code);
-      draw();
-      applyModel();
-      ctx.shell(); // navigation labels and the window title; the page keeps the edits above
-    });
   }
 
   // The upscaler files the game will find with the folders as typed (found only when every file a feature needs is in one folder).
@@ -720,10 +682,6 @@ export async function render(el, ctx) {
         }
         if (part) model[f.id] = { ...model[f.id], [part]: v };
         else model[f.id] = f.type === 'range' ? parseInt(v, 10) : v;
-        if (f.type === 'language') {
-          liveLang(v);
-          return;
-        }
         if (f.type === 'range') {
           el.querySelector(`[data-readout="${f.id}"]`).textContent = `${model[f.id]}${optName(f.unit || '%')}`;
           updateBar();
@@ -795,6 +753,11 @@ export async function render(el, ctx) {
   }
 
   if (!live()) return; // another page was opened while this one was loading
+  // a language switch: the same page in the new words, with the unsaved edits kept (draw() builds it from the model)
+  ctx.onLanguage(() => {
+    draw();
+    applyModel();
+  });
   draw();
   pollFetch(); // picks up a download still running, or tells how one that ended while the page was closed went
 }

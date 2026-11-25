@@ -3,7 +3,7 @@
  */
 export const zh = {
   code: 'zh',
-  name: '中文',
+  name: '简体中文',
   strings: {
     // ----- 外框 -----
     'brand.name': 'fefw recomp',
@@ -146,6 +146,10 @@ export const zh = {
     'play.exitedCode': 'fefw.exe 退出，代码 {code}（0x{hex}）。',
     'play.lostTrack': '与 fefw.exe 失去联系：{error}',
     'play.killedBySystem': 'fefw.exe 被系统结束。',
+    'play.files.title': '缺少超分文件',
+    'play.files.body': '当前设置启用了某些功能，但游戏找不到它们所需的文件。缺少这些文件时，游戏可能运行不佳，或回退到其他模式。你可以现在下载、改用 TAAU（无需额外文件），或直接开始游戏。',
+    'play.files.useTaau': '改用 TAAU',
+    'play.files.anyway': '仍然开始',
     'setup.doneMsg': '构建完成，可以开始游玩。',
     'setup.pausedMsg': '已暂停。再次开始构建会从停下的地方继续。',
     'setup.firstRunHint': '首次运行耗时很长：重新编译游戏代码是最大的一步（8 核上一小时或更久，此处使用 {jobs} 个构建进程），并需要约 30 GB 空闲空间。之后的运行只重做有变化的部分。',
@@ -383,8 +387,6 @@ export const zh = {
     'settings.logLevel.debug': '调试',
 
     // 启动器
-    'settings.lang.label': '界面语言',
-    'settings.lang.hint': '立即切换，无需重启。locales/ 里的语言包在下次启动时被发现。',
     'settings.repoDir.label': '仓库文件夹',
     'settings.repoDir.placeholder': '从启动器所在位置查找',
     'settings.repoDir.hint': '本项目用于构建的检出目录。',
@@ -397,7 +399,7 @@ export const zh = {
     'settings.runner.label': '运行器（Wine / Proton）',
     'settings.runner.placeholder': '优先用 Steam 自带的 Proton，其次 umu-run，最后 wine',
     'settings.runner.short': '启动 fefw.exe 的命令，例如 umu-run 或 wine。',
-    'settings.runner.hint': '在 Linux 上启动 fefw.exe 的命令，例如 umu-run（Proton）或 wine。留空时依次尝试 Steam 自带的 Proton、umu-run、wine。fefw.exe 的路径会加在其后。',
+    'settings.runner.hint': '在 Linux 上启动 fefw.exe 的命令，例如 umu-run（Proton）或 wine。留空时依次尝试：在 Steam Linux Runtime 中运行 Steam 自带的 Proton（优先使用 Experimental，否则使用已安装的最新版本）、umu-run、wine。fefw.exe 的路径会加在其后。',
 
     // ----- 关于 -----
     'about.launcherWord': '启动器',

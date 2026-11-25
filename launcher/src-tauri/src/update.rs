@@ -400,7 +400,8 @@ pub fn install(install: &Path, top: &Path, old: &Path) -> Result<(), String> {
             let target = install.join(rel);
             // symlink_metadata: a symlink (python-build-standalone has them) whose target was moved aside still counts
             let had = fs::symlink_metadata(&target).is_ok();
-            // a language table is added, never replaced: the copy in the install folder may be the player's own.
+            // a language table is added, never replaced: the copy in the install folder may be the player's own. The new
+            // launcher brings an unedited zh.ini up to date itself (settings.rs refresh_zh).
             let shared = rel.components().next().is_some_and(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("locales"));
             if had && shared {
                 continue;
