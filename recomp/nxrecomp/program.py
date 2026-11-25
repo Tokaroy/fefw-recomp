@@ -16,10 +16,12 @@ Generated files, in <outdir>:
 import bisect
 import collections
 import concurrent.futures
+import multiprocessing
 import os
 import re
 import struct
 import sys
+import threading
 import time
 from concurrent.futures.process import BrokenProcessPool
 
@@ -532,6 +534,32 @@ def inline_copy(env, callee):
 
 # ProcessPoolExecutor refuses more workers than this on Windows (it waits on all of them with one WaitForMultipleObjects)
 WINDOWS_MAX_WORKERS = 61
+_worker_init_error = None
+
+
+def _exit_with_parent():
+    multiprocessing.parent_process().join()
+    os._exit(1)
+
+
+def _worker_start(init, spec):
+    """First thing in every process of Workers."""
+    global _worker_init_error
+    # A ProcessPoolExecutor worker can outlive a lifter process that crashes or is killed, and holds the output pipe that
+    # fefw_build.py reads to its end: Set up would wait for ever. So every worker ends with the lifter.
+    threading.Thread(target=_exit_with_parent, daemon=True).start()
+    try:
+        init(spec)
+    except MemoryError:
+        raise                           # breaks the pool: tried again with fewer processes
+    except Exception as e:
+        _worker_init_error = e          # a bug or a bad input, not a dead worker: the first task raises it
+
+
+def _worker_call(fn, item):
+    if _worker_init_error is not None:
+        raise _worker_init_error
+    return fn(item)
 
 
 class Workers:
@@ -540,7 +568,7 @@ class Workers:
     A worker can die without raising anything: a native crash on a machine that is not stable with every core busy, or a kill
     by the system or a security tool (GitHub issue #105). multiprocessing.Pool replaces such a worker and waits for its task
     for ever. A ProcessPoolExecutor reports it, so the tasks without a result run again, in a new pool with fewer processes.
-    The lift gives up only when a single process dies without finishing any task."""
+    The lift gives up only when a new pool of a single process dies without finishing any task."""
 
     def __init__(self, jobs, spec, log=print, init=_worker_init):
         self.jobs = min(jobs, WINDOWS_MAX_WORKERS) if sys.platform == 'win32' else jobs
@@ -564,28 +592,41 @@ class Workers:
         results = {}
         todo = list(range(len(items)))
         while todo:
-            if self.pool is None:
-                self.pool = concurrent.futures.ProcessPoolExecutor(self.jobs, initializer=self.init, initargs=(self.spec,))
+            fresh = self.pool is None
+            if fresh:
+                self.pool = concurrent.futures.ProcessPoolExecutor(self.jobs, initializer=_worker_start,
+                                                                   initargs=(self.init, self.spec))
             futures = {}
             try:
                 for i in todo:
-                    futures[self.pool.submit(fn, items[i])] = i
+                    futures[self.pool.submit(_worker_call, fn, items[i])] = i
             except BrokenProcessPool:       # a worker died while the tasks were being handed out
                 pass
+            except BaseException:
+                # When a fork fails, the processes started before it have no manager thread yet: shutdown would not tell
+                # them to stop, and the exit of this process would wait for them for ever.
+                for p in list(self.pool._processes.values()):
+                    p.kill()
+                raise
             for f in concurrent.futures.as_completed(futures):
                 if not isinstance(f.exception(), BrokenProcessPool):
                     results[futures[f]] = f.result()         # raises what the task raised
             left = [i for i in todo if i not in results]
             if left:
                 self.close()
+                if len(left) == len(todo) and not fresh:
+                    continue                # it may have broken while idle, after the last map: a new pool, not counted
                 if self.jobs == 1 and len(left) == len(todo):
                     raise RuntimeError('the lifter\'s worker process stopped unexpectedly, also when only one was running. '
                                        'Check that the PC is stable (CPU overclock or undervolt, memory) and that no security '
                                        'software stops python.exe.')
                 jobs = max(1, self.jobs * 3 // 4)
-                self.log('nxrecomp: warning: a worker process stopped unexpectedly; running the %d unfinished tasks again with '
-                         '%d processes instead of %d. If this keeps happening, check the CPU overclock or undervolt, the memory '
-                         'and the security software.' % (len(left), jobs, self.jobs))
+                how = 'in a new process'
+                if jobs < self.jobs:
+                    how = 'with %d process%s instead of %d' % (jobs, '' if jobs == 1 else 'es', self.jobs)
+                self.log('nxrecomp: warning: a worker process stopped unexpectedly; running %d unfinished task%s again %s. If '
+                         'this keeps happening, check the CPU overclock or undervolt, the memory and the security software.'
+                         % (len(left), '' if len(left) == 1 else 's', how))
                 sys.stdout.flush()          # fefw_build.py reads a pipe and passes this line on while the lift still runs
                 self.jobs = jobs
             todo = left
