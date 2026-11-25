@@ -868,3 +868,45 @@ NXTEST(romfs_parallel_scan_many_dirs) {
     check_tree(a, items);
     CHECK(read_all(a) == read_all(b));
 }
+
+// Base tree cache: hit matches a fresh scan byte for byte, overlays still apply on top, top-level changes invalidate it, and a
+// corrupt cache file falls back cleanly to a fresh scan.
+NXTEST(romfs_tree_cache_hit_invalidate_and_corrupt) {
+    TempTree base, mod, cache_dir;
+    const std::vector<Item> items = nested_tree();
+    write_host(base.root, items);
+    write_host(mod.root, {{"/a.bin", false, pattern(99, 77)}});
+    const std::string cache = utf8(cache_dir.root / "romfs_cache.bin");
+
+    RomfsImage fresh, first, second;
+    std::string err;
+    REQUIRE(fresh.build(utf8(base.root), &err));
+    REQUIRE(first.build(utf8(base.root), &err, {}, nullptr, cache));    // miss -> writes cache
+    CHECK(std::filesystem::is_regular_file(cache_dir.root / "romfs_cache.bin"));
+    REQUIRE(second.build(utf8(base.root), &err, {}, nullptr, cache));   // hit
+    CHECK(read_all(first) == read_all(fresh));
+    CHECK(read_all(second) == read_all(fresh));
+
+    // Overlays apply fresh on top of the cached base tree.
+    RomfsImage modded_cached, modded_fresh;
+    REQUIRE(modded_cached.build(utf8(base.root), &err, {utf8(mod.root)}, nullptr, cache));
+    REQUIRE(modded_fresh.build(utf8(base.root), &err, {utf8(mod.root)}));
+    CHECK(read_all(modded_cached) == read_all(modded_fresh));
+
+    // Adding a top-level file invalidates the cache and refreshes it.
+    write_host(base.root, {{"/added_top.bin", false, pattern(25, 88)}});
+    RomfsImage updated;
+    REQUIRE(updated.build(utf8(base.root), &err, {}, nullptr, cache));
+    uint64_t off = 0, sz = 0;
+    CHECK(updated.file_extent("/added_top.bin", &off, &sz));
+    CHECK_EQ(sz, 25ull);
+
+    // Corrupting the cache falls back cleanly to a fresh scan.
+    {
+        std::ofstream f(cache_dir.root / "romfs_cache.bin", std::ios::binary | std::ios::trunc);
+        f << "NXRC0001corrupt_payload_bytes";
+    }
+    RomfsImage recovered;
+    REQUIRE(recovered.build(utf8(base.root), &err, {}, nullptr, cache));
+    CHECK(recovered.file_extent("/added_top.bin", &off, &sz));
+}
