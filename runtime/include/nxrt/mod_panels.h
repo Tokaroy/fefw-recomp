@@ -11,7 +11,7 @@ namespace nxrt::services::modapi {
 
 struct PanelInfo {
     std::string title;           // as the mod gave it
-    std::string mod;             // the mod that added it (folder/dll), for the tooltip; empty when added after the start
+    std::string mod;             // the mod that added it (folder/dll), for the tooltip; empty when not added by a starting mod
     NxModPanelFn fn = nullptr;
     void* user = nullptr;
 };

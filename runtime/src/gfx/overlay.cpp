@@ -25,6 +25,7 @@
 
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+#include <imgui_internal.h>
 
 #include "nxrt/config.h"
 #include "nxrt/input_source.h"
@@ -186,11 +187,12 @@ int ui_checkbox(const char* label, int* v) {
     *v = b ? 1 : 0;
     return 1;
 }
+// AlwaysClamp: a value typed into a slider (Ctrl+click) stays within min..max too, so a mod may use it as an index
 int ui_slider_float(const char* label, float* v, float lo, float hi, const char* fmt) {
-    return v && ImGui::SliderFloat(ui_label(label), v, lo, hi, fmt ? fmt : "%.2f") ? 1 : 0;
+    return v && ImGui::SliderFloat(ui_label(label), v, lo, hi, fmt ? fmt : "%.2f", ImGuiSliderFlags_AlwaysClamp) ? 1 : 0;
 }
 int ui_slider_int(const char* label, int* v, int lo, int hi, const char* fmt) {
-    return v && ImGui::SliderInt(ui_label(label), v, lo, hi, fmt ? fmt : "%d") ? 1 : 0;
+    return v && ImGui::SliderInt(ui_label(label), v, lo, hi, fmt ? fmt : "%d", ImGuiSliderFlags_AlwaysClamp) ? 1 : 0;
 }
 int ui_button(const char* label) { return ImGui::Button(ui_label(label)) ? 1 : 0; }
 void ui_same_line() { ImGui::SameLine(); }
@@ -260,6 +262,8 @@ void draw_mod_panels() {
             p.fn(&kModUi, p.user);
             while (g_ui_trees > 0) ui_tree_pop();
             while (g_ui_disabled > 0) ui_end_disabled();
+            // a same_line() with no widget after it would put the next panel's header on this panel's last line
+            if (ImGui::GetCurrentWindow()->DC.IsSameLine) ImGui::NewLine();
             ImGui::PopID();
             ImGui::Unindent();
         }
@@ -1309,8 +1313,12 @@ void Overlay::draw(const FrameInfo& f) {
         return;
     }
     const bool hdr_frame = s.hdr && f.hdr_output;
-    if (s.hdr && !f.hdr_output) return;      // the display left HDR mode: the RGBA8 overlay pipeline does not match the SDR swapchain, so no overlay until the next start
-    if (hdr_frame && !s.composite.ensure_target(f.extent)) return;
+    // the display left HDR mode (the RGBA8 overlay pipeline does not match the SDR swapchain, so no overlay until the next start), or
+    // the HDR target cannot be made: nothing is drawn, so no mod panel is on screen
+    if ((s.hdr && !f.hdr_output) || (hdr_frame && !s.composite.ensure_target(f.extent))) {
+        services::modapi::set_panel_visible(false);
+        return;
+    }
     std::lock_guard<std::mutex> lk(s.mu);
     ImGuiContext* prev = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(s.imgui);

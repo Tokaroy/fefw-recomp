@@ -1751,6 +1751,9 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
         } else if (!waits.empty()) {
             ImGui::AlignTextToFramePadding();
             ImGui::TextColored(kOrange, tr("Restart the game to apply: %s"), waits.c_str());
+        } else if (m.tab == kTabMods) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%s", tr("Each mod decides whether its settings are saved."));
         } else {
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled(tr("Saved to %s and %s"), config_file_path().c_str(), host.settings_path().c_str());

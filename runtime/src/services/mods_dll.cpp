@@ -112,6 +112,10 @@ State& st() {
     return s;
 }
 
+// The mod whose nxmod_early / nxmod_init is running on this thread, or null. add_panel is called from any thread, so it goes by this
+// and not by State::in_init: another thread's panel is not the starting mod's.
+thread_local const Mod* t_starting = nullptr;
+
 std::string mod_name(const NxModApi* api) {
     std::lock_guard<std::mutex> lk(st().mu);
     for (const Mod* m : st().mods)
@@ -410,7 +414,9 @@ void start_all() {
     for (Mod* m : mods) {
         if (m->declined) continue;
         st().in_init = m;
+        t_starting = m;
         const int rc = m->init(&m->api, m->dir.c_str());
+        t_starting = nullptr;
         st().in_init = nullptr;
         if (rc != 0) {
             withdraw(m);
@@ -505,7 +511,9 @@ void load_one(const std::string& mod, const std::filesystem::path& mod_dir, cons
     // nxmod_early (optional): before the game's file system is set up, so the mod can register file edits
     if (const auto early = reinterpret_cast<NxModEarlyFn>(GetProcAddress(dll, "nxmod_early"))) {
         st().in_init = m;
+        t_starting = m;
         const int rc = early(&m->api, m->dir.c_str());
+        t_starting = nullptr;
         st().in_init = nullptr;
         if (rc != 0) {
             m->declined = true;
@@ -607,7 +615,7 @@ int add_panel(const char* title, NxModPanelFn fn, void* user) {
     std::lock_guard<std::mutex> lk(st().mu);
     // added from nxmod_early / nxmod_init: kept back until nxmod_init returns 0, so the overlay never calls into a mod that is still
     // starting or that declined
-    const Mod* owner = st().in_init;
+    const Mod* owner = t_starting;
     st().panels.push_back({title, fn, user, owner, owner == nullptr});
     if (!owner) st().live_panels.fetch_add(1, std::memory_order_relaxed);
     NXLOG_I(kTag, "%s: added the panel \"%s\" to the Mods tab", owner ? owner->name.c_str() : "a code mod", title);

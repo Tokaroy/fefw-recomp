@@ -93,6 +93,8 @@ typedef void (*NxModFileFn)(const NxModFile* file, void* user);
  *
  * Labels are UTF-8. Two widgets of one panel need different labels; text after "##" is not shown but makes a label unique
  * ("Go back##1"). The functions that return int answer 1 when the player changed the value or pressed the button this frame.
+ * A slider's value stays within min..max here, typed input included; other runtimes may let typed input go past them, so check a
+ * value before using it as an index.
  * The layout is shared with EmblemWeave and ObeliskChamber: do not reorder it, and add new members only at the end. */
 typedef struct NxModUi {
     uint32_t size;                                            /* sizeof(NxModUi) of the runtime */
@@ -189,8 +191,9 @@ typedef struct NxModApi {
     /* ---- version 4 (check api->version >= 4 before use) ---- */
 
     /* Adds a section titled `title` to the F1 menu's Mods tab (see NxModUi): fn(ui, user) draws its contents each frame the tab is open
-     * and the section is unfolded. From nxmod_early, nxmod_init or later (one added in either is shown once nxmod_init has returned 0).
-     * The tab appears once a mod has a panel. Returns 1, 0 when an argument is missing. Without an overlay (headless runs, or the
+     * and the section is unfolded. From nxmod_early, nxmod_init or later. One added by either, on the thread that called it, is shown
+     * once nxmod_init has returned 0 and dropped if the mod declines; one added from any other thread, or later, is shown at once and
+     * stays. The tab appears once a mod has a panel. Returns 1, 0 when an argument is missing. Without an overlay (headless runs, or the
      * overlay switched off) the panel is never drawn. */
     int (*add_panel)(const char* title, NxModPanelFn fn, void* user);
 
