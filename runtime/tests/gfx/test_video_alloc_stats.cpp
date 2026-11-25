@@ -50,3 +50,21 @@ NXTEST(driver_figure_behind) {
     CHECK(s.outside_bytes() == 0);
     CHECK(nxrt::gfx::video_alloc_free_percent(nxrt::gfx::VideoAllocGroup{}) == 0);
 }
+
+NXTEST(vma_block_sizing_for_small_and_large_heaps) {
+    constexpr uint64_t kMiB = 1ull << 20;
+    constexpr uint64_t kGiB = 1ull << 30;
+    // Unknown heap: keep VMA default
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(0), 0ull);
+    // 4 GB discrete card (e.g. GTX 1650, 3.84 GiB heap): 32 MiB blocks
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(3935 * kMiB), 32 * kMiB);
+    // 6 GB card / Steam Deck (6.0 GiB heap): 64 MiB blocks
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(6 * kGiB), 64 * kMiB);
+    // 8+ GB card: VMA default (256 MiB)
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(8 * kGiB), 0ull);
+    // The boundaries belong to the smaller size
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(4608 * kMiB), 32 * kMiB);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(4608 * kMiB + 1), 64 * kMiB);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(7168 * kMiB), 64 * kMiB);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(7168 * kMiB + 1), 0ull);
+}

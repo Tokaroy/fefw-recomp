@@ -228,6 +228,7 @@ size_t pick_gpu(const std::vector<GpuCandidate>& gpus, const char* want, bool* m
 struct Device::Impl {
     std::mutex small_pools_mu;                       // ImageDesc::small_pool: one VMA pool of 16 MiB blocks per memory type
     std::map<uint32_t, VmaPool> small_pools;
+    uint64_t video_heap_bytes = 0;                   // size of the largest device-local heap (for VMA block sizing)
     // validation counters (written from any thread by the layer callback)
     std::atomic<uint64_t> errors{0}, warnings{0}, infos{0}, verbose{0};
     std::mutex first_error_mu;
@@ -1073,6 +1074,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         uint64_t largest = 0;   // [memory] scale_limits = auto looks at the card's size
         for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
             if (mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) largest = std::max<uint64_t>(largest, mp.memoryHeaps[i].size);
+        impl_->video_heap_bytes = largest;
         nxrt::mem::limits_note_video_heap(largest);
     }
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
@@ -1095,6 +1097,11 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
     aci.instance = instance_;
     aci.vulkanApiVersion = VK_API_VERSION_1_3;
     aci.pVulkanFunctions = &vf;
+    aci.preferredLargeHeapBlockSize = vma_preferred_block_size(impl_->video_heap_bytes);
+    if (aci.preferredLargeHeapBlockSize)
+        NXLOG_I(kTag, "video memory allocator: preferred block size %llu MiB in every heap over 1 GiB (video memory heap %.2f GiB)",
+                static_cast<unsigned long long>(aci.preferredLargeHeapBlockSize >> 20),
+                static_cast<double>(impl_->video_heap_bytes) / (1024.0 * 1024.0 * 1024.0));
     if (x_membudget) aci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     g_budget_exact = x_membudget;
     const bool mem_priority = x_mpri && ampri.memoryPriority;
