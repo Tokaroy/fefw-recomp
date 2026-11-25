@@ -95,13 +95,20 @@ pub fn apply(dir: &Path, edits: &[Edit]) -> Result<(), String> {
 
 /// The ini values setup owns: where the game code, the romfs, the dumped add-on content, the mods, the shader cache and the texture
 /// cache are. With no dlc/ in the dump, [aoc] dir is empty: no add-on content.
-fn owned(p: &Paths) -> Vec<(&'static str, &'static str, String)> {
+fn owned(p: &Paths, ini: &Ini) -> Vec<(&'static str, &'static str, String)> {
+    let kept = ini.get("aoc", "dir").unwrap_or_default();
+    let aoc = match p.dlc.as_deref() {
+        Some(d) => crate::dump::game_path(d),
+        None if !cfg!(windows) && kept.starts_with("Z:/") && !crate::dump::scan_dlc(Path::new(&kept[2..])).is_empty() => kept,
+        None if cfg!(windows) && !crate::dump::scan_dlc(Path::new(&kept)).is_empty() => kept,
+        None => String::new(),
+    };
     vec![
         ("fs", "exefs", crate::dump::game_path(&p.plain_exefs())),
         ("fs", "main", String::new()),
         ("fs", "romfs", crate::dump::game_path(&p.romfs)),
         ("fs", "mods", crate::dump::game_path(&p.mods())),
-        ("aoc", "dir", p.dlc.as_deref().map(crate::dump::game_path).unwrap_or_default()),
+        ("aoc", "dir", aoc),
         ("nvn", "shader_cache", crate::dump::game_path(&p.spirv())),
         ("nvn", "bc7_cache", crate::dump::game_path(&p.bc7())),
     ]
@@ -109,7 +116,7 @@ fn owned(p: &Paths) -> Vec<(&'static str, &'static str, String)> {
 
 pub fn play_paths_ok(dir: &Path, p: &Paths) -> bool {
     let Some(ini) = load(&dir.join(GAME_INI)) else { return false };
-    owned(p).iter().all(|(s, k, v)| ini.get(s, k).unwrap_or_default().replace('\\', "/") == *v)
+    owned(p, &ini).iter().all(|(s, k, v)| ini.get(s, k).unwrap_or_default().replace('\\', "/") == *v)
 }
 
 /// The shipped language tables (`locales\*.ini`), from the package next to the launcher or from the checkout.
@@ -162,7 +169,8 @@ pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<(), String> {
     let mut changed = new;
     let _ = fs::create_dir_all(p.mods());
     install_locales(dir, p);
-    for (s, k, v) in owned(p) {
+    let wanted = owned(p, &ini);
+    for (s, k, v) in wanted {
         if ini.get(s, k).unwrap_or_default().replace('\\', "/") != v {
             ini.set(s, k, &v);
             changed = true;
@@ -208,6 +216,20 @@ mod tests {
             game_dir: game.to_path_buf(),
             package: None,
         }
+    }
+
+    #[test]
+    fn a_dlc_folder_setup_wrote_is_kept_when_the_dump_has_none() {
+        let repo = tmp("aoc-repo");
+        let game = tmp("aoc-game");
+        let dlc = tmp("aoc-dlc");
+        fs::create_dir_all(dlc.join("04007EF01F8AF001").join("romfs")).unwrap();
+        let p = paths_with(&repo, &game);
+        let mut ini = Ini::parse("");
+        ini.set("aoc", "dir", &crate::dump::game_path(&dlc));
+        assert_eq!(owned(&p, &ini).iter().find(|o| o.0 == "aoc").unwrap().2, crate::dump::game_path(&dlc));
+        ini.set("aoc", "dir", "/missing");
+        assert_eq!(owned(&p, &ini).iter().find(|o| o.0 == "aoc").unwrap().2, "");
     }
 
     #[test]

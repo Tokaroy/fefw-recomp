@@ -873,9 +873,9 @@ fn prepare_fail(msg: &str) -> i32 {
     1
 }
 
-/// --prepare --game <dump folder or .nup>: the same setup the Setup page runs (setup::run), without a window.
+/// --prepare --game <dump folder or .nup> [--dlc <folder of add-ons>]: the same setup the Setup page runs (setup::run), without a window.
 /// Prints `progress <0..1> <text>` lines; returns the exit code.
-fn prepare_headless(game: Option<String>) -> i32 {
+fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     let game = match game.filter(|g| !g.trim().is_empty()) {
         Some(g) => g,
         None => return prepare_fail("--prepare needs --game <dump folder or .nup file>."),
@@ -916,10 +916,17 @@ fn prepare_headless(game: Option<String>) -> i32 {
             Err(e) => return prepare_fail(&e),
         }
     }
-    let p = match paths(&cfg) {
+    let mut p = match paths(&cfg) {
         Ok(p) => p,
         Err(e) => return prepare_fail(&e),
     };
+    if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
+        let d = PathBuf::from(d.trim());
+        if dump::scan_dlc(&d).is_empty() {
+            return prepare_fail(&format!("No add-ons found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.", d.display()));
+        }
+        p.dlc = Some(d);
+    }
     let shared = Arc::new(setup::Shared::default());
     *shared.progress.lock().unwrap() =
         setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
@@ -959,7 +966,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_arg = arg_value(&args, "--game");
     if args.iter().any(|a| a == "--prepare") {
-        std::process::exit(prepare_headless(game_arg));
+        std::process::exit(prepare_headless(game_arg, arg_value(&args, "--dlc")));
     }
     if let Some(g) = game_arg.filter(|g| PathBuf::from(g.trim()).is_dir()) {
         let _ = GAME_ARG.set(g.trim().to_string());
