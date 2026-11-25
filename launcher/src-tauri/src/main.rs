@@ -12,6 +12,7 @@ mod locale;
 mod lsfg;
 mod nup;
 mod play;
+mod screen;
 mod settings;
 mod setup;
 mod steam;

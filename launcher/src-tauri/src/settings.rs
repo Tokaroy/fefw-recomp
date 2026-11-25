@@ -151,7 +151,12 @@ pub fn install_locales(dir: &Path, p: &Paths) {
 }
 
 /// Writes fefw.ini's paths (kept: every other key, and a save folder the player chose). Used by setup and before every Play.
-pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<(), String> {
+/// The first time, it also picks an output size for the screen; the answer is then a line for the setup log.
+pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<Option<String>, String> {
+    ensure_play_paths_on(dir, p, crate::screen::size)
+}
+
+fn ensure_play_paths_on(dir: &Path, p: &Paths, screen: impl FnOnce() -> Option<(u32, u32)>) -> Result<Option<String>, String> {
     let path = dir.join(GAME_INI);
     let new = !path.exists();
     let mut ini = load(&path).unwrap_or_else(|| {
@@ -160,6 +165,9 @@ pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<(), String> {
         )
     });
     let mut changed = new;
+    // no [fs] paths yet: Set up has not written here before (Settings saved before it leaves a file with only what was changed)
+    let first = ini.get("fs", "exefs").is_none();
+    let mut note = None;
     let _ = fs::create_dir_all(p.mods());
     install_locales(dir, p);
     for (s, k, v) in owned(p) {
@@ -180,12 +188,21 @@ pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<(), String> {
         ini.set("boot", "gfx", "window");
         ini.set("dlss", "upscaler", "taau");
         ini.set("fefw", "fps60", "0");
-        ini.set("fefw", "output", "console");
+    }
+    if first && ini.get("fefw", "output").is_none() {
+        // once only, and never over a choice: a screen smaller than the console's 2560x1440 starts at its own class of size
+        let screen = screen();
+        let output = crate::screen::output_for(screen);
+        ini.set("fefw", "output", output);
+        changed = true;
+        if let Some((w, h)) = screen.filter(|_| output != "console") {
+            note = Some(format!("Output resolution set to {output} for the {w}x{h} screen (Settings changes it)"));
+        }
     }
     if changed {
         write_atomic(&path, &ini.to_text())?;
     }
-    Ok(())
+    Ok(note)
 }
 
 #[cfg(test)]
@@ -208,6 +225,51 @@ mod tests {
             game_dir: game.to_path_buf(),
             package: None,
         }
+    }
+
+    fn output_of(game: &Path) -> Option<String> {
+        load(&game.join(GAME_INI)).unwrap().get("fefw", "output")
+    }
+
+    #[test]
+    fn the_first_set_up_fits_the_output_to_a_small_screen_once() {
+        let repo = tmp("repo-output");
+        let game = tmp("game-output");
+        let p = paths_with(&repo, &game);
+
+        let note = ensure_play_paths_on(&game, &p, || Some((800, 1280))).unwrap();
+        assert_eq!(output_of(&game).as_deref(), Some("720p"));
+        assert!(note.unwrap().contains("720p"));
+
+        // the player's later choice stays, and the screen is not asked again
+        apply(&game, &[Edit { file: "game".into(), section: "fefw".into(), key: "output".into(), value: "console".into() }]).unwrap();
+        assert_eq!(ensure_play_paths_on(&game, &p, || panic!("asked again")).unwrap(), None);
+        assert_eq!(output_of(&game).as_deref(), Some("console"));
+    }
+
+    #[test]
+    fn settings_saved_before_set_up_do_not_stop_the_first_defaults() {
+        let repo = tmp("repo-early");
+        let game = tmp("game-early");
+        let p = paths_with(&repo, &game);
+        fs::write(game.join(GAME_INI), "[gfx]\nui_language = zh\n").unwrap();
+        ensure_play_paths_on(&game, &p, || Some((1920, 1080))).unwrap();
+        assert_eq!(output_of(&game).as_deref(), Some("1080p"));
+
+        // an output picked there is the player's
+        fs::write(game.join(GAME_INI), "[fefw]\noutput = 1440p\n").unwrap();
+        assert_eq!(ensure_play_paths_on(&game, &p, || panic!("asked")).unwrap(), None);
+        assert_eq!(output_of(&game).as_deref(), Some("1440p"));
+    }
+
+    #[test]
+    fn an_ini_set_up_wrote_before_keeps_its_output() {
+        let repo = tmp("repo-old");
+        let game = tmp("game-old");
+        let p = paths_with(&repo, &game);
+        fs::write(game.join(GAME_INI), "[fs]\nexefs = old\n").unwrap();
+        assert_eq!(ensure_play_paths_on(&game, &p, || panic!("asked")).unwrap(), None);
+        assert_eq!(output_of(&game), None);
     }
 
     #[test]
