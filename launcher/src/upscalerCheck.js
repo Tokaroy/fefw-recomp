@@ -13,8 +13,11 @@ const BUTTON_OF = { dlss: 'dlss', dlss_framegen: 'dlssFg', fsr: 'fsr', xess: 'xe
 async function missingFiles(isLinux) {
   const [cfg, data] = await Promise.all([api('get_config'), api('read_settings')]);
   const g = data.game || {};
-  const upscaler = String(g['dlss.upscaler'] ?? 'taau').trim().toLowerCase();
-  const frameGen = String(g['dlss.frame_gen'] ?? '0').trim().toLowerCase();
+  // the runtime's own reading of the values (framegen.cpp fg_setting, temporal_dlss.cpp, extras_state.cpp): 1/2 are DLSS frame generation, 3 is FSR 3
+  const up = String(g['dlss.upscaler'] ?? 'taau').trim().toLowerCase();
+  const upscaler = up === 'dlaa' ? 'dlss' : up;
+  const fg = String(g['dlss.frame_gen'] ?? '0').trim().toLowerCase();
+  const frameGen = ['1', '2', 'dlss', 'dlssg', 'on'].includes(fg) ? 'dlss' : ['3', 'fsr3', 'fsr'].includes(fg) ? 'fsr3' : '0';
   const r = await api('upscaler_files', { fsrDir: fwd(g['upscale.fsr_dll']), dlssDir: fwd(g['upscale.dlss_dll']), xessDir: fwd(g['upscale.xess_dll']) });
   const dirs = { fsr: g['upscale.fsr_dll'], xess: g['upscale.xess_dll'], dlss: g['upscale.dlss_dll'], dlss_framegen: g['upscale.dlss_dll'] };
   const missing = [];
@@ -40,8 +43,11 @@ export async function confirmUpscalerFiles(isLinux) {
   }
   if (!st.missing.length) return true;
   // one download per kind; the frame generation set includes the plain DLSS files
-  const kinds = [...new Set(st.missing.map((m) => m.kind))];
-  const kind = kinds.includes('dlss_framegen') ? 'dlss_framegen' : kinds[0];
+  const pick = () => {
+    const kinds = [...new Set(st.missing.map((m) => m.kind))];
+    return kinds.includes('dlss_framegen') ? 'dlss_framegen' : kinds[0];
+  };
+  let kind = pick();
 
   return new Promise((resolve) => {
     const box = document.createElement('div');
@@ -133,8 +139,16 @@ export async function confirmUpscalerFiles(isLinux) {
       busy = false;
       if (s.state === 'cancelled') { draw(); return; }
       toast(s.message, s.state === 'done' ? 'ok' : 'error');
-      if (s.state === 'done') close(true);
-      else draw();
+      if (s.state !== 'done') { draw(); return; }
+      try {
+        st = await missingFiles(isLinux);
+      } catch (e) {
+        close(true);
+        return;
+      }
+      if (!st.missing.length) { close(true); return; }
+      kind = pick();
+      draw();
     }
 
     draw();
