@@ -2339,6 +2339,11 @@ void tex_residency_restore(Frame& f) {
                     hold_until = now + 1000;
                     break;
                 }
+                if (gpass_on()) {
+                    char lb[48];
+                    std::snprintf(lb, sizeof lb, "restore texture %u", d.t->id);
+                    gpass_stamp(f, lb, 0);
+                }
                 bytes += d.full;
                 const uint32_t waited = now - d.want_ms;
                 st_wait_ms += waited;

@@ -1415,6 +1415,11 @@ void astc_gpu_pump(Frame& f) {
         }
         // handed back to the CPU: what is still queued goes the CPU way too (as a failed pass)
         const Pass p = s.handoff.load(std::memory_order_acquire) ? Pass::Failed : run_work(w, f, true);
+        if (gpass_on() && p != Pass::Failed) {
+            char lb[48];
+            std::snprintf(lb, sizeof lb, "astc gpu texture %u", t->id);
+            gpass_stamp(f, lb, 0);
+        }
         if (p == Pass::More) break;        // the budget is used up
         if (p == Pass::Finished) {
             // how long its stand-in was on screen: from the first present that began after it was queued (the frame it was queued in showed it first)

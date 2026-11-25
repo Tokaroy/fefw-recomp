@@ -1078,7 +1078,10 @@ uint64_t submit_on_render_thread(const std::function<void(Frame&)>& record, uint
         s.cpu_t0 = ft::now_ns();
         s.frame = g->ctr.presents.load(std::memory_order_relaxed);
     }
-    if (!unsignalled) residency_begin_submit(f);   // [gfx] residency: the pool marks' readback, demotions and promotions (nvn_residency.h)
+    if (!unsignalled) {
+        residency_begin_submit(f);   // [gfx] residency: the pool marks' readback, demotions and promotions (nvn_residency.h)
+        if (gpass_on()) gpass_stamp(f, "residency", 0);
+    }
     bool aborted = false;
     try {
         test_throw(g_test_records);
