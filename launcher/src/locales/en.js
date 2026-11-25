@@ -272,7 +272,7 @@ export const en = {
     'settings.astcBc.bc1': "Compact (BC1)",
     'settings.gpu.label': "Graphics card",
     'settings.gpu.short': 'Which GPU draws the game.',
-    'settings.gpu.hint': "On a PC with two graphics cards, pick the integrated GPU to leave the discrete card idle and save power. It is slower, so lower the resolution if the frame rate drops. A card that cannot run the game is skipped. To pick a card by name, set it in the F1 menu in the game. Press Set up again after changing it so the shaders are prepared for that card. A [gfx] gpu line in fefw.ini or the NXRT_GFX_GPU variable overrides this setting.",
+    'settings.gpu.hint': "On a PC with two graphics cards, pick the integrated GPU to leave the discrete card idle and save power. It is slower, so lower the resolution if the frame rate drops. A card that cannot run the game is skipped. To pick a card by name, set it in the F1 menu in the game. After changing it, open Setup and press Check again so the shaders are prepared for that card. A [gfx] gpu line in fefw.ini or the NXRT_GFX_GPU variable overrides this setting.",
     'settings.gpu.auto': "Automatic (discrete GPU with the most video memory)",
     'settings.gpu.discrete': "Discrete GPU",
     'settings.gpu.integrated': "Integrated GPU (saves power)",
