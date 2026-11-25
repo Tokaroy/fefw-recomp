@@ -68,6 +68,11 @@ mode once it is found.
 The launcher's **Settings** page covers resolution, frame rate, upscaling, window mode, sound and controls. Press **F1** in game for
 the overlay. Every option is described in [runtime/docs/CONFIG.md](runtime/docs/CONFIG.md).
 
+### Launcher and menu language
+
+The launcher and the F1 menu come in English and Simplified Chinese and start in your system's language. To change it, use the
+language button at the foot of the launcher's sidebar; the choice covers both.
+
 ### Game language
 
 **Settings > Language** (or **F1 > Game**) picks the language of the game's text and voices: Japanese, English (US or UK), French,

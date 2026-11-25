@@ -21,8 +21,10 @@ locales/
    identifier, not text - do not change it. Entries left empty or missing fall
    back to English, so a partial translation is always safe to ship.
 4. Keep the file UTF-8 (with or without BOM).
-5. Start the launcher and pick the language in Settings. It appears in the
-   list automatically.
+5. Start the launcher. The language appears in the list behind the language
+   button at the foot of the sidebar. A pack named after a system language
+   (`de.json`, `pt-BR.json`) is also used on such a system until the player
+   picks another one.
 
 ```json
 {
