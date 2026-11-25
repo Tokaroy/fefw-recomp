@@ -478,6 +478,12 @@ bool apply_fixed(Sec sec, const std::string& k, const std::string& v, Settings* 
                 s->display.astc_quality = q;
                 return true;
             }
+            if (k == "gpu") {
+                const std::string q = lower(v);
+                if (q == "discrete" || q == "integrated") s->display.gpu = q;
+                else s->display.gpu = v.empty() || q == "auto" ? "auto" : v;
+                return true;
+            }
             if (k == "astc_bc") {
                 const std::string q = lower(v);
                 if (q != "auto" && q != "off" && q != "bc1") {
@@ -995,6 +1001,7 @@ std::string format_settings(const Settings& s) {
     kv("shader_prewarm", flag(s.display.shader_prewarm));
     kv("astc_quality", s.display.astc_quality);
     kv("astc_bc", s.display.astc_bc);
+    kv("gpu", s.display.gpu.empty() ? std::string("auto") : s.display.gpu);
     kv("monitor", s.display.monitor <= 0 ? std::string("auto") : std::to_string(s.display.monitor));
 
     o += "\n[audio]\n";

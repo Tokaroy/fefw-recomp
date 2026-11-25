@@ -110,7 +110,7 @@ bool same_settings(const Settings& a, const Settings& b) {
           da.aspect == db.aspect && da.fov_offset == db.fov_offset && da.dynamic_resolution == db.dynamic_resolution &&
           da.anisotropy == db.anisotropy && da.lod_bias == db.lod_bias && da.bloom == db.bloom &&
           da.chromatic_aberration == db.chromatic_aberration && da.fast_gpu_memory == db.fast_gpu_memory &&
-          da.fewer_gpu_waits == db.fewer_gpu_waits))
+          da.fewer_gpu_waits == db.fewer_gpu_waits && da.gpu == db.gpu))
         return false;
     const nxrt::extras::Settings &ea = a.extras, &eb = b.extras;
     if (!(ea.hdr.mode == eb.hdr.mode && ea.hdr.format == eb.hdr.format && ea.hdr.peak_nits == eb.hdr.peak_nits &&
@@ -914,6 +914,7 @@ NXTEST(display_render_keys_defaults) {
     CHECK(d.chromatic_aberration);
     CHECK(d.fast_gpu_memory);
     CHECK(d.fewer_gpu_waits);
+    CHECK(d.gpu == "auto");
 }
 
 NXTEST(default_settings_text_has_display_keys) {
@@ -951,6 +952,20 @@ NXTEST(display_render_keys_parse) {
     CHECK(!s.display.chromatic_aberration);
     CHECK(!s.display.fast_gpu_memory);
     CHECK(!s.display.fewer_gpu_waits);
+}
+
+NXTEST(display_gpu_key_parse_and_round_trip) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings s;
+    std::string err;
+    REQUIRE_MSG(parse_settings("[display]\ngpu = AMD Radeon 780M\n", &s, &err), err);
+    CHECK(s.display.gpu == "AMD Radeon 780M");
+    Settings back;
+    REQUIRE_MSG(parse_settings(format_settings(s).c_str(), &back, &err), err);
+    CHECK(back.display.gpu == "AMD Radeon 780M");
+    REQUIRE_MSG(parse_settings("[display]\ngpu = Auto\n", &s, &err), err);
+    CHECK(s.display.gpu == "auto");
+    CHECK(format_settings(s).find("\ngpu = auto\n") != std::string::npos);
 }
 
 NXTEST(display_render_keys_range_errors) {

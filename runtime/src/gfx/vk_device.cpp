@@ -215,6 +215,8 @@ size_t pick_gpu(const std::vector<GpuCandidate>& gpus, const char* want, bool* m
         if (end && !*end && n < gpus.size()) k = static_cast<size_t>(n);
     } else {
         for (size_t i = 0; i < gpus.size() && k == SIZE_MAX; ++i)
+            if (lower(gpus[i].name) == w) k = i;
+        for (size_t i = 0; i < gpus.size() && k == SIZE_MAX; ++i)
             if (lower(gpus[i].name).find(w) != std::string::npos) k = i;
     }
     if (k != SIZE_MAX) return k;
