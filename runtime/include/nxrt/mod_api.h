@@ -46,8 +46,11 @@
  *
  *         extern "C" __declspec(dllexport) int nxmod_early(const NxModApi* api, const char* mod_dir);
  *
- *     which is called as soon as the DLL is loaded. The game is not in memory yet: only log, edit_file and the version 3 helpers
- *     (mod folders, host files, zstd, memory) may be used there. Nonzero = the mod declines, as for nxmod_init.
+ *     which is called as soon as the DLL is loaded. The game is not in memory yet: only log, edit_file, the version 3 helpers
+ *     (mod folders, host files, zstd, memory) and add_panel may be used there. Nonzero = the mod declines, as for nxmod_init.
+ *   - (version 4) show its own settings on the F1 menu's Mods tab (add_panel, panel_visible), drawn with simple widgets (NxModUi).
+ *     This is the same interface, member for member, as EmblemWeave's version 4 and the panel part of ObeliskChamber's version 5, so
+ *     a mod's panel works in all three. A mod checks api->version >= 4 before using it.
  *
  * Loading can be turned off with [fs] dll_mods = false. A DLL runs with the same rights as the game: install only mods you trust.
  */
@@ -62,7 +65,7 @@
 extern "C" {
 #endif
 
-#define NXMOD_API_VERSION 3u
+#define NXMOD_API_VERSION 4u
 
 typedef void (*NxModInlineFn)(Ctx* c, uint64_t addr, void* user);
 typedef int (*NxModSiteFn)(Ctx* c, uint64_t addr, void* user);   /* midhook / entry hook: nonzero = handled (nxrt/hooks.h) */
@@ -80,6 +83,35 @@ typedef struct NxModFile {
     void (*replace)(const struct NxModFile* file, const void* data, uint64_t size);
 } NxModFile;
 typedef void (*NxModFileFn)(const NxModFile* file, void* user);
+
+/* (version 4) A mod's panel in the F1 menu's Mods tab. The tab lists every mod's panel as a section that folds
+ * open; the panel function draws the section's contents with these widgets, each frame the tab is open.
+ *
+ * The panel function runs on the thread that presents frames, NOT the game's main thread, while the game keeps running. It may read
+ * guest memory (check is_mapped first) and change the mod's own variables, but it must not call call_guest or change game state that
+ * the game could be using at that moment: set a flag and do the work in on_frame instead.
+ *
+ * Labels are UTF-8. Two widgets of one panel need different labels; text after "##" is not shown but makes a label unique
+ * ("Go back##1"). The functions that return int answer 1 when the player changed the value or pressed the button this frame.
+ * The layout is shared with EmblemWeave and ObeliskChamber: do not reorder it, and add new members only at the end. */
+typedef struct NxModUi {
+    uint32_t size;                                            /* sizeof(NxModUi) of the runtime */
+    void (*text)(const char* text);
+    void (*text_disabled)(const char* text);                  /* greyed out: hints, units, state */
+    void (*text_colored)(uint32_t rgba, const char* text);    /* 0xRRGGBBAA */
+    int (*checkbox)(const char* label, int* value);           /* value 0 / 1 */
+    int (*slider_float)(const char* label, float* value, float min, float max, const char* format);   /* format NULL = "%.2f" */
+    int (*slider_int)(const char* label, int* value, int min, int max, const char* format);           /* format NULL = "%d" */
+    int (*button)(const char* label);
+    void (*same_line)(void);                                  /* the next widget goes on the same line */
+    void (*separator)(const char* label);                     /* a line across, with the label in it; NULL = a plain line */
+    void (*begin_disabled)(int disabled);                     /* widgets up to end_disabled are greyed out and ignore input */
+    void (*end_disabled)(void);
+    int (*tree_node)(const char* label, int default_open);    /* 1 = open: draw the children, then call tree_pop */
+    void (*tree_pop)(void);
+    void (*tooltip)(const char* text);                        /* shown while the mouse is on the widget drawn just before */
+} NxModUi;
+typedef void (*NxModPanelFn)(const NxModUi* ui, void* user);
 
 typedef struct NxModApi {
     uint32_t version;            /* NXMOD_API_VERSION of the runtime */
@@ -153,6 +185,17 @@ typedef struct NxModApi {
     /* Memory for mods built without a C runtime: alloc returns size zeroed bytes (NULL on failure), free_mem releases them. */
     void* (*alloc)(uint64_t size);
     void (*free_mem)(void* p);
+
+    /* ---- version 4 (check api->version >= 4 before use) ---- */
+
+    /* Adds a section titled `title` to the F1 menu's Mods tab (see NxModUi): fn(ui, user) draws its contents each frame the tab is open
+     * and the section is unfolded. From nxmod_early, nxmod_init or later (one added in either is shown once nxmod_init has returned 0).
+     * The tab appears once a mod has a panel. Returns 1, 0 when an argument is missing. Without an overlay (headless runs, or the
+     * overlay switched off) the panel is never drawn. */
+    int (*add_panel)(const char* title, NxModPanelFn fn, void* user);
+
+    /* 1 while a mod's panel is on screen (the game gets no input meanwhile). Any thread. */
+    int (*panel_visible)(void);
 } NxModApi;
 
 typedef int (*NxModInitFn)(const NxModApi* api, const char* mod_dir);

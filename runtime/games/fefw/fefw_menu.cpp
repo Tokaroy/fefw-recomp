@@ -76,8 +76,8 @@ const ImVec4 kGreen(0.55f, 0.86f, 0.55f, 1.0f);
 const ImVec4 kRed(1.0f, 0.42f, 0.38f, 1.0f);
 const ImVec4 kAccent(0.42f, 0.78f, 0.96f, 1.0f);
 
-enum Tab { kTabDisplay, kTabGraphics, kTabFrameRate, kTabAudio, kTabControls, kTabGame, kTabDebug, kTabCount };
-constexpr const char* kTabNames[kTabCount] = {"Display", "Graphics", "Frame rate", "Audio", "Controls", "Game", "Debug"};
+enum Tab { kTabDisplay, kTabGraphics, kTabFrameRate, kTabAudio, kTabControls, kTabGame, kTabDebug, kTabMods, kTabCount };   // kTabMods stays last: shown only with a panel
+constexpr const char* kTabNames[kTabCount] = {"Display", "Graphics", "Frame rate", "Audio", "Controls", "Game", "Debug", "Mods"};
 
 // ---- the fefw.ini keys the menu edits -------------------------------------------------------------------------------------------------
 // The value read at start is kept (boot) so a restart-only row can show what is in force and the bottom bar can list what waits.
@@ -1621,6 +1621,19 @@ void debug_page(UiHost& host, Menu& m, gfx::Overlay& ov) {
                         static_cast<unsigned long long>(log_count(LogLevel::Warn)));
 }
 
+// ---- code mods' own settings (mod API version 4, add_panel) ---------------------------------------------------------------------------
+void mods_page(Menu& m) {
+    m.help = "Settings from your code mods.";
+    if (m.focus_first && m.tab == m.focus_tab) {   // the gamepad cursor starts on the first panel
+        ImGui::SetKeyboardFocusHere();
+        ImGui::SetNavCursorVisible(true);
+        m.focus_first = false;
+    }
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);   // a mod's widgets carry their labels to the right
+    gfx::draw_mod_panels();
+    ImGui::PopItemWidth();
+}
+
 // ---- what waits for a restart -----------------------------------------------------------------------------------------------------------
 std::string pending_list(Menu& m) {
     std::string s;
@@ -1661,6 +1674,7 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
     if (!ImGui::IsAnyItemActive()) m.edit = host.settings();   // the working copy follows the game (the counter hotkey, Alt+Enter)
     const play::LiveStatus live = host.status();
 
+    const int tabs = gfx::has_mod_panels() ? kTabCount : kTabMods;   // no Mods tab without a mod that has a panel
     // B or Escape go back; with nothing open or held they close the menu
     const bool back = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
     if (back && !m.busy_last && !opened) ov.request_hide();
@@ -1668,7 +1682,7 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
     if (!ImGui::IsAnyItemActive() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
         int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ? 1 : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) ? -1 : 0;
         if (step) {
-            m.tab_request = (m.tab + step + kTabCount) % kTabCount;
+            m.tab_request = (m.tab + step + tabs) % tabs;
             m.focus_tab = m.tab_request;
             m.focus_first = true;
         }
@@ -1698,7 +1712,7 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
         const float help_h = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
         const float bottom = help_h + ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 3;
         if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons | ImGuiTabBarFlags_FittingPolicyShrink)) {
-            for (int t = 0; t < kTabCount; ++t) {
+            for (int t = 0; t < tabs; ++t) {
                 char label[48];
                 std::snprintf(label, sizeof label, "  %s  ###tab%d", tr(kTabNames[t]), t);
                 if (!ImGui::BeginTabItem(label, nullptr, m.tab_request == t ? ImGuiTabItemFlags_SetSelected : 0)) continue;
@@ -1713,6 +1727,7 @@ void settings_menu(play::UiHost& host, gfx::Overlay& ov) {
                     case kTabControls: controls_page(host, m, live); break;
                     case kTabGame: game_page(host, m); break;
                     case kTabDebug: debug_page(host, m, ov); break;
+                    case kTabMods: mods_page(m); break;
                 }
                 ImGui::PopItemWidth();
                 ImGui::EndChild();

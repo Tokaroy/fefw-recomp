@@ -30,6 +30,7 @@
 #include "nxrt/input_source.h"
 #include "nxrt/log.h"
 #include "nxrt/menu_i18n.h"
+#include "nxrt/mod_panels.h"
 #include "nxrt/nvn.h"
 #include "nxrt/nvn_backend.h"
 #include "nxrt/platform.h"
@@ -168,6 +169,67 @@ constexpr uint64_t kKbDirBits[4] = {
     hid::btn(hid::kBtnLeft) | hid::btn(hid::kBtnStickLLeft), hid::btn(hid::kBtnRight) | hid::btn(hid::kBtnStickLRight)};
 constexpr double kKbRepeatDelay = 0.40, kKbRepeatEvery = 0.07;   // seconds: a held direction or B repeats
 
+// ---- the code mods' widgets (mod API version 4, NxModUi): thin wrappers over ImGui, called from a panel ----------------------------
+// From EmblemWeave (its #71, by Mi-Kel) by way of ObeliskChamber, so a panel looks and works the same in all three.
+const char* ui_label(const char* s) { return s && *s ? s : "##unnamed"; }
+void ui_text(const char* t) { ImGui::TextUnformatted(t ? t : ""); }
+void ui_text_disabled(const char* t) { ImGui::TextDisabled("%s", t ? t : ""); }
+void ui_text_colored(uint32_t rgba, const char* t) {
+    const ImVec4 c(static_cast<float>((rgba >> 24) & 0xFF) / 255.f, static_cast<float>((rgba >> 16) & 0xFF) / 255.f,
+                   static_cast<float>((rgba >> 8) & 0xFF) / 255.f, static_cast<float>(rgba & 0xFF) / 255.f);
+    ImGui::TextColored(c, "%s", t ? t : "");
+}
+int ui_checkbox(const char* label, int* v) {
+    if (!v) return 0;
+    bool b = *v != 0;
+    if (!ImGui::Checkbox(ui_label(label), &b)) return 0;
+    *v = b ? 1 : 0;
+    return 1;
+}
+int ui_slider_float(const char* label, float* v, float lo, float hi, const char* fmt) {
+    return v && ImGui::SliderFloat(ui_label(label), v, lo, hi, fmt ? fmt : "%.2f") ? 1 : 0;
+}
+int ui_slider_int(const char* label, int* v, int lo, int hi, const char* fmt) {
+    return v && ImGui::SliderInt(ui_label(label), v, lo, hi, fmt ? fmt : "%d") ? 1 : 0;
+}
+int ui_button(const char* label) { return ImGui::Button(ui_label(label)) ? 1 : 0; }
+void ui_same_line() { ImGui::SameLine(); }
+void ui_separator(const char* label) {
+    if (label && *label) ImGui::SeparatorText(label);
+    else ImGui::Separator();
+}
+// A begin_disabled or tree_node a panel did not close again is closed after it (draw_mod_panels), so a slip in one mod cannot break
+// the window or the menu: these count what is open.
+int g_ui_disabled = 0, g_ui_trees = 0;
+void ui_begin_disabled(int d) {
+    ImGui::BeginDisabled(d != 0);
+    ++g_ui_disabled;
+}
+void ui_end_disabled() {
+    if (g_ui_disabled <= 0) return;
+    ImGui::EndDisabled();
+    --g_ui_disabled;
+}
+int ui_tree_node(const char* label, int default_open) {
+    if (default_open) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!ImGui::TreeNode(ui_label(label))) return 0;
+    ++g_ui_trees;
+    return 1;
+}
+void ui_tree_pop() {
+    if (g_ui_trees <= 0) return;
+    ImGui::TreePop();
+    --g_ui_trees;
+}
+void ui_tooltip(const char* t) {
+    if (t && *t) ImGui::SetItemTooltip("%s", t);
+}
+const NxModUi kModUi = {sizeof(NxModUi), &ui_text,           &ui_text_disabled, &ui_text_colored, &ui_checkbox,
+                        &ui_slider_float, &ui_slider_int,    &ui_button,        &ui_same_line,    &ui_separator,
+                        &ui_begin_disabled, &ui_end_disabled, &ui_tree_node,    &ui_tree_pop,     &ui_tooltip};
+
+bool g_panels_drawn = false;   // a panel was drawn in the ImGui frame being built (api->panel_visible)
+
 // Drops pressed keys and mouse buttons so nothing stays latched in ImGui (the caller holds the context's mutex).
 void clear_imgui_input(ImGuiContext* ctx) {
     ImGuiContext* prev = ImGui::GetCurrentContext();
@@ -178,6 +240,32 @@ void clear_imgui_input(ImGuiContext* ctx) {
     ImGui::SetCurrentContext(prev);
 }
 }  // namespace
+
+bool has_mod_panels() { return services::modapi::has_panels(); }
+
+// Every code mod's panel (mod API add_panel) as a section that folds open, into the current ImGui window: the menu's Mods tab.
+void draw_mod_panels() {
+    const std::vector<services::modapi::PanelInfo> list = services::modapi::panels();
+    if (list.empty()) return;
+    g_panels_drawn = true;
+    for (size_t i = 0; i < list.size(); ++i) {
+        const services::modapi::PanelInfo& p = list[i];
+        ImGui::PushID(static_cast<int>(i));
+        const bool shown = ImGui::CollapsingHeader(p.title.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+        if (!p.mod.empty()) ImGui::SetItemTooltip("%s", p.mod.c_str());
+        if (shown) {
+            g_ui_disabled = g_ui_trees = 0;
+            ImGui::Indent();
+            ImGui::PushID("##contents");   // the header pushes no ID: a widget labelled like the panel's title must not clash with it
+            p.fn(&kModUi, p.user);
+            while (g_ui_trees > 0) ui_tree_pop();
+            while (g_ui_disabled > 0) ui_end_disabled();
+            ImGui::PopID();
+            ImGui::Unindent();
+        }
+        ImGui::PopID();
+    }
+}
 
 namespace {
 std::atomic<int> g_shader_backlog{0};
@@ -241,6 +329,7 @@ struct Overlay::Impl {
     int counter_n = 0;
 
     void build_ui();
+    void build_ui_inner();
     void update_scale(const VkExtent2D& extent);
     void refresh_counter_text(double now_s);
     void draw_counter(const FrameInfo& f, double now_s);
@@ -285,6 +374,12 @@ struct Overlay::Impl {
 };
 
 void Overlay::Impl::build_ui() {
+    g_panels_drawn = false;   // set by draw_mod_panels: whether a mod's panel is on screen this frame (api->panel_visible)
+    build_ui_inner();
+    services::modapi::set_panel_visible(g_panels_drawn);
+}
+
+void Overlay::Impl::build_ui_inner() {
     if (menu) {
         menu();
         return;
@@ -570,6 +665,8 @@ void Overlay::set_visible(bool v) {
         if (s.restore_relative && platform::has_window()) platform::set_relative_mouse(true);
         s.restore_relative = false;
         std::lock_guard<std::mutex> lk(s.mu);
+        // after the lock: a UI build already running would otherwise set it again once it ends, and nothing would clear it
+        services::modapi::set_panel_visible(false);
         ImGuiContext* prev = ImGui::GetCurrentContext();
         ImGui::SetCurrentContext(s.imgui);
         ImGuiIO& io = ImGui::GetIO();   // drop pressed keys and buttons so nothing stays latched
@@ -1226,7 +1323,10 @@ void Overlay::draw(const FrameInfo& f) {
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (s.visible && !kb_on) s.build_ui();    // the keyboard is modal: the menu comes back once it is answered
-    if (kb_on) s.draw_keyboard(now_s);
+    if (kb_on) {
+        services::modapi::set_panel_visible(false);   // the keyboard stands in front of the menu
+        s.draw_keyboard(now_s);
+    }
     if (show_counter) s.draw_counter(f, now_s);
     if (note_on) s.draw_note(f);
     if (mods_on) s.draw_mods_note(f);

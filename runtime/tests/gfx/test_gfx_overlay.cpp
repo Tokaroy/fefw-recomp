@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 
 #include "gfx_test_util.h"
+#include "nxrt/mod_panels.h"
 #include "nxrt/overlay.h"
 NXTEST_GROUP(gfx_overlay)
 
@@ -230,4 +231,34 @@ NXTEST(menu_changes_are_applied_between_frames) {
     o.apply_pending();   // nothing pending: nothing happens
     CHECK_EQ(rig.rend->stats().swapchain_creates, creates);
     CHECK_EQ(rig.dev->validation_stats().errors, 0ull);
+}
+
+NXTEST(mod_panels_are_drawn_and_unclosed_widgets_are_closed) {
+    namespace modapi = nxrt::services::modapi;
+    static int runs, ticked;
+    runs = 0;
+    ticked = 1;
+    const auto fn = [](const NxModUi* ui, void*) {
+        ++runs;
+        ui->text("a panel");
+        ui->checkbox("a box", &ticked);
+        ui->end_disabled();             // nothing open: ignored
+        ui->tree_pop();
+        ui->begin_disabled(1);          // left open, both: draw_mod_panels closes them, or ImGui asserts at the end of the frame
+        ui->tree_node("a node", 1);
+    };
+    REQUIRE(modapi::add_panel("gfx test panel", fn, nullptr) == 1);
+    Rig rig;
+    REQUIRE(rig.make(false));
+    Overlay& o = *rig.overlay;
+    o.add_panel("mods", [] { draw_mod_panels(); });
+    rig.frame();
+    CHECK_EQ(runs, 0);
+    CHECK_EQ(modapi::panel_visible(), 0);
+    o.set_visible(true);
+    for (int i = 0; i < 3; ++i) rig.frame();
+    CHECK(runs > 0);
+    CHECK_EQ(modapi::panel_visible(), 1);
+    o.set_visible(false);
+    CHECK_EQ(modapi::panel_visible(), 0);
 }

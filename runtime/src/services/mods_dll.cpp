@@ -6,6 +6,7 @@
 // image applies when it is built (fs.cpp, on the game's first file access, long before the first frame).
 #define _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <cwctype>
 #include <cstdlib>
@@ -27,6 +28,7 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/mod_api.h"
+#include "nxrt/mod_panels.h"
 #include "nxrt/services_api.h"
 #include "services_internal.h"
 
@@ -76,8 +78,20 @@ struct Editor {
     std::string owner_name;      // a runtime edit's owner, for the log
 };
 
+// A panel a mod added to the Mods tab (add_panel, version 4)
+struct Panel {
+    std::string title;
+    NxModPanelFn fn;
+    void* user;
+    const Mod* owner;            // the mod whose nxmod_early / nxmod_init added it (removed if that mod declines), or null
+    bool live;                   // shown: added outside those, or that mod's nxmod_init has returned 0
+};
+
 struct State {
     std::mutex mu;
+    std::vector<Panel> panels;
+    std::atomic<size_t> live_panels{0};   // has_panels without the lock
+    std::atomic<bool> panel_visible{false};
     std::vector<Editor> editors;
     bool edits_closed = false;   // the RomFS image has asked: later edit_file calls are too late
     std::vector<std::string> folders;   // the installed mods' folders (mod_folder), filled on first use
@@ -381,6 +395,7 @@ void withdraw(Mod* m) {
     std::lock_guard<std::mutex> lk(st().mu);
     std::erase_if(st().frame, [m](const FrameFn& f) { return f.owner == m; });
     std::erase_if(st().editors, [m](const Editor& e) { return e.owner == m; });
+    std::erase_if(st().panels, [m](const Panel& p) { return p.owner == m; });   // never live: their mod had not started
     for (auto& [name, f] : st().fns)   // the thunks stay (the game may hold their addresses): they answer 0 from now on
         if (f.owner == m) f.fn = nullptr;
 }
@@ -401,6 +416,14 @@ void start_all() {
             withdraw(m);
             NXLOG_W(kTag, "%s: declined to start (nxmod_init returned %d); its hooks are removed", m->name.c_str(), rc);
             continue;   // the DLL stays loaded: it may still own memory the runtime saw
+        }
+        {
+            std::lock_guard<std::mutex> lk(st().mu);
+            for (Panel& p : st().panels)
+                if (p.owner == m && !p.live) {
+                    p.live = true;
+                    st().live_panels.fetch_add(1, std::memory_order_relaxed);
+                }
         }
         NXLOG_I(kTag, "%s: code mod started (%zu hooks)", m->name.c_str(), m->hooks.size());
     }
@@ -470,6 +493,8 @@ void load_one(const std::string& mod, const std::filesystem::path& mod_dir, cons
     m->api.zstd_compress = &api_zstd_compress;
     m->api.alloc = &api_alloc;
     m->api.free_mem = &api_free;
+    m->api.add_panel = &add_panel;
+    m->api.panel_visible = &panel_visible;
     m->init = init;
     m->dir = u8(mod_dir);
     {
@@ -576,6 +601,30 @@ bool file_edit_run(const std::string& image_path, std::vector<uint8_t>& data) {
     }
     return changed;
 }
+
+int add_panel(const char* title, NxModPanelFn fn, void* user) {
+    if (!title || !*title || !fn) return 0;
+    std::lock_guard<std::mutex> lk(st().mu);
+    // added from nxmod_early / nxmod_init: kept back until nxmod_init returns 0, so the overlay never calls into a mod that is still
+    // starting or that declined
+    const Mod* owner = st().in_init;
+    st().panels.push_back({title, fn, user, owner, owner == nullptr});
+    if (!owner) st().live_panels.fetch_add(1, std::memory_order_relaxed);
+    NXLOG_I(kTag, "%s: added the panel \"%s\" to the Mods tab", owner ? owner->name.c_str() : "a code mod", title);
+    return 1;
+}
+
+std::vector<PanelInfo> panels() {
+    std::lock_guard<std::mutex> lk(st().mu);
+    std::vector<PanelInfo> out;
+    for (const Panel& p : st().panels)
+        if (p.live) out.push_back({p.title, p.owner ? p.owner->name : std::string(), p.fn, p.user});
+    return out;
+}
+
+bool has_panels() { return st().live_panels.load(std::memory_order_relaxed) != 0; }
+void set_panel_visible(bool visible) { st().panel_visible.store(visible, std::memory_order_relaxed); }
+int panel_visible() { return st().panel_visible.load(std::memory_order_relaxed) ? 1 : 0; }
 
 void load_dll_mods(uint64_t base, uint64_t frame_update) {
     if (st().loaded) return;
