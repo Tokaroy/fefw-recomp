@@ -403,23 +403,21 @@ fn upscaler_files(
     let repo = need_repo(&cfg)?;
     let game = game_dir_of(&cfg, &repo);
     let exe = if package_tools().is_some() { game.join("fefw.exe") } else { setup::exe_path(&repo) };
-    let mut fsr = upscaler_dirs(&fsr_dir, "fsr", &game, &exe);
-    // ffx_files.cpp default_dirs also looks in upscalers/fsr3 and in the executable's own folder
-    if let Some(d) = exe.parent() {
-        for extra in [d.join("upscalers").join("fsr3"), d.to_path_buf()] {
-            if !fsr.contains(&extra) {
-                fsr.push(extra);
+    let with_extra_defaults = |mut v: Vec<PathBuf>| {
+        if let Some(d) = exe.parent() {
+            for extra in [d.join("upscalers").join("fsr3"), d.to_path_buf()] {
+                if !v.contains(&extra) {
+                    v.push(extra);
+                }
             }
         }
-    }
-    // frame generation: [dlss] frame_gen_dll, else the FSR folder setting, then the same defaults
+        v
+    };
+    // ffx_files.cpp default_dirs also looks in upscalers/fsr3 and in the executable's own folder
+    let fsr = with_extra_defaults(upscaler_dirs(&fsr_dir, "fsr", &game, &exe));
+    // frame generation: [dlss] frame_gen_dll, else the FSR folder setting (never both), then the same defaults
     let fg_setting = frame_gen_dir.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&fsr_dir);
-    let mut fsr_fg = upscaler_dirs(fg_setting, "fsr", &game, &exe);
-    for d in &fsr {
-        if !fsr_fg.contains(d) {
-            fsr_fg.push(d.clone());
-        }
-    }
+    let fsr_fg = with_extra_defaults(upscaler_dirs(fg_setting, "fsr", &game, &exe));
     // Streamline: the game takes the setting's folder, else the first default folder holding sl.interposer.dll, and needs every file there
     let sl = upscaler_dirs(&dlss_dir, "streamline", &game, &exe);
     let sl_pick: Vec<PathBuf> = if !dlss_dir.trim().is_empty() {

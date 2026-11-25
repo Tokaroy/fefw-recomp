@@ -24,13 +24,13 @@ async function missingFiles(isLinux) {
   // a download goes where the game looks: the setting's folder, else the Streamline folder the game already picked (it may not be the launcher's)
   const dirs = { fsr: g['upscale.fsr_dll'], xess: g['upscale.xess_dll'], dlss: g['upscale.dlss_dll'] || r.dlss_dir, dlss_framegen: g['upscale.dlss_dll'] || r.dlss_dir };
   const missing = [];
-  const need = (feature, file, kind, setting) => { if (!file.found) missing.push({ feature, detail: file.detail, kind, setting }); };
+  const need = (feature, file, kind, setting, dir = dirs[kind]) => { if (!file.found) missing.push({ feature, detail: file.detail, kind, setting, dir }); };
   if (frameGen === 'dlss') need(t('settings.files.dlssFrameGen'), r.dlss_framegen, 'dlss_framegen', 'frame_gen');
   if (upscaler === 'dlss') need(t('settings.files.dlss'), r.dlss, 'dlss', 'upscaler');
   if (upscaler === 'fsr3') need(`FSR 3 ${t('settings.files.upscaling').toLowerCase()}`, r.fsr_upscaling, 'fsr', 'upscaler');
-  if (frameGen === 'fsr3' && !isLinux) need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr', 'frame_gen');
+  if (frameGen === 'fsr3' && !isLinux) need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr', 'frame_gen', g['dlss.frame_gen_dll'] || dirs.fsr);
   if (upscaler === 'xess') need(t('settings.files.xess'), r.xess, 'xess', 'upscaler');
-  return { missing, dirs };
+  return { missing };
 }
 
 let open = false;
@@ -129,7 +129,7 @@ async function run(isLinux) {
     async function start() {
       asking = false;
       try {
-        await api('fetch_upscaler', { kind, dir: fwd(st.dirs[kind]) });
+        await api('fetch_upscaler', { kind, dir: fwd(st.missing.find((m) => m.kind === kind).dir) });
       } catch (e) {
         toast(errText(e), 'error');
         draw();
