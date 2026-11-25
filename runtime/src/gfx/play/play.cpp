@@ -1178,7 +1178,7 @@ public:
         std::vector<std::string> names;
         if (!g().device) return names;
         for (const gfx::GpuInfo& gi : g().device->gpus())
-            if (gi.can_present) names.push_back(gi.name);
+            if (gi.can_present && std::find(names.begin(), names.end(), gi.name) == names.end()) names.push_back(gi.name);
         return names;
     }
     void begin_capture() override {

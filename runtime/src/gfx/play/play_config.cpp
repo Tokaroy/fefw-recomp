@@ -479,8 +479,9 @@ bool apply_fixed(Sec sec, const std::string& k, const std::string& v, Settings* 
                 return true;
             }
             if (k == "gpu") {
-                if (v.empty() || lower(v) == "auto") { s->display.gpu = "auto"; return true; }
-                s->display.gpu = v;
+                const std::string q = lower(v);
+                if (q == "discrete" || q == "integrated") s->display.gpu = q;
+                else s->display.gpu = v.empty() || q == "auto" ? "auto" : v;
                 return true;
             }
             if (k == "astc_bc") {
