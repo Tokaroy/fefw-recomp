@@ -923,7 +923,10 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
     if let Some(d) = dlc.filter(|d| !d.trim().is_empty()) {
         let d = PathBuf::from(d.trim());
         if dump::scan_dlc(&d).is_empty() {
-            return prepare_fail(&format!("No add-ons found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.", d.display()));
+            return prepare_fail(&format!(
+                "No add-ons found in {}. Pick the folder that holds one folder per title id, each with a romfs folder in it.",
+                d.display()
+            ));
         }
         p.dlc = Some(d);
     }
