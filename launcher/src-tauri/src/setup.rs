@@ -193,7 +193,7 @@ type ModSite = (String, String, String, u64);
 const MAIN_BASE: u64 = 0x71_0000_0000;
 const NEXT_MODULE: u64 = 0x75_0000_0000;
 /// This game's program ID (04007EF01F8AE000): a 16-digit hex mods subfolder that is another title's ID is skipped.
-const PROGRAM_ID: u64 = 0x0400_7EF0_1F8A_E000;
+pub const PROGRAM_ID: u64 = 0x0400_7EF0_1F8A_E000;
 
 /// The mods as the runtime finds them (runtime/src/services/common.cpp find_mods, game-build/release/fefw_build.py find_mod_dirs):
 /// a folder below mods/ that has romfs/ or exefs/ is a mod; names starting with -, _ or . are off; a 16-digit hex folder that is
