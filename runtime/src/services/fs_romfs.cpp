@@ -432,11 +432,262 @@ struct Layout {
     std::vector<FileRec> files;         // in data order
     std::map<std::string, uint32_t> by_path;
     std::vector<std::string> overlay_names;   // per applied RomFS mod: its name (the folder holding its romfs folder), for the reports
+    std::wstring cache_wpath;                 // set when loaded from romfs_cache.bin: removed on any host read error so next launch rescans
 };
 
+// ---- base tree cache (romfs_cache.bin) -------------------------------------------------------------------------------------------
+constexpr char kCacheMagic[8] = {'N', 'X', 'R', 'C', '0', '0', '0', '1'};
+constexpr size_t kMaxCacheBytes = 256ull << 20;
+
+uint64_t fnv1a_update(uint64_t h, const void* p, size_t n) {
+    const auto* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+uint64_t filetime_u64(const FILETIME& ft) {
+    return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | static_cast<uint64_t>(ft.dwLowDateTime);
+}
+
+struct TopFingerprint {
+    std::string root_utf8;
+    uint64_t root_mtime = 0;
+    uint64_t top_hash = 0;
+};
+
+// Cheap validation fingerprint: root canonical path, root mtime, and a hash of its direct children (one FindFirstFileExW call).
+bool compute_top_fingerprint(const std::wstring& root_host, TopFingerprint& fp) {
+    if (!to_utf8(root_host, fp.root_utf8)) return false;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(root_host.c_str(), GetFileExInfoStandard, &fad)) return false;
+    fp.root_mtime = filetime_u64(fad.ftLastWriteTime);
+
+    struct Entry {
+        std::string name;
+        uint8_t is_dir = 0;
+        uint64_t size = 0;
+        uint64_t mtime = 0;
+    };
+    std::vector<Entry> top;
+    const std::wstring pattern = join_host(root_host, L"*");
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (h != INVALID_HANDLE_VALUE) {
+        struct Finder {
+            HANDLE h;
+            ~Finder() { FindClose(h); }
+        } guard{h};
+        for (;;) {
+            const wchar_t* wname = fd.cFileName;
+            const bool dot = wname[0] == L'.' && (wname[1] == L'\0' || (wname[1] == L'.' && wname[2] == L'\0'));
+            if (!dot) {
+                Entry e;
+                if (!to_utf8(wname, e.name)) return false;
+                e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ? 1 : 0;
+                e.size = e.is_dir ? 0 : ((static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | static_cast<uint64_t>(fd.nFileSizeLow));
+                e.mtime = filetime_u64(fd.ftLastWriteTime);
+                top.push_back(std::move(e));
+            }
+            if (!FindNextFileW(h, &fd)) break;
+        }
+    } else if (GetLastError() != ERROR_FILE_NOT_FOUND) {
+        return false;
+    }
+    std::sort(top.begin(), top.end(), [](const Entry& a, const Entry& b) { return a.name < b.name; });
+    uint64_t hash = 14695981039346656037ull;
+    const uint64_t count = top.size();
+    hash = fnv1a_update(hash, &count, sizeof count);
+    for (const Entry& e : top) {
+        const uint32_t nl = static_cast<uint32_t>(e.name.size());
+        hash = fnv1a_update(hash, &nl, sizeof nl);
+        hash = fnv1a_update(hash, e.name.data(), e.name.size());
+        hash = fnv1a_update(hash, &e.is_dir, sizeof e.is_dir);
+        hash = fnv1a_update(hash, &e.size, sizeof e.size);
+        hash = fnv1a_update(hash, &e.mtime, sizeof e.mtime);
+    }
+    fp.top_hash = hash;
+    return true;
+}
+
+bool load_tree_cache(const std::string& cache_path, const TopFingerprint& want, Node& root) {
+    std::wstring wpath;
+    if (!to_wide(cache_path, wpath)) return false;
+    wpath = long_path(std::move(wpath));
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    struct Closer {
+        HANDLE h;
+        ~Closer() { CloseHandle(h); }
+    } guard{h};
+    LARGE_INTEGER fsz{};
+    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart < 32 || static_cast<uint64_t>(fsz.QuadPart) > kMaxCacheBytes) return false;
+    std::vector<uint8_t> buf(static_cast<size_t>(fsz.QuadPart));
+    size_t done = 0;
+    while (done < buf.size()) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(buf.size() - done, 1u << 24));
+        DWORD got = 0;
+        if (!ReadFile(h, buf.data() + done, chunk, &got, nullptr) || got == 0) return false;
+        done += got;
+    }
+
+    if (std::memcmp(buf.data(), kCacheMagic, 8) != 0) return false;
+    const size_t payload = buf.size() - 8;
+    uint64_t stored_crc = 0;
+    std::memcpy(&stored_crc, buf.data() + payload, 8);
+    const uint64_t calc_crc = fnv1a_update(14695981039346656037ull, buf.data(), payload);
+    if (stored_crc != calc_crc) return false;
+
+    size_t pos = 8;
+    auto rd = [&](void* dst, size_t n) -> bool {
+        if (pos + n > payload) return false;
+        std::memcpy(dst, buf.data() + pos, n);
+        pos += n;
+        return true;
+    };
+    uint32_t root_len = 0;
+    if (!rd(&root_len, 4) || root_len != want.root_utf8.size() || pos + root_len > payload) return false;
+    if (std::memcmp(buf.data() + pos, want.root_utf8.data(), root_len) != 0) return false;
+    pos += root_len;
+
+    uint64_t root_mtime = 0, top_hash = 0;
+    uint32_t dir_count = 0, file_count = 0;
+    if (!rd(&root_mtime, 8) || !rd(&top_hash, 8) || !rd(&dir_count, 4) || !rd(&file_count, 4)) return false;
+    if (root_mtime != want.root_mtime || top_hash != want.top_hash || dir_count == 0) return false;
+
+    std::vector<Node> dnodes(dir_count);
+    std::vector<uint32_t> dparent(dir_count, 0);
+    dnodes[0].is_dir = true;
+    dnodes[0].host = root.host;
+    std::wstring wn;
+    for (uint32_t i = 1; i < dir_count; i++) {
+        uint32_t parent = 0;
+        uint16_t nlen = 0;
+        if (!rd(&parent, 4) || !rd(&nlen, 2) || parent >= i || nlen == 0 || nlen > kMaxName || pos + nlen > payload) return false;
+        std::string name(reinterpret_cast<const char*>(buf.data() + pos), nlen);
+        pos += nlen;
+        if (!to_wide(name, wn)) return false;
+        dparent[i] = parent;
+        dnodes[i].is_dir = true;
+        dnodes[i].name = std::move(name);
+        dnodes[i].path = dnodes[parent].path + "/" + dnodes[i].name;
+        dnodes[i].host = join_host(dnodes[parent].host, wn.c_str());
+    }
+    for (uint32_t j = 0; j < file_count; j++) {
+        uint32_t parent = 0;
+        uint64_t sz = 0;
+        uint16_t nlen = 0;
+        if (!rd(&parent, 4) || !rd(&sz, 8) || !rd(&nlen, 2) || parent >= dir_count || nlen == 0 || nlen > kMaxName || pos + nlen > payload)
+            return false;
+        std::string name(reinterpret_cast<const char*>(buf.data() + pos), nlen);
+        pos += nlen;
+        if (!to_wide(name, wn)) return false;
+        Node f;
+        f.name = std::move(name);
+        f.path = dnodes[parent].path + "/" + f.name;
+        f.host = join_host(dnodes[parent].host, wn.c_str());
+        f.size = sz;
+        dnodes[parent].kids.push_back(std::move(f));
+    }
+    if (pos != payload) return false;
+
+    for (uint32_t i = dir_count; --i > 0;) {
+        dnodes[dparent[i]].kids.push_back(std::move(dnodes[i]));
+    }
+    sort_tree(dnodes[0]);
+    root = std::move(dnodes[0]);
+    NXLOG_I("fs", "RomFS tree loaded from cache (%u files, %u directories)", file_count, dir_count);
+    return true;
+}
+
+void save_tree_cache(const std::string& cache_path, const TopFingerprint& fp, const Node& root) {
+    std::wstring wpath;
+    if (!to_wide(cache_path, wpath)) return;
+    wpath = long_path(std::move(wpath));
+
+    struct FlatDir {
+        uint32_t parent;
+        const std::string* name;
+    };
+    struct FlatFile {
+        uint32_t parent;
+        uint64_t size;
+        const std::string* name;
+    };
+    std::vector<FlatDir> dirs;
+    std::vector<FlatFile> files;
+    std::vector<std::pair<const Node*, uint32_t>> stack;
+    stack.push_back({&root, 0});
+    uint32_t next_dir_id = 1;
+    // Preorder traversal guarantees parent_idx < dir_idx for every directory.
+    while (!stack.empty()) {
+        const auto [cur, cur_id] = stack.back();
+        stack.pop_back();
+        for (const Node& k : cur->kids) {
+            if (k.is_dir) {
+                const uint32_t child_id = next_dir_id++;
+                dirs.push_back({cur_id, &k.name});
+                stack.push_back({&k, child_id});
+            } else {
+                files.push_back({cur_id, k.size, &k.name});
+            }
+        }
+    }
+
+    std::vector<uint8_t> buf;
+    buf.reserve(64 + fp.root_utf8.size() + dirs.size() * 24 + files.size() * 40);
+    auto wr = [&](const void* src, size_t n) {
+        const auto* b = static_cast<const uint8_t*>(src);
+        buf.insert(buf.end(), b, b + n);
+    };
+    wr(kCacheMagic, 8);
+    const uint32_t rlen = static_cast<uint32_t>(fp.root_utf8.size());
+    wr(&rlen, 4);
+    wr(fp.root_utf8.data(), rlen);
+    wr(&fp.root_mtime, 8);
+    wr(&fp.top_hash, 8);
+    const uint32_t dcount = static_cast<uint32_t>(dirs.size() + 1);
+    const uint32_t fcount = static_cast<uint32_t>(files.size());
+    wr(&dcount, 4);
+    wr(&fcount, 4);
+    for (const FlatDir& d : dirs) {
+        const uint16_t nl = static_cast<uint16_t>(d.name->size());
+        wr(&d.parent, 4);
+        wr(&nl, 2);
+        wr(d.name->data(), nl);
+    }
+    for (const FlatFile& f : files) {
+        const uint16_t nl = static_cast<uint16_t>(f.name->size());
+        wr(&f.parent, 4);
+        wr(&f.size, 8);
+        wr(&nl, 2);
+        wr(f.name->data(), nl);
+    }
+    const uint64_t crc = fnv1a_update(14695981039346656037ull, buf.data(), buf.size());
+    wr(&crc, 8);
+
+    const std::wstring tmp = wpath + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    size_t done = 0;
+    bool ok = true;
+    while (ok && done < buf.size()) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(buf.size() - done, 1u << 24));
+        DWORD wrote = 0;
+        ok = WriteFile(h, buf.data() + done, chunk, &wrote, nullptr) && wrote == chunk;
+        done += chunk;
+    }
+    CloseHandle(h);
+    if (ok) {
+        if (!MoveFileExW(tmp.c_str(), wpath.c_str(), MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp.c_str());
+    } else {
+        DeleteFileW(tmp.c_str());
+    }
+}
+
 // Lays out the host folder: entries sorted by full path in each table, file data in that order, 16-byte aligned.
-bool make_layout(const std::string& host_dir, const std::vector<std::string>& overlays, const RomfsEdits* edits, Layout& L,
-                 std::string* err) {
+bool make_layout(const std::string& host_dir, const std::vector<std::string>& overlays, const RomfsEdits* edits,
+                 const std::string& cache_path, Layout& L, std::string* err) {
     std::string msg;
     std::wstring wdir;
     const bool packaged = nup::is_nup(host_dir);
@@ -453,9 +704,24 @@ bool make_layout(const std::string& host_dir, const std::vector<std::string>& ov
     Node root;
     root.is_dir = true;
     root.host = long_path(abs.wstring());
-    if (!(packaged ? scan_nup(host_dir, root, msg) : scan(root, msg))) {
-        if (err) *err = msg;
-        return false;
+    if (packaged) {
+        if (!scan_nup(host_dir, root, msg)) {
+            if (err) *err = msg;
+            return false;
+        }
+    } else {
+        TopFingerprint fp;
+        const bool use_cache = !cache_path.empty() && compute_top_fingerprint(root.host, fp);
+        if (use_cache && load_tree_cache(cache_path, fp, root)) {
+            std::wstring cw;
+            if (to_wide(cache_path, cw)) L.cache_wpath = long_path(std::move(cw));
+        } else {
+            if (!scan(root, msg)) {
+                if (err) *err = msg;
+                return false;
+            }
+            if (use_cache) save_tree_cache(cache_path, fp, root);
+        }
     }
     uint32_t taken = 0;
     std::vector<std::wstring> overlay_hosts;   // the applied overlays' folders, parallel to L.overlay_names
@@ -733,9 +999,22 @@ struct RomfsImage::Impl {
     }
 
     // Positioned reads (OVERLAPPED offset), so concurrent readers of one handle need no seek lock.
+    void invalidate_cache_if_loaded() const {
+        if (l.cache_wpath.empty()) return;
+        std::lock_guard<std::mutex> lk(mu);
+        if (cache_invalidated) return;
+        cache_invalidated = true;
+        DeleteFileW(l.cache_wpath.c_str());
+        NXLOG_W("fs", "romfs: cached file read failed; deleted RomFS cache so the next start rescans");
+    }
+    mutable bool cache_invalidated = false;
+
     bool read_host(uint32_t idx, uint64_t ofs, uint8_t* out, uint64_t n) const {
         std::shared_ptr<HandleBox> box = acquire(idx);
-        if (!box) return false;
+        if (!box) {
+            invalidate_cache_if_loaded();
+            return false;
+        }
         const mem::ww::OsWriteScope ws(out, n);   // ReadFile fails on a page the write tracker made read-only
         while (n > 0) {
             const DWORD chunk = static_cast<DWORD>(std::min<uint64_t>(n, 1ull << 30));
@@ -744,7 +1023,10 @@ struct RomfsImage::Impl {
             ov.OffsetHigh = static_cast<DWORD>(ofs >> 32);
             DWORD got = 0;
             // A short read means the file shrank since build(): an error, not zeros.
-            if (!ReadFile(box->h, out, chunk, &got, &ov) || got != chunk) return false;
+            if (!ReadFile(box->h, out, chunk, &got, &ov) || got != chunk) {
+                invalidate_cache_if_loaded();
+                return false;
+            }
             out += chunk;
             ofs += chunk;
             n -= chunk;
@@ -756,11 +1038,13 @@ struct RomfsImage::Impl {
 RomfsImage::RomfsImage() : p_(std::make_unique<Impl>()) {}
 RomfsImage::~RomfsImage() = default;
 
-bool RomfsImage::build(const std::string& host_dir, std::string* err, const std::vector<std::string>& overlays, const RomfsEdits* edits) {
+bool RomfsImage::build(const std::string& host_dir, std::string* err, const std::vector<std::string>& overlays, const RomfsEdits* edits,
+                       const std::string& cache_path) {
     Layout fresh;
-    const bool ok = make_layout(host_dir, overlays, edits, fresh, err);
+    const bool ok = make_layout(host_dir, overlays, edits, cache_path, fresh, err);
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->cache.clear();
+    p_->cache_invalidated = false;
     p_->l = ok ? std::move(fresh) : Layout{};
     p_->read_seen.assign(p_->l.files.size(), 0);
     return ok;
