@@ -274,7 +274,19 @@ pub fn extract(nup_path: &Path, out: &Path, progress: &mut dyn FnMut(u64, u64, &
         .map(|(i, _)| i);
 
     let mut ex = Extractor { nup: &nup, src: BufReader::with_capacity(1 << 20, file), done: 0, total: 0, progress, cancel };
-    let direct_romfs = chosen_idx.is_some_and(|i| ex.dir_uncompressed(nup.packages[i].romfs_dir, 0));
+    // Only use direct .nup RomFS mode when:
+    // 1. There is a single non-addon package with a RomFS (so multi-version .nups keep full extraction and dump::scan()'s fallback
+    //    to older supported versions still works).
+    // 2. Both the chosen package's RomFS and ExeFS (if present) are stored uncompressed (codec 0), since runtime/src/loader/nup.cpp
+    //    validates both subtrees and rejects any compressed entry.
+    let romfs_pkg_count =
+        nup.packages.iter().filter(|p| p.kind != KIND_ADDON && p.romfs_dir != NO_DIR && (p.romfs_dir as usize) < nup.dirs.len()).count();
+    let direct_romfs = romfs_pkg_count == 1
+        && chosen_idx.is_some_and(|i| {
+            let p = &nup.packages[i];
+            let exefs_ok = p.exefs_dir == NO_DIR || ex.dir_uncompressed(p.exefs_dir, 0);
+            exefs_ok && ex.dir_uncompressed(p.romfs_dir, 0)
+        });
 
     // ":dlc" marks unpacks that include add-ons; ":direct:<path>" marks direct-.nup RomFS unpacks bound to that package path.
     let has_addons = nup.packages.iter().any(|p| p.kind == KIND_ADDON);

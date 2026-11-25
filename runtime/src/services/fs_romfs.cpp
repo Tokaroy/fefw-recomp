@@ -432,6 +432,7 @@ struct Layout {
     std::vector<FileRec> files;         // in data order
     std::map<std::string, uint32_t> by_path;
     std::vector<std::string> overlay_names;   // per applied RomFS mod: its name (the folder holding its romfs folder), for the reports
+    std::wstring cache_wpath;                 // set when loaded from romfs_cache.bin: removed on any host read error so next launch rescans
 };
 
 // ---- base tree cache (romfs_cache.bin) -------------------------------------------------------------------------------------------
@@ -711,7 +712,10 @@ bool make_layout(const std::string& host_dir, const std::vector<std::string>& ov
     } else {
         TopFingerprint fp;
         const bool use_cache = !cache_path.empty() && compute_top_fingerprint(root.host, fp);
-        if (!use_cache || !load_tree_cache(cache_path, fp, root)) {
+        if (use_cache && load_tree_cache(cache_path, fp, root)) {
+            std::wstring cw;
+            if (to_wide(cache_path, cw)) L.cache_wpath = long_path(std::move(cw));
+        } else {
             if (!scan(root, msg)) {
                 if (err) *err = msg;
                 return false;
@@ -995,9 +999,22 @@ struct RomfsImage::Impl {
     }
 
     // Positioned reads (OVERLAPPED offset), so concurrent readers of one handle need no seek lock.
+    void invalidate_cache_if_loaded() const {
+        if (l.cache_wpath.empty()) return;
+        std::lock_guard<std::mutex> lk(mu);
+        if (cache_invalidated) return;
+        cache_invalidated = true;
+        DeleteFileW(l.cache_wpath.c_str());
+        NXLOG_W("fs", "romfs: cached file read failed; deleted RomFS cache so the next start rescans");
+    }
+    mutable bool cache_invalidated = false;
+
     bool read_host(uint32_t idx, uint64_t ofs, uint8_t* out, uint64_t n) const {
         std::shared_ptr<HandleBox> box = acquire(idx);
-        if (!box) return false;
+        if (!box) {
+            invalidate_cache_if_loaded();
+            return false;
+        }
         const mem::ww::OsWriteScope ws(out, n);   // ReadFile fails on a page the write tracker made read-only
         while (n > 0) {
             const DWORD chunk = static_cast<DWORD>(std::min<uint64_t>(n, 1ull << 30));
@@ -1006,7 +1023,10 @@ struct RomfsImage::Impl {
             ov.OffsetHigh = static_cast<DWORD>(ofs >> 32);
             DWORD got = 0;
             // A short read means the file shrank since build(): an error, not zeros.
-            if (!ReadFile(box->h, out, chunk, &got, &ov) || got != chunk) return false;
+            if (!ReadFile(box->h, out, chunk, &got, &ov) || got != chunk) {
+                invalidate_cache_if_loaded();
+                return false;
+            }
             out += chunk;
             ofs += chunk;
             n -= chunk;
@@ -1024,6 +1044,7 @@ bool RomfsImage::build(const std::string& host_dir, std::string* err, const std:
     const bool ok = make_layout(host_dir, overlays, edits, cache_path, fresh, err);
     std::lock_guard<std::mutex> lk(p_->mu);
     p_->cache.clear();
+    p_->cache_invalidated = false;
     p_->l = ok ? std::move(fresh) : Layout{};
     p_->read_seen.assign(p_->l.files.size(), 0);
     return ok;

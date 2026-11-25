@@ -209,8 +209,23 @@ def unzstd(path, data):
     if not ZSTD_TOOL:
         raise RuntimeError('zstd: no compression.zstd (Python 3.14), zstandard package or zstd/7z executable (--zstd)')
     tool = os.path.basename(ZSTD_TOOL).lower()
-    cmd = [ZSTD_TOOL, 'e', '-so', path] if tool.startswith('7z') else [ZSTD_TOOL, '-dcq', path]
-    r = subprocess.run(cmd, capture_output=True)
+    if os.path.isfile(path):
+        cmd = [ZSTD_TOOL, 'e', '-so', path] if tool.startswith('7z') else [ZSTD_TOOL, '-dcq', path]
+        r = subprocess.run(cmd, capture_output=True)
+    elif tool.startswith('7z'):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.zst', delete=False) as tf:
+            tf.write(data)
+            tmp = tf.name
+        try:
+            r = subprocess.run([ZSTD_TOOL, 'e', '-so', tmp], capture_output=True)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    else:
+        r = subprocess.run([ZSTD_TOOL, '-dcq'], input=data, capture_output=True)
     if r.returncode != 0:
         raise RuntimeError(f'{ZSTD_TOOL} failed on {path}: {r.stderr[:200]!r}')
     return r.stdout
