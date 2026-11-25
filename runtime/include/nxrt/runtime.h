@@ -28,5 +28,9 @@ bool initialised();
 const char* abi_source();   // which ABI header the runtime was built against
 const char* app_build();    // InitOptions::app_build ("" when the program gave none)
 void set_app_build(const char* b);   // init() sets it from InitOptions::app_build
+// Facts about this run that a log cut from the front would lose (the build, the GPU), repeated by the hitch monitor once a minute
+// ([diag] session_stamp_s) and at exit, so a report that keeps only the tail of the log still says what it came from.
+void set_session_note(const char* key, const std::string& value);   // any thread; a key set again replaces its value
+std::string session_stamp();   // "<app build>, ABI <n>; <key> <value>; ..."
 
 }  // namespace nxrt

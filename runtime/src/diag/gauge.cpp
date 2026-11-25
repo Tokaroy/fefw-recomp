@@ -21,6 +21,7 @@
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
 #include "nxrt/log.h"
+#include "nxrt/runtime.h"
 
 namespace nxrt {
 namespace {
@@ -61,6 +62,7 @@ std::atomic<size_t> g_nsrc{0};
 uint64_t g_prev_val[kMaxSources];                 // the sources at the previous frame; the presenting thread only
 std::atomic<bool> g_hitch_on{false};
 std::atomic<uint64_t> g_hitch_ticks{0};           // a frame longer than this is a hitch
+double g_stamp_s = 60.0;                          // [diag] session_stamp_s: set by hitch_start before the monitor thread starts
 std::atomic<uint64_t> g_t0_ticks{0};
 
 // phase timers (HitchPhase): QPC ticks summed over all threads
@@ -504,6 +506,10 @@ void monitor_run(double summary_s) {
     auto last_line = Clock::now() - std::chrono::seconds(10);
     uint64_t last_n = g_ring_n.load(std::memory_order_acquire);
     bool seen_frames = last_n > 0;
+    // The build and the GPU, again: reports are often cut to their last few MB, which loses the first lines of the log.
+    const double stamp_s = g_stamp_s;
+    const auto stamp_period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(stamp_s > 0 ? stamp_s : 1e6));
+    auto next_stamp = Clock::now() + stamp_period;
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(s.m);
@@ -523,6 +529,10 @@ void monitor_run(double summary_s) {
                 NXLOG_W("hitch", "%s", format_event(worst, cnt - 1).c_str());
                 last_line = now;
             }
+        }
+        if (stamp_s > 0 && now >= next_stamp) {
+            next_stamp = now + stamp_period;
+            NXLOG_I("runtime", "session: %s", session_stamp().c_str());
         }
         if (summary_s > 0 && now >= next_summary) {
             next_summary = now + period;
@@ -833,6 +843,7 @@ void hitch_start() {
     if (s.th.joinable()) return;
     const double summary_s = config_get_double("diag", "hitch_summary_s", 10.0);
     const double hitch_ms = config_get_double("diag", "hitch_ms", 50.0);
+    g_stamp_s = config_get_double("diag", "session_stamp_s", 60.0);   // 0: off
     g_t0_ticks.store(qpc());
     g_qpc0 = qpc();
     g_tsc0 = __rdtsc();
