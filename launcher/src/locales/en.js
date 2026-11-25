@@ -76,6 +76,10 @@ export const en = {
     'play.updateSteam': 'Update Steam shortcut',
     'play.steamStale': "The game's Steam shortcut does not match your settings any more (LSFG-VK frame generation or the launcher's folder changed), so playing from Steam would use the old ones. Update it to carry them over.",
     'play.addToSteamHint': 'Adds fefw.exe to Steam as a non-Steam game (Steam runs it with Proton), for Big Picture and the Steam Deck\'s Game Mode.',
+    'play.files.title': "Upscaler files are missing",
+    'play.files.body': "Your settings use features whose files the game cannot find. Without them the game may run poorly or fall back to another mode. You can download them now, switch to TAAU (no extra files), or play anyway.",
+    'play.files.useTaau': "Use TAAU instead",
+    'play.files.anyway': "Play anyway",
     'play.footer': "In the game: F1 opens the runtime's settings overlay. Settings here edit fefw.ini and controls.ini and apply at the next start.",
 
     // ----- setup -----

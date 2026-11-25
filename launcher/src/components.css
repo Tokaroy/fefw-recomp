@@ -225,3 +225,7 @@ progress::-webkit-progress-value { background: var(--color-accent); }
 .tab .dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--color-warn); display: none; }
 .tab.dirty .dot { display: inline-block; }
 .card > .group-note { margin: calc(var(--space-2) * -1) 0 var(--space-2); }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-4); background: rgba(0, 0, 0, 0.6); }
+.modal { max-width: 640px; width: 100%; max-height: 90vh; overflow: auto; display: grid; gap: var(--space-3); }
+.modal .missing-list { margin: 0; padding-left: var(--space-4); display: grid; gap: var(--space-2); }

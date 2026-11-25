@@ -1,5 +1,6 @@
 import { api, esc, icon, refreshIcons, toast, errText } from '../util.js';
 import { t } from '../i18n.js';
+import { confirmUpscalerFiles } from '../upscalerCheck.js';
 import { statusText, stepTitle } from '../rusttext.js';
 
 const hex = (c) => '0x' + (c >>> 0).toString(16).toUpperCase().padStart(8, '0');
@@ -32,6 +33,7 @@ function reportHtml(s) {
 }
 
 export async function render(el, ctx) {
+  const isLinux = (await api('platform').catch(() => '')) === 'linux';
   const [cfg, ov] = await Promise.all([api('get_config'), api('get_overview')]);
   const setup = ov.repo_ok ? await api('setup_status') : null;
   const report = cfg.dump_dir && ov.repo_ok ? await api('validate_dump', { path: cfg.dump_dir }) : null;
@@ -92,7 +94,10 @@ export async function render(el, ctx) {
         <p class="faint">${esc(t('play.footer'))}</p>
       </div>`;
     refreshIcons();
-    el.querySelector('#play')?.addEventListener('click', () => api('play').catch((e) => toast(errText(e), 'error')));
+    el.querySelector('#play')?.addEventListener('click', async () => {
+      if (!(await confirmUpscalerFiles(isLinux))) return;
+      api('play').catch((e) => toast(errText(e), 'error'));
+    });
     el.querySelector('#to-setup')?.addEventListener('click', () => ctx.go('setup'));
     el.querySelector('#open-dir')?.addEventListener('click', () => api('open_game_dir').catch((e) => toast(errText(e), 'error')));
     el.querySelector('#open-mods')?.addEventListener('click', () => api('open_mods_dir').catch((e) => toast(errText(e), 'error')));
