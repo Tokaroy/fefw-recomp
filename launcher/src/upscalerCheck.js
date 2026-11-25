@@ -15,7 +15,7 @@ async function missingFiles(isLinux) {
   const g = data.game || {};
   // the runtime's own reading of the values (framegen.cpp fg_setting, temporal_dlss.cpp, extras_state.cpp): 1/2 are DLSS frame generation, 3 is FSR 3
   const up = String(g['dlss.upscaler'] ?? 'taau').trim().toLowerCase();
-  const upscaler = up === 'dlaa' ? 'dlss' : up;
+  const upscaler = up === 'fsr' ? 'fsr3' : up;
   const fg = String(g['dlss.frame_gen'] ?? '0').trim().toLowerCase();
   const frameGen = ['1', '2', 'dlss', 'dlssg', 'on'].includes(fg) ? 'dlss' : ['3', 'fsr3', 'fsr'].includes(fg) ? 'fsr3' : '0';
   const r = await api('upscaler_files', { fsrDir: fwd(g['upscale.fsr_dll']), dlssDir: fwd(g['upscale.dlss_dll']), xessDir: fwd(g['upscale.xess_dll']) });
