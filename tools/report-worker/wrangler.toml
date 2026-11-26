@@ -9,4 +9,4 @@ bucket_name = "fefw-reports"
 [[d1_databases]]
 binding = "REPORTS_DB"
 database_name = "fefw-reports-index"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "92191410-2ecc-4096-aa2d-c54602b1adcd"
