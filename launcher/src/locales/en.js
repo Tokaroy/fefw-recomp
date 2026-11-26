@@ -124,6 +124,8 @@ export const en = {
     'setup.reportsTitle': 'Help improve fefw-recomp (optional)',
     'setup.reportsToggle': 'Send anonymized crash and performance logs when an issue is detected',
     'setup.reportsHint': 'Off by default. Only sends after a crash, freeze, heavy hitch or sustained low FPS. Usernames, local paths, machine names and Steam IDs are scrubbed first, and a copy of what was sent is saved to fefw_last_report.json. You can change this anytime in Settings.',
+    'play.reportsEnable': 'Enable',
+    'play.reportsDismiss': 'No thanks',
     'setup.step.python': 'Python environment',
     'setup.step.exefs': 'Game code from your dump',
     'setup.step.build': 'Recompile the game code from your dump',

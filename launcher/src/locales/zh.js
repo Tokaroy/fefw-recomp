@@ -117,6 +117,8 @@ export const zh = {
     'setup.reportsTitle': '帮助改进 fefw-recomp（可选）',
     'setup.reportsToggle': '检测到问题时发送匿名崩溃与性能日志',
     'setup.reportsHint': '默认关闭。仅在发生崩溃、卡死、严重掉帧或持续低帧率时发送。发送前会清除用户名、本地路径、主机名与 Steam ID，并在运行目录保存一份 fefw_last_report.json 供你查看。随时可在设置中更改。',
+    'play.reportsEnable': '启用',
+    'play.reportsDismiss': '不了，谢谢',
     'setup.step.python': 'Python 环境',
     'setup.step.exefs': '从你的 dump 提取游戏代码',
     'setup.step.build': '从你的 dump 重新编译游戏代码',

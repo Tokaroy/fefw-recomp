@@ -50,6 +50,8 @@ struct Config {
     skip_update_check: bool,
     /// opt-in: send anonymized crash/performance logs after a run when an issue is detected
     send_reports: bool,
+    /// whether the one-time opt-in prompt for issue reports has already been answered
+    reports_prompted: bool,
     /// Linux: the command that starts fefw.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
     /// installed, else umu-run, else wine. Unused on Windows.
     runner: String,
@@ -236,9 +238,10 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     if GAME_ARG.get().is_some_and(|g| *g == config.dump_dir) {
         config.dump_dir = load_saved_config(&app).dump_dir;
     }
-    // a page holding an older configuration must not undo a language switch made since it loaded
+    // a page holding an older configuration must not undo a language switch or report-prompt answer made since it loaded
     let saved = load_saved_config(&app);
     config.lang = saved.lang;
+    config.reports_prompted = saved.reports_prompted || config.reports_prompted || config.send_reports != saved.send_reports;
     // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
     // switch stays unsaved and can be made again.
     if config.skip_update_check != saved.skip_update_check {
@@ -254,6 +257,7 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
 fn set_send_reports(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut cfg = load_saved_config(&app);
     cfg.send_reports = enabled;
+    cfg.reports_prompted = true;
     store_config(&app, &cfg)
 }
 

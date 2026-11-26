@@ -39,6 +39,7 @@ export async function render(el, ctx) {
   const report = cfg.dump_dir && ov.repo_ok ? await api('validate_dump', { path: cfg.dump_dir }) : null;
   const chosen = report && report.chosen;
   let status = await api('game_status');
+  let reportsPrompted = !!cfg.reports_prompted;
   // Linux: fefw.exe as a non-Steam game (steam.rs)
   let steam = await api('steam_status').catch(() => ({ available: false }));
   let addingSteam = false;
@@ -67,6 +68,16 @@ export async function render(el, ctx) {
           ${statusChip(status)}
         </div>
         ${reportHtml(status)}
+        ${!reportsPrompted ? `
+        <div class="card" id="reports-prompt">
+          <h2>${icon('activity')}${esc(t('setup.reportsTitle'))}</h2>
+          <p class="dim">${esc(t('setup.reportsToggle'))}</p>
+          <p class="faint" style="margin-top: var(--space-2)">${esc(t('setup.reportsHint'))}</p>
+          <div class="row" style="margin-top: var(--space-4)">
+            <button class="btn primary" id="reports-enable">${icon('circle-check')}${esc(t('play.reportsEnable'))}</button>
+            <button class="btn quiet" id="reports-dismiss">${esc(t('play.reportsDismiss'))}</button>
+          </div>
+        </div>` : ''}
         ${steam.available && steam.stale ? `<div class="banner warn">${icon('triangle-alert')}<div style="flex:1">${esc(t('play.steamStale'))}</div><button class="btn" id="update-steam" ${ov.exe_exists && !addingSteam ? '' : 'disabled'}>${icon('gamepad-2')}${esc(t('play.updateSteam'))}</button></div>` : ''}
 
         <div class="card">
@@ -102,6 +113,17 @@ export async function render(el, ctx) {
       if (!go) return;
       api('play').catch((e) => toast(errText(e), 'error'));
     });
+    const answerReports = async (enabled) => {
+      try {
+        await api('set_send_reports', { enabled });
+        reportsPrompted = true;
+        draw();
+      } catch (e) {
+        toast(errText(e), 'error');
+      }
+    };
+    el.querySelector('#reports-enable')?.addEventListener('click', () => answerReports(true));
+    el.querySelector('#reports-dismiss')?.addEventListener('click', () => answerReports(false));
     el.querySelector('#to-setup')?.addEventListener('click', () => ctx.go('setup'));
     el.querySelector('#open-dir')?.addEventListener('click', () => api('open_game_dir').catch((e) => toast(errText(e), 'error')));
     el.querySelector('#open-mods')?.addEventListener('click', () => api('open_mods_dir').catch((e) => toast(errText(e), 'error')));
