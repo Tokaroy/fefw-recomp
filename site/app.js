@@ -357,9 +357,10 @@ function classifyAssets(assets = []) {
 
   for (const asset of assets) {
     const name = (asset.name || "").toLowerCase();
-    if (!winAsset && (name.includes("win64") || name.includes("windows")) && name.endsWith(".zip")) {
+    const isAuxiliary = name.includes("symbols") || name.includes("debug");
+    if (!winAsset && !isAuxiliary && (name.includes("win64") || name.includes("windows")) && name.endsWith(".zip")) {
       winAsset = asset;
-    } else if (!linuxAsset && name.includes("linux") && (name.endsWith(".tar.gz") || name.endsWith(".appimage") || name.endsWith(".zip"))) {
+    } else if (!linuxAsset && !isAuxiliary && name.includes("linux") && (name.endsWith(".tar.gz") || name.endsWith(".appimage") || name.endsWith(".zip"))) {
       linuxAsset = asset;
     } else {
       others.push(asset);
