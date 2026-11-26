@@ -434,9 +434,14 @@ fn covered(spans: &[(f64, f64)], from: f64, to: f64) -> f64 {
     spans.iter().map(|&(a, b)| (b.min(to) - a.max(from)).max(0.0)).sum()
 }
 
+/// 0 for no values; between the two middle ones for an even number.
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(f64::total_cmp);
-    v.get(v.len() / 2).copied().unwrap_or(0.0)
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    (v[(n - 1) / 2] + v[n / 2]) / 2.0
 }
 
 /// `windows`: (end, length, mean fps, 1% low) of the frame summaries; `stutters`: (time, ms); `loads`: when a loading screen was up.
@@ -904,6 +909,11 @@ mod tests {
         assert_eq!(trigger(&log_of(600, 30.0, 12.0, "")), Some("low_fps"));
         assert_eq!(trigger(&log_of(600, 30.0, 27.0, "")), None);
         assert_eq!(trigger(&log_of(190, 20.0, 10.0, "")), None, "ten windows after boot");
+        // half the windows at 20 fps, half at 30: the middle is 25
+        let half = log_of(210, 30.0, 22.0, "").replacen("mean 30 fps", "mean 20 fps", 15);
+        assert_eq!(parse_log_metrics(&half).play.windows, 12);
+        assert_eq!(parse_log_metrics(&half).play.mean_fps, 25.0);
+        assert_eq!(trigger(&half), Some("low_fps"));
         // a few bad windows among many good ones
         let mut log = log_of(600, 60.0, 55.0, "");
         log = log.replacen("1% low 55 fps", "1% low 3 fps", 20);
