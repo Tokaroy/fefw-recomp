@@ -295,7 +295,8 @@ fn run_update(cfg: &Config) -> Result<Value, String> {
 fn settings_and_ini(cfg: &Config) -> Result<(Vec<manifest::Setting>, Ini, PathBuf), String> {
     let repo = crate::need_repo(cfg)?;
     let game_dir = crate::game_dir_of(cfg, &repo);
-    let path = repo.join("recomplauncher.json");
+    // the package ships the manifest beside the launcher, wherever the run folder is; a checkout has it at its root
+    let path = if crate::package_tools().is_some() { crate::exe_dir() } else { repo }.join("recomplauncher.json");
     let all = manifest::parse(&fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?)?;
     let ini = fs::read(game_dir.join(settings::GAME_INI)).map_err(|_| "The game has no settings yet: run Set up first.".to_string())?;
     Ok((all, Ini::parse(&String::from_utf8_lossy(&ini)), game_dir))
@@ -312,14 +313,35 @@ fn upscaler_choice(value: &str, files: &crate::UpscalerFiles, nvidia: bool) -> (
     }
 }
 
-fn upscaler_files(cfg: &Config, ini: &Ini) -> Result<crate::UpscalerFiles, String> {
-    let dir = |key: &str| ini.get("upscale", key).unwrap_or_default();
+/// A folder (or file) named in fefw.ini, as a path of this system. The game reads it under Windows or Wine: either slash, on Linux
+/// drive Z: for the file system's root, and a relative path from the run folder. Another drive is one only the game sees. "" stays.
+fn host_path(setting: &str, game_dir: &Path, windows: bool) -> Result<String, String> {
+    let s = setting.trim().replace('\\', "/");
+    if s.is_empty() {
+        return Ok(s);
+    }
+    let drive = s.chars().next().filter(char::is_ascii_alphabetic).filter(|_| s[1..].starts_with(':'));
+    match drive {
+        Some(_) if windows => Ok(s),
+        Some('z' | 'Z') if s[2..].starts_with('/') => Ok(s[2..].to_string()),
+        Some(_) => Err(format!("The folder {s} in fefw.ini is on a drive only the game sees: change it in the launcher's Settings.")),
+        None if s.starts_with('/') => Ok(s),
+        None => Ok(crate::dump::fwd(&game_dir.join(s))),
+    }
+}
+
+fn upscaler_files(cfg: &Config, ini: &Ini, game_dir: &Path) -> Result<crate::UpscalerFiles, String> {
+    // a folder that cannot be found from here is looked for as written, and so shows as missing: the download then says why
+    let dir = |key: &str| {
+        let raw = ini.get("upscale", key).unwrap_or_default();
+        host_path(&raw, game_dir, cfg!(windows)).unwrap_or(raw)
+    };
     crate::upscaler_state(cfg, dir("fsr_dll"), dir("dlss_dll"), Some(dir("xess_dll")), None)
 }
 
 fn list_settings(cfg: &Config) -> Result<Value, String> {
-    let (all, ini, _) = settings_and_ini(cfg)?;
-    let files = upscaler_files(cfg, &ini)?;
+    let (all, ini, game_dir) = settings_and_ini(cfg)?;
+    let files = upscaler_files(cfg, &ini, &game_dir)?;
     let nvidia = gpu::get().nvidia;
     let shown: Vec<Value> = all
         .iter()
@@ -359,9 +381,9 @@ fn fetch_upscaler(cfg: &Config, kind: &str, accepted: bool) -> Result<Value, Str
     }
     let install = crate::exe_dir();
     let _lock = lock::acquire(&install)?;
-    let (_, ini, _) = settings_and_ini(cfg)?;
+    let (_, ini, game_dir) = settings_and_ini(cfg)?;
     // into the folder set for this upscaler, as the game looks there first
-    let custom = ini.get("upscale", &format!("{kind}_dll")).unwrap_or_default();
+    let custom = host_path(&ini.get("upscale", &format!("{kind}_dll")).unwrap_or_default(), &game_dir, cfg!(windows))?;
     let shared = Arc::new(fetch::Shared::default());
     let s = shared.clone();
     on_cancel(move || s.cancel.store(true, Ordering::SeqCst));
@@ -473,6 +495,20 @@ mod tests {
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_folder_in_fefw_ini_is_found_from_here() {
+        let game = Path::new("/games/run");
+        let linux = |s: &str| host_path(s, game, false);
+        assert_eq!(linux(""), Ok(String::new()));
+        assert_eq!(linux("/opt/fsr"), Ok("/opt/fsr".into()));
+        assert_eq!(linux("Z:\\home\\p\\fsr"), Ok("/home/p/fsr".into()));
+        assert_eq!(linux("z:/home/p/fsr"), Ok("/home/p/fsr".into()));
+        assert_eq!(linux("upscalers\\fsr"), Ok("/games/run/upscalers/fsr".into()));
+        assert!(linux("S:\\fsr").is_err());
+        assert!(linux("Z:fsr").is_err());
+        assert_eq!(host_path("D:\\fsr", game, true), Ok("D:/fsr".into()));
     }
 
     #[test]
