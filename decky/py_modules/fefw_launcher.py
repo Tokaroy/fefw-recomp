@@ -18,7 +18,7 @@ LOADER_VARIABLES = ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH",
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "GAMESCOPE_WAYLAND_DISPLAY")
 # For the questions: with WAYLAND_DISPLAY unset a window toolkit still tries the session's wayland-0, so a name that is not there.
 NO_DISPLAY = {"WAYLAND_DISPLAY": "fefw-plugin-no-display"}
-QUESTIONS = ("--status", "--check-update")  # these do not listen for "cancel"
+QUESTIONS = ("--status", "--check-update", "--settings", "--set")  # these do not listen for "cancel"
 LINE_LIMIT = 4 * 1024 * 1024  # the release notes come as one line
 QUERY_TIMEOUT = 120.0
 # The shader preparation runs the game. A display that does not work can leave it waiting for ever, with nothing said.
@@ -71,8 +71,9 @@ def environment(base, home, display=None, run_dir=None):
 class Command:
     """One run of a launcher command."""
 
-    def __init__(self, install, argument, env):
+    def __init__(self, install, argument, env, extra=()):
         self.install, self.argument, self.env = Path(install), argument, env
+        self.extra = tuple(extra)  # the argument's value and further flags
         self.process = None
         self.timed_out = False
         self._cancelled = False
@@ -83,7 +84,7 @@ class Command:
         self._starting = asyncio.Event()
         try:
             self.process = await asyncio.create_subprocess_exec(
-                str(self.install / APPIMAGE), self.argument, cwd=str(self.install), env=self.env, limit=LINE_LIMIT,
+                str(self.install / APPIMAGE), self.argument, *self.extra, cwd=str(self.install), env=self.env, limit=LINE_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True)
         except OSError as e:
@@ -226,6 +227,7 @@ class Controller:
         self.held_sleep = _timers(saved.get("held_sleep"))
         self.status = None
         self.update = None
+        self.settings = None  # None until read, and with a launcher that lists none
         self.job = None
         self.result = None
         self.error = None
@@ -233,7 +235,7 @@ class Controller:
         self._command = None  # the job's
         self._running = set()  # every command under way, the panel's questions too
         # the latest status read and update check: an earlier one that answers late says nothing
-        self._status_number = self._check_number = 0
+        self._status_number = self._check_number = self._settings_number = 0
         self.busy_again = BUSY_AGAIN
         self._status_at = 0.0  # when the status was last asked for
         self._looking = 0  # refreshes under way
@@ -286,7 +288,7 @@ class Controller:
         # counted here, so that it is right when the panel is opened again
         job = self.job and dict(self.job, elapsed=int(time.monotonic() - self._started))
         return {"install_dir": self.install_dir, "home": str(self.home), "status": self.status, "update": self.update,
-                "job": job, "result": self.result, "error": self.error,
+                "settings": self.settings, "job": job, "result": self.result, "error": self.error,
                 "keep_awake": self.keep_awake, "held_sleep": self.held_sleep}
 
     def set_install(self, folder):
@@ -296,15 +298,15 @@ class Controller:
             raise LauncherError("That folder is not the game's: choose the one with fefw-launcher.AppImage in it.")
         self.install_dir = str(folder)
         self._save()
-        self.status = self.update = self.result = self.error = None
+        self.status = self.update = self.settings = self.result = self.error = None
 
-    def _new(self, argument, display=None):
+    def _new(self, argument, display=None, extra=()):
         if self._closing:
             raise LauncherError("The plugin is closing.")
         if not self.install_dir or not is_install(self.install_dir):
             raise LauncherError("Choose the game's folder first.")
         env = environment(self.base_env, self.home, display)
-        return Command(self.install_dir, argument, env)
+        return Command(self.install_dir, argument, env, extra)
 
     async def refresh(self):
         """Reads the install's status and asks for a newer release. Problems end up in `error`. Not during a job."""
@@ -332,9 +334,39 @@ class Controller:
         self._looking += 1
         try:
             if await self._read_status():
+                await self._read_settings()
                 await self._check_update()
         finally:
             self._looking -= 1
+
+    async def _read_settings(self):
+        """The settings the panel can change. A launcher from before them is not an error: there are none to show."""
+        if self._closing:
+            return
+        folder = self.install_dir
+        self._settings_number += 1
+        number = self._settings_number
+        try:
+            # with no display, as the status: a launcher without this command then ends instead of opening its window
+            answer = await self._run(self._new("--settings", NO_DISPLAY), timeout=QUERY_TIMEOUT)
+        except LauncherError:
+            answer = None
+        if number == self._settings_number and folder == self.install_dir:
+            self.settings = answer if answer and answer.get("state") == "done" else None
+
+    async def set_setting(self, setting, choice):
+        """Writes one choice; the game reads it at its next start."""
+        if self.job:
+            raise LauncherError("Wait for the running job to finish.")
+        if not self.settings:
+            raise LauncherError("The settings have not been read yet.")
+        self.error = None
+        # what was asked before this change describes the settings before it
+        self._settings_number += 1
+        answer = await self._run(self._new("--set", NO_DISPLAY, [f"{setting}={choice}"]), timeout=QUERY_TIMEOUT)
+        await self._read_settings()
+        if answer.get("state") != "done":
+            raise LauncherError(answer.get("message") or "The setting could not be changed.")
 
     async def _read_status(self, quietly=False):
         """Reads the install's status, which stays on this device. False when it cannot be read, with the reason in `error`.
@@ -385,14 +417,24 @@ class Controller:
         if number == self._check_number and folder == self.install_dir:
             self.update = check
 
+    def _forget_everything(self):
+        self.status = self.update = self.settings = None
+
     def _forget(self, folder):
         """What was read before is not shown for an install that can no longer be read: it may have changed."""
         if folder == self.install_dir:
-            self.status = self.update = None
+            self._forget_everything()
 
-    def start(self, kind):
-        """Starts "update" (which goes on to rebuild when the new release needs it) or "rebuild"."""
-        if kind not in ("update", "rebuild"):
+    def download(self, kind, setting, choice):
+        """Starts the download of an upscaler's files, then picks the choice that needs them. For a player who accepted the
+        text in settings["consent"][kind]."""
+        if not self.settings or kind not in self.settings.get("consent", {}):
+            raise LauncherError("That download is not offered.")
+        self.start("download", (kind, setting, choice))
+
+    def start(self, kind, download=None):
+        """Starts "update" (which goes on to rebuild when the new release needs it), "rebuild", or download()'s job."""
+        if kind not in ("update", "rebuild", "download") or (kind == "download") != bool(download):
             raise LauncherError(f"Unknown job: {kind}")
         if self.job:
             raise LauncherError("A job is already running.")
@@ -403,6 +445,8 @@ class Controller:
         # what was asked before the job describes the install before it
         self._status_number += 1
         self._check_number += 1
+        self._settings_number += 1
+        self._download = download
         self._started = time.monotonic()
         self.job = {"kind": kind, "step": kind, "phase": None, "message": "Starting", "fraction": None, "cancelling": False}
         self._task = asyncio.ensure_future(self._job(kind))
@@ -416,6 +460,8 @@ class Controller:
             result = {"state": "error", "message": f"The plugin failed: {e!r}"}
         self._command = None
         read = await self._read_status()  # still the job's: another cannot start on what was true before this one
+        if read:
+            await self._read_settings()
         self.update = None  # nor is an update from before it offered again
         if result["message"].endswith(NEW_TOO_OLD):
             self.error = None  # the result says it, without advising the update that was just made
@@ -427,6 +473,16 @@ class Controller:
             await self._check_update()  # after the result: without a network it takes long to fail
 
     async def _steps(self, kind):
+        if kind == "download":
+            files, setting, choice = self._download
+            end = await self._step("download", "--fetch-upscaler", extra=[files, "--accept-licence"])
+            if end["state"] != "done" or self._cancel:
+                return self._outcome(end)
+            self._command = self._new("--set", NO_DISPLAY, [f"{setting}={choice}"])
+            end = await self._run(self._command, timeout=QUERY_TIMEOUT)
+            if end.get("state") != "done":
+                return {"state": "error", "message": f"Downloaded, but not selected: {end.get('message') or 'unknown error'}"}
+            return {"state": "done", "message": f"Downloaded and selected. It applies the next time the game starts."}
         if kind == "update":
             end = await self._step("update", "--update")
             if end["state"] != "done" or self._cancel:
@@ -447,10 +503,10 @@ class Controller:
         except LauncherError:
             return False
 
-    async def _step(self, step, argument, display=None):
+    async def _step(self, step, argument, display=None, extra=()):
         if self._cancel:
             return {"state": "cancelled"}
-        self._command = command = self._new(argument, display)
+        self._command = command = self._new(argument, display, extra)
         self.job.update(step=step, phase=None, message="Starting", fraction=None)
 
         def progress(line):

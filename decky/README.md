@@ -4,7 +4,7 @@ Updates and rebuilds the game from the Steam Deck's Quick Access Menu (Game Mode
 [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Early: tried on CachyOS Handheld, not on SteamOS.
 
 The panel: choose the game's folder (the one with `fefw-launcher.AppImage`), see its version, **Play** (starts the game's Steam
-shortcut, which the launcher's **Add to Steam** makes), **Update** (then builds the game when
+shortcut, which the launcher's **Add to Steam** makes), change the graphics preset, frame rate, resolution and upscaler, **Update** (then builds the game when
 the new release needs it), **Build the game**, **Cancel**. First-time setup stays in Desktop Mode, in the launcher: the plugin uses
 the settings it saved there.
 
@@ -42,6 +42,9 @@ Unpack the zip into Decky's plugin folder (`~/homebrew/plugins/`, which may need
 - **Play** asks Steam to run the shortcut (`src/play.ts`, an undocumented part of the Steam client), so the game starts as from the
   library. It shows when the game is built and nothing is at work on it. Which shortcuts there are comes from the launcher. While
   the panel is open, an install seen busy is looked at again every few seconds, so Play comes back when the game ends.
+- **Settings** come from the launcher (`--settings`, from `recomplauncher.json`); the panel shows four of them (`src/settings.ts`).
+  They apply when the game next starts. Picking FSR 3 or XeSS without its files shows the vendor's terms, as the launcher does, and
+  only on acceptance downloads them and then selects it. DLSS is listed only when its files are there, on an NVIDIA GPU.
 - The panel shows the time a job has run: some steps report nothing for minutes.
 - While a job runs, Steam's auto-sleep is turned off and put back afterwards, unless **Prevent auto-sleep** under the progress
   bar is off (remembered). The power button works as usual. It uses an undocumented part of the Steam client (`src/sleep.ts`); the

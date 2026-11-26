@@ -21,8 +21,11 @@ the install the launcher is in, with the settings the window saved (`launcher.js
 | `--check-update` | Asks GitHub for the latest release. | `current`, `newer`, `package`, `latest` |
 | `--update` | Downloads, checks and installs a newer release (release package only). | `updated`, `version`, `rebuild`, `rebuild_reason`, `message` |
 | `--rebuild` | The Set up button: builds whatever is not done, such as the game after an update. | `message` |
+| `--settings` | Lists the settings of `recomplauncher.json` that are a pick from a list, with what `fefw.ini` holds. | `settings` (`id`, `label`, `help`, `current`: a choice's label, null for something else; `choices`: `label`, `available`, `download`: an upscaler whose files have to be fetched first, else null), `consent` (the text to accept, by download) |
+| `--set <id>=<choice>` | Writes that choice into `fefw.ini`. The game reads it at its next start. | `message` |
+| `--fetch-upscaler <fsr or xess> --accept-licence` | Downloads the vendor's files, as the Settings page's button does. Only for a player who was shown the `consent` text and accepted it. | `message` |
 
-- Every line on stdout is a JSON object with `event` and `api` (this interface's version, 1). `--update` and `--rebuild` print
+- Every line on stdout is a JSON object with `event` and `api` (this interface's version, 1). `--update`, `--rebuild` and `--fetch-upscaler` print
   `"event": "progress"` lines (`phase`, `done`, `total`, `message`; `--rebuild` also `fraction`, 0 to 1). Every command ends with one
   `"event": "end"` line: `state` is `done`, `error` or `cancelled`, with a `message` for the last two. The exit code is 0 for `done`,
   else 1. Messages are in English. `fraction` goes back when a step starts its next part (checking, then translating, then

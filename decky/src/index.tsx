@@ -1,10 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Quick Access Menu panel: the game's folder, its version, update and rebuild. The work is in main.py; this polls it while open.
-import { ButtonItem, Field, Navigation, PanelSection, PanelSectionRow, staticClasses, ToggleField } from "@decky/ui";
+import {
+  ButtonItem,
+  ConfirmModal,
+  DropdownItem,
+  Field,
+  Navigation,
+  PanelSection,
+  PanelSectionRow,
+  showModal,
+  staticClasses,
+  ToggleField,
+} from "@decky/ui";
 import { addEventListener, callable, definePlugin, FileSelectionType, openFilePicker, removeEventListener, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaDownload } from "react-icons/fa";
 import { AppStore, SteamApps, startGame } from "./play";
+import { shownSettings, SettingsList } from "./settings";
 import { SleepKeeper, SleepStatus, SteamSettings, Timers } from "./sleep";
 
 declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps } | undefined;
@@ -28,7 +40,8 @@ interface State {
     steam_shortcuts?: number[]; // not told by a launcher from before it
   } | null;
   update: { newer: boolean; latest: { version: string } | null } | null;
-  job: { step: "update" | "rebuild"; message: string; fraction: number | null; cancelling: boolean; elapsed: number } | null;
+  settings: SettingsList | null;
+  job: { step: "update" | "rebuild" | "download"; message: string; fraction: number | null; cancelling: boolean; elapsed: number } | null;
   result: Result | null;
   error: string | null;
   keep_awake: boolean;
@@ -41,6 +54,8 @@ const setInstall = callable<[folder: string], State>("set_install");
 const refresh = callable<[], State>("refresh");
 const start = callable<[kind: "update" | "rebuild"], State>("start");
 const cancel = callable<[], State>("cancel");
+const setSetting = callable<[setting: string, choice: string], State>("set_setting");
+const download = callable<[kind: string, setting: string, choice: string], State>("download");
 const setKeepAwake = callable<[on: boolean], State>("set_keep_awake");
 const holdSleep = callable<[battery: number, ac: number], void>("hold_sleep");
 const releaseSleep = callable<[], void>("release_sleep");
@@ -98,6 +113,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
   const [state, setState] = useState<State | null>(null);
   const [checking, setChecking] = useState(false);
   const [playFailed, setPlayFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
   const alive = useRef(true);
   const show = (s: State) => {
     if (alive.current) setState(s);
@@ -155,6 +171,27 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
     if (started) Navigation.CloseSideMenus();
   };
 
+  const pick = async (setting: string, choice: string, needs: string | null) => {
+    if (needs) {
+      // nothing of a vendor's is downloaded before the player has seen whose it is and on what terms, and accepted
+      showModal(
+        <ConfirmModal
+          strTitle="Download the files?"
+          strDescription={state.settings?.consent[needs]}
+          strOKButtonText="I accept the licence, download"
+          onOK={() => void download(needs, setting, choice).then(show)}
+        />,
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      show(await setSetting(setting, choice));
+    } finally {
+      if (alive.current) setSaving(false);
+    }
+  };
+
   return (
     <>
       <PanelSection title="Game">
@@ -170,11 +207,33 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
         </PanelSectionRow>
         <Button label="Choose the game's folder" onClick={choose} disabled={!!job} />
       </PanelSection>
+      {!job && state.settings && (
+        <PanelSection title="Settings">
+          {shownSettings(state.settings).map((setting) => (
+            <PanelSectionRow key={setting.id}>
+              <DropdownItem
+                label={setting.label}
+                layout="below"
+                strDefaultLabel="Custom"
+                rgOptions={setting.options.map((o) => ({ data: o.choice, label: o.label }))}
+                selectedOption={setting.current}
+                disabled={saving || checking || status?.busy === "job"}
+                onChange={(option) => {
+                  const chosen = setting.options.find((o) => o.choice === option.data);
+                  // picking the one in force again still offers its files when they are missing
+                  if (chosen && (chosen.choice !== setting.current || chosen.download)) void pick(setting.id, chosen.choice, chosen.download);
+                }}
+              />
+            </PanelSectionRow>
+          ))}
+          <Note text="Changes apply the next time the game starts." />
+        </PanelSection>
+      )}
       <PanelSection title="Update">
         {job ? (
           <>
             <Progress
-              title={job.step === "update" ? "Updating" : "Building the game"}
+              title={job.step === "update" ? "Updating" : job.step === "download" ? "Downloading" : "Building the game"}
               message={job.cancelling ? "Cancelling" : job.message}
               fraction={job.fraction}
             />

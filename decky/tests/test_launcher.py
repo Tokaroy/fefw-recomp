@@ -19,8 +19,9 @@ FAKE = r'''#!/usr/bin/env python3
 import json, os, subprocess, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
 argument = sys.argv[1]
+extra = sys.argv[2:]
 with open(os.path.join(here, "runs.jsonl"), "a") as f:
-    f.write(json.dumps({"argument": argument, "env": dict(os.environ), "pid": os.getpid()}) + "\n")
+    f.write(json.dumps({"argument": argument, "extra": extra, "env": dict(os.environ), "pid": os.getpid()}) + "\n")
 def out(event, **fields):
     print(json.dumps(dict(fields, event=event, api=fields.pop("api", 1))), flush=True)
 for do, value in json.load(open(os.path.join(here, "plan.json")))[argument]:
@@ -42,8 +43,12 @@ STATUS = {"state": "done", "version": "1.0.0", "busy": None, "setup_complete": T
 CHECK = {"state": "done", "newer": True, "latest": {"version": "1.1.0", "notes": "n" * 200_000}}
 
 
+SETTINGS = {"state": "done", "settings": [{"id": "upscaler", "current": "TAAU"}], "consent": {"fsr": "AMD's terms"}}
+
+
 def plan(**commands):
-    steps = {"--status": [["end", STATUS]], "--check-update": [["end", CHECK]]}
+    steps = {"--status": [["end", STATUS]], "--check-update": [["end", CHECK]], "--settings": [["end", SETTINGS]],
+             "--set": [["end", {"state": "done", "message": "Saved."}]]}
     steps.update({"--" + k.replace("_", "-"): v for k, v in commands.items()})
     return steps
 
@@ -346,6 +351,60 @@ class Watching(Case):
         await asyncio.wait_for(refresh, 10)
         self.assertEqual(self.asked(), 2)
         self.assertEqual((self.controller.status["busy"], self.controller.update["newer"]), (None, True))
+
+
+class Settings(Case):
+    def sent(self, argument):
+        return [r["extra"] for r in self.runs() if r["argument"] == argument]
+
+    async def test_they_are_read_with_the_status_and_a_choice_is_written_and_read_back(self):
+        await self.ready()
+        self.assertEqual(self.controller.state()["settings"]["consent"], {"fsr": "AMD's terms"})
+        self.write_plan(settings=[["end", dict(SETTINGS, settings=[{"id": "upscaler", "current": "Bilinear"}])]])
+        await self.controller.set_setting("upscaler", "AMD FSR 3 (needs AMD's files)")
+        self.assertEqual(self.sent("--set"), [["upscaler=AMD FSR 3 (needs AMD's files)"]])
+        self.assertEqual(self.controller.settings["settings"][0]["current"], "Bilinear")
+        for run in self.runs():
+            self.assertNotIn("DISPLAY", run["env"])
+
+    async def test_a_refused_choice_is_said(self):
+        await self.ready(set=[["end", {"state": "error", "message": "Another setup or update is running."}]])
+        with self.assertRaisesRegex(fl.LauncherError, "Another setup"):
+            await self.controller.set_setting("upscaler", "TAAU")
+
+    async def test_a_launcher_without_them_is_not_an_error(self):
+        await self.ready(settings=[["die", "Failed to initialize GTK"]])
+        self.assertEqual((self.controller.settings, self.controller.error), (None, None))
+        self.assertIsNotNone(self.controller.update)
+        with self.assertRaises(fl.LauncherError):
+            await self.controller.set_setting("upscaler", "TAAU")
+        with self.assertRaises(fl.LauncherError):
+            self.controller.download("fsr", "upscaler", "FSR")
+        self.assertEqual(self.sent("--set"), [])
+
+    async def test_a_download_is_accepted_fetched_and_then_selected(self):
+        await self.ready(fetch_upscaler=[["progress", {"phase": "download", "done": 1, "total": 4, "message": "Downloading"}],
+                                         ["end", {"state": "done", "message": "Saved 3 files."}]])
+        with self.assertRaises(fl.LauncherError):
+            self.controller.download("dlss", "upscaler", "DLSS")
+        self.controller.download("fsr", "upscaler", "FSR")
+        result = await self.finish()
+        self.assertEqual(result["state"], "done")
+        self.assertIn("selected", result["message"])
+        self.assertEqual(self.sent("--fetch-upscaler"), [["fsr", "--accept-licence"]])
+        self.assertEqual(self.sent("--set"), [["upscaler=FSR"]])
+
+    async def test_a_failed_or_cancelled_download_selects_nothing(self):
+        await self.ready(fetch_upscaler=[["end", {"state": "error", "message": "The download failed."}]])
+        self.controller.download("fsr", "upscaler", "FSR")
+        self.assertEqual(await self.finish(), {"state": "error", "message": "The download failed."})
+        self.write_plan(fetch_upscaler=[["progress", {"phase": "download", "done": 0, "total": 0, "message": "Downloading"}],
+                                        ["await-cancel", None]])
+        self.controller.download("fsr", "upscaler", "FSR")
+        await self.until(lambda: self.controller.job["message"] == "Downloading")
+        self.controller.cancel()
+        self.assertEqual((await self.finish())["state"], "cancelled")
+        self.assertEqual(self.sent("--set"), [])
 
 
 class Closing(Case):
