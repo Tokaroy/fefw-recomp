@@ -8,6 +8,8 @@ For development. Players should use the zip on the Releases page instead. You ne
 - for the launcher: Rust (stable) and Node.js 20+
 - optional: NASM 2.14+ (faster movie decoding; on PATH, or `NX_TOOLCHAIN\bin`), sccache
 
+A Release build of the runtime uses link-time optimisation and a recorded execution profile; see [PGO.md](PGO.md).
+
 ## With the launcher
 
 ```
