@@ -15,6 +15,7 @@ mod lock;
 mod lsfg;
 mod nup;
 mod play;
+mod report;
 mod screen;
 mod settings;
 mod setup;
@@ -47,6 +48,8 @@ struct Config {
     minimize_on_play: bool,
     /// do not ask GitHub for a newer release when the launcher starts
     skip_update_check: bool,
+    /// opt-in: send anonymized crash/performance logs after a run when an issue is detected
+    send_reports: bool,
     /// Linux: the command that starts fefw.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
     /// installed, else umu-run, else wine. Unused on Windows.
     runner: String,
@@ -245,6 +248,13 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
         }
     }
     store_config(&app, &config)
+}
+
+#[tauri::command]
+fn set_send_reports(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut cfg = load_saved_config(&app);
+    cfg.send_reports = enabled;
+    store_config(&app, &cfg)
 }
 
 fn store_config(app: &AppHandle, config: &Config) -> Result<(), String> {
@@ -690,7 +700,14 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         }
         extra_env = lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance);
     }
-    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock)
+    let report_opts = report::Options {
+        enabled: cfg.send_reports,
+        config_dir: app.path().app_config_dir().ok(),
+        dump_dir: cfg.dump_dir.clone(),
+        launcher_dir: exe_dir(),
+        launcher_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock, report_opts)
 }
 
 /// Opens LSFG-VK's install instructions in the browser (Settings, when the layer is missing). A fixed address, nothing from the page.
@@ -1131,6 +1148,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            set_send_reports,
             ui_language,
             set_language,
             get_overview,
