@@ -13,7 +13,7 @@ ThinLTO (`NXRT_LTO`). The configure prints `nxrt: profile ... (id ...)` or `nxrt
 |---|---|
 | `auto` | `runtime/pgo/fefw_rt.profdata` in Release builds, none otherwise |
 | `off` | no profile |
-| a `.profdata` file | that profile |
+| a `.profdata` file | that profile (a relative path is taken from the top-level source folder) |
 
 A function whose source changed since the recording is built without its profile; the rest keeps it. Nothing fails, so the
 profile slowly loses effect as the runtime changes. Record it again after large changes to the render path.
