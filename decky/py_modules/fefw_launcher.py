@@ -3,9 +3,14 @@
 tests run anywhere. All the update and build logic stays in the launcher."""
 
 import asyncio
+import hashlib
+import io
 import json
 import os
+import re
 import time
+import zipfile
+import zlib
 from collections import deque
 from pathlib import Path
 
@@ -25,6 +30,11 @@ QUERY_TIMEOUT = 120.0
 PREPARE_TIMEOUT = 600.0
 POLL = 1.0  # how often a silent launcher is looked at
 BUSY_AGAIN = 5.0  # how often an install seen busy is looked at again, while the panel is open
+# The plugin of the installed release, which its package carries (game-build/scripts/make-release-linux.sh).
+PLUGIN_ZIP = "decky/fefw-recomp-decky.zip"
+PLUGIN_NAME = "FEFW Recomp"
+PLUGIN_FOLDER = "fefw-recomp"
+PLUGIN_LIMIT = 20 * 1024 * 1024
 
 
 class LauncherError(Exception):
@@ -211,15 +221,80 @@ def _timers(value):
     return None
 
 
+def _version(text):
+    """A version as something to compare, in semantic versioning's order (1.2.0-beta.2 < 1.2.0-beta.10 < 1.2.0), or None."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", str(text or ""))
+    if not match:
+        return None
+    early = match[4]
+    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in early.split(".")] if early else []
+    return int(match[1]), int(match[2]), int(match[3]), not early, parts
+
+
+def _inside_plugin(name):
+    parts = (name[:-1] if name.endswith("/") else name).split("/")  # a folder's entry ends in /
+    return parts[0] == PLUGIN_FOLDER and "\\" not in name and all(part not in ("", ".", "..") for part in parts)
+
+
+def read_plugin(data):
+    """The version of the plugin in a release's ZIP, or None for anything Decky must not be handed: it unpacks as root, and a
+    plugin that asks for it runs as root."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            # one entry for each file, so that what is checked here is what gets unpacked
+            if len(set(names)) != len(names) or not all(map(_inside_plugin, names)):
+                return None
+            about = json.loads(z.read(f"{PLUGIN_FOLDER}/plugin.json"))
+            version = json.loads(z.read(f"{PLUGIN_FOLDER}/package.json"))["version"]
+        if about["name"] != PLUGIN_NAME or about["flags"] != []:
+            return None
+    except (zipfile.BadZipFile, zlib.error, OSError, ValueError, KeyError, TypeError, RuntimeError, NotImplementedError):
+        return None
+    return version if _version(version) else None
+
+
+def plugin_offer(install, current, keep_dir):
+    """What to hand Decky's installer, {"version", "artifact", "hash"}, when the install's release carries a newer plugin than
+    `current`; else None. The checked ZIP is copied to keep_dir: Decky removes the old plugin before it checks the hash, so the
+    file must stay as it is until then, which the install's does not while the game is updated. Earlier copies stay too: a question
+    of Decky's that is still open names one (a release adds a few tens of KB)."""
+    source = Path(install) / PLUGIN_ZIP
+    try:
+        if source.stat().st_size > PLUGIN_LIMIT:
+            return None
+        data = source.read_bytes()
+    except OSError:
+        return None
+    version = read_plugin(data)
+    if not version or not _version(current) or _version(version) <= _version(current):
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    kept = Path(keep_dir) / f"plugin-{digest[:16]}.zip"
+    try:
+        if not kept.is_file() or kept.read_bytes() != data:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            part = kept.with_suffix(".part")
+            part.write_bytes(data)
+            part.replace(kept)
+    except OSError:
+        return None
+    return {"version": version, "artifact": f"file://{kept}", "hash": digest}
+
+
 class Controller:
     """What the panel shows and does: the chosen install, its status, and at most one job (an update or a rebuild)."""
 
-    def __init__(self, settings_file, home, base_env=None, display=find_display, on_done=None):
+    def __init__(self, settings_file, home, base_env=None, display=find_display, on_done=None, plugin_version=None,
+                 data_dir=None):
         self.settings_file = Path(settings_file)
         self.home = Path(home)
         self.base_env = dict(os.environ if base_env is None else base_env)
         self.display = display
         self.on_done = on_done
+        self.plugin_version, self.data_dir = plugin_version, data_dir  # this plugin's, and where it may keep files
+        self.plugin_update = None  # plugin_offer()'s, for the chosen install
+        self._updated = False  # whether the job replaced the install's release
         saved = self._load()
         self.install_dir = saved.get("install_dir") or None
         self.keep_awake = saved.get("keep_awake") is not False  # on unless it was turned off
@@ -289,7 +364,7 @@ class Controller:
         job = self.job and dict(self.job, elapsed=int(time.monotonic() - self._started))
         return {"install_dir": self.install_dir, "home": str(self.home), "status": self.status, "update": self.update,
                 "settings": self.settings, "job": job, "result": self.result, "error": self.error,
-                "keep_awake": self.keep_awake, "held_sleep": self.held_sleep}
+                "keep_awake": self.keep_awake, "held_sleep": self.held_sleep, "plugin_update": self.plugin_update}
 
     def set_install(self, folder):
         if self.job:
@@ -299,6 +374,7 @@ class Controller:
         self.install_dir = str(folder)
         self._save()
         self.status = self.update = self.settings = self.result = self.error = None
+        self.plugin_update = None
 
     def _new(self, argument, display=None, extra=()):
         if self._closing:
@@ -311,7 +387,13 @@ class Controller:
     async def refresh(self):
         """Reads the install's status and asks for a newer release. Problems end up in `error`. Not during a job."""
         if not self.job:
+            self._look_for_plugin()
             await self._look()
+
+    def _look_for_plugin(self):
+        """Needs no answer from the launcher: a newer release's may be one only its newer plugin understands."""
+        ready = self.data_dir and self.install_dir and is_install(self.install_dir)
+        self.plugin_update = plugin_offer(self.install_dir, self.plugin_version, self.data_dir) if ready else None
 
     async def _run(self, command, *args, **kwargs):
         """command.run, known to close() while it lasts."""
@@ -447,6 +529,7 @@ class Controller:
         self._check_number += 1
         self._settings_number += 1
         self._download = download
+        self._updated, self.plugin_update = False, None
         self._started = time.monotonic()
         self.job = {"kind": kind, "step": kind, "phase": None, "message": "Starting", "fraction": None, "cancelling": False}
         self._task = asyncio.ensure_future(self._job(kind))
@@ -465,6 +548,9 @@ class Controller:
         self.update = None  # nor is an update from before it offered again
         if result["message"].endswith(NEW_TOO_OLD):
             self.error = None  # the result says it, without advising the update that was just made
+        self._look_for_plugin()
+        if self._updated and self.plugin_update and result["state"] != "cancelled":
+            result = dict(result, plugin_update=self.plugin_update)  # the panel asks to update the plugin with it
         self.result = result
         self.job = None
         if self.on_done and not self._closing:
@@ -485,6 +571,7 @@ class Controller:
             return {"state": "done", "message": f"Downloaded and selected. It applies the next time the game starts."}
         if kind == "update":
             end = await self._step("update", "--update")
+            self._updated = end["state"] == "done" and end.get("updated") is not False
             if end["state"] != "done" or self._cancel:
                 return self._outcome(end)
             if end.get("rebuild") is False:

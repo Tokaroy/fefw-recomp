@@ -15,7 +15,8 @@ class Plugin:
             await decky.emit("fefw_job_done", result)
 
         self.controller = fefw_launcher.Controller(
-            os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json"), decky.DECKY_USER_HOME, on_done=done)
+            os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json"), decky.DECKY_USER_HOME, on_done=done,
+            plugin_version=decky.DECKY_PLUGIN_VERSION, data_dir=decky.DECKY_PLUGIN_RUNTIME_DIR)
 
     async def _unload(self):
         await self.controller.close()

@@ -295,8 +295,15 @@ jobs:
           path: work/release/cache
           key: release-linux-downloads-${{ steps.ver.outputs.downloads }}
 
+      # also inside the package: the installed plugin updates itself to it
+      - uses: actions/download-artifact@v4
+        with:
+          name: decky
+          path: work/base
       - name: Package (game-build/scripts/make-release-linux.sh)
-        run: game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip"
+        run: |
+          game-build/scripts/make-release-linux.sh "work/base/fefw-recomp-$VERSION-win64.zip" \
+              --decky "work/base/fefw-recomp-$VERSION-decky.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -304,11 +311,6 @@ jobs:
           path: work/release/fefw-recomp-${{ needs.windows.outputs.version }}-linux-x64.tar.gz
           compression-level: 0
           if-no-files-found: error
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: decky
-          path: work/base
 
       - name: Installer (installer/), following this repository's releases
         run: |
