@@ -7,9 +7,11 @@ mod cpu;
 mod dump;
 mod fetch;
 mod gpu;
+mod headless;
 mod ini;
 mod lang;
 mod locale;
+mod lock;
 mod lsfg;
 mod nup;
 mod play;
@@ -25,7 +27,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -237,6 +239,7 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
     // switch stays unsaved and can be made again.
     if config.skip_update_check != saved.skip_update_check {
+        let _lock = lock::for_write(&exe_dir())?;
         if let Some(repo) = repo_of(&config) {
             settings::set_update_check(&game_dir_of(&config, &repo), !config.skip_update_check)?;
         }
@@ -266,6 +269,8 @@ fn set_language(app: AppHandle, code: String) -> Result<(), String> {
     let mut cfg = load_saved_config(&app);
     cfg.lang = code;
     store_config(&app, &cfg)?;
+    // under another process's setup or update the run folder is left alone: Set up and Play bring it in step
+    let Ok(_lock) = lock::for_write(&exe_dir()) else { return Ok(()) };
     sync_run_folder(&cfg)
 }
 
@@ -337,6 +342,8 @@ async fn import_nup(app: AppHandle, state: State<'_, Arc<setup::Shared>>, path: 
     if state.progress.lock().unwrap().state == "running" {
         return Err("Setup is running. Pause it first.".into());
     }
+    // held while the dump is written: a rebuild reads it
+    let _lock = lock::acquire(&exe_dir())?;
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let out = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("nup_dump") } else { repo.join("game").join("nup_dump") };
@@ -386,6 +393,7 @@ fn read_settings(app: AppHandle) -> Result<settings::SettingsDump, String> {
 
 #[tauri::command]
 fn write_settings(app: AppHandle, edits: Vec<settings::Edit>) -> Result<(), String> {
+    let _lock = lock::for_write(&exe_dir())?;
     let cfg = load_config(&app);
     settings::apply(&game_dir_of(&cfg, &need_repo(&cfg)?), &edits)
 }
@@ -530,6 +538,8 @@ fn upscaler_files(
 /// (`dir`), else upscalers/<name> next to the launcher. The page asks the player first (the licence and the source are shown there); see fetch.rs.
 #[tauri::command]
 fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String, dir: Option<String>) -> Result<(), String> {
+    // not begun under another process's job; not held on to, as Play need not wait for a download
+    drop(lock::for_write(&exe_dir())?);
     {
         let mut s = state.lock();
         if s.state == "running" {
@@ -624,11 +634,13 @@ fn start_setup(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), S
     }
     let cfg = load_config(&app);
     let p = paths(&cfg)?;
+    let lock;
     {
         let mut pr = state.progress.lock().unwrap();
         if pr.state == "running" {
             return Err("Setup is already running.".into());
         }
+        lock = lock::acquire(&exe_dir())?;
         *pr = setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
     }
     let shared = state.inner().clone();
@@ -645,6 +657,7 @@ fn start_setup(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), S
             let _ = a2.emit("setup-log", lines);
         };
         let end = setup::run(&shared, &p, jobs, &runner, &emit, &emit_log);
+        drop(lock); // before the page hears the end, and may start the next job
         let _ = app.emit("setup-status", end);
     });
     Ok(())
@@ -666,6 +679,8 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
     if !setup::complete(&p) {
         return Err("Setup is not finished: open Setup and press Set up.".into());
     }
+    // not while an update or a rebuild changes the files, and held until the game's process is there for them to see
+    let lock = lock::acquire(&exe_dir())?;
     settings::ensure_play_paths(&p.game_dir, &p)?;
     let mut extra_env = Vec::new();
     if cfg.lsfg && cfg!(target_os = "linux") {
@@ -675,7 +690,7 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         }
         extra_env = lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance);
     }
-    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env)
+    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock)
 }
 
 /// Opens LSFG-VK's install instructions in the browser (Settings, when the layer is missing). A fixed address, nothing from the page.
@@ -826,13 +841,18 @@ async fn gpu_info() -> gpu::Gpus {
     tauri::async_runtime::spawn_blocking(gpu::get).await.unwrap_or_default()
 }
 
-#[tauri::command]
-async fn check_update(app: AppHandle) -> Result<update::Check, String> {
-    // FEFW_LAUNCHER_PRETEND_VERSION: test the update path against the published release from an older-looking launcher
-    let current = std::env::var("FEFW_LAUNCHER_PRETEND_VERSION")
+/// The version updates are compared with: FEFW_BUILD_ID's when the build has one, else the launcher's `own`.
+/// FEFW_LAUNCHER_PRETEND_VERSION: test the update path against the published release from an older-looking launcher.
+fn current_version(own: String) -> String {
+    std::env::var("FEFW_LAUNCHER_PRETEND_VERSION")
         .ok()
         .filter(|v| update::parse_version(v).is_some())
-        .unwrap_or_else(|| update::BUILD_ID.map(String::from).unwrap_or_else(|| app.package_info().version.to_string()));
+        .unwrap_or_else(|| update::BUILD_ID.map(String::from).unwrap_or(own))
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<update::Check, String> {
+    let current = current_version(app.package_info().version.to_string());
     let package = package_tools().is_some();
     tauri::async_runtime::spawn_blocking(move || update::check(&current, package)).await.map_err(|e| e.to_string())?
 }
@@ -866,11 +886,13 @@ fn start_update(
     if play_state.0.lock().unwrap().state == "running" {
         return Err("The game is running. Close it first.".into());
     }
+    let lock;
     {
         let mut s = state.status.lock().unwrap();
         if s.state == "running" {
             return Err("An update is already running.".into());
         }
+        lock = lock::acquire(&exe_dir())?;
         *s = update::Status {
             state: "running".into(),
             phase: "download".into(),
@@ -889,11 +911,13 @@ fn start_update(
         let emit = move |s: update::Status| {
             let _ = a.emit("update-status", s);
         };
-        let run = update::Run { shared: &shared, install, game_dir, emit: &emit };
+        // the window's own game was checked above
+        let run = update::Run { shared: &shared, install, game_dir, emit: &emit, ready: &|| Ok(()) };
         let end = match run.run(&release) {
             Ok(s) => s,
             Err(e) => update::Status { state: "error".into(), message: e, version: release.version.clone(), ..Default::default() },
         };
+        drop(lock);
         *shared.status.lock().unwrap() = end.clone();
         let _ = app.emit("update-status", end);
     });
@@ -985,6 +1009,10 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
         }
         dlc_dir = Some(d);
     }
+    let _lock = match lock::acquire(&exe_dir()) {
+        Ok(l) => l,
+        Err(e) => return prepare_fail(&e),
+    };
     refresh_package_locales();
     let mut cfg = Config { dump_dir: game.trim().to_string(), ..Default::default() };
     let mut base = 0.0f64;
@@ -1031,18 +1059,11 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
         setup::Progress { state: "running".into(), step: "python".into(), message: "Starting...".into(), ..Default::default() };
     shared.cancel.store(false, Ordering::SeqCst);
     let jobs = jobs_of(&cfg);
-    let n = setup::steps(&p, None).iter().filter(|s| s.state != "done").count().max(1) as f64;
-    let seen = Arc::new(Mutex::new((String::new(), 0usize)));
+    let overall = headless::Overall::new(&p, base);
     let emit = move |pr: setup::Progress| {
-        let mut g = seen.lock().unwrap();
-        if g.0 != pr.step {
-            g.0 = pr.step.clone();
-            g.1 += 1;
-        }
-        let within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
-        let f = base + (1.0 - base) * (g.1.saturating_sub(1) as f64 + within) / n;
+        let f = overall.at(&pr);
         let text = pr.message.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(pr.step.as_str()).to_string();
-        out_line(&format!("progress {:.3} {}", f.clamp(0.0, 1.0), text));
+        out_line(&format!("progress {f:.3} {text}"));
     };
     let emit_log = move |_lines: Vec<String>| {};
     let end = setup::run(&shared, &p, jobs, &cfg.runner, &emit, &emit_log);
@@ -1063,6 +1084,9 @@ fn prepare_headless(game: Option<String>, dlc: Option<String>) -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(cmd) = headless::command(&args) {
+        std::process::exit(headless::run(cmd));
+    }
     let game_arg = arg_value(&args, "--game");
     if args.iter().any(|a| a == "--prepare") {
         std::process::exit(prepare_headless(game_arg, arg_value(&args, "--dlc")));
@@ -1071,7 +1095,10 @@ fn main() {
         let _ = GAME_ARG.set(g.trim().to_string());
     }
     if package_tools().is_some() {
-        update::cleanup(&exe_dir());
+        // not under an update that is running: these are its files
+        if let Ok(_lock) = lock::acquire(&exe_dir()) {
+            update::cleanup(&exe_dir());
+        }
     }
     // probed now, off the main thread, so the Settings page finds the answer ready (PowerShell takes a moment on Windows)
     std::thread::spawn(gpu::get);
@@ -1084,9 +1111,12 @@ fn main() {
         .setup(|app| {
             // at every start, so that an update or a new default also reaches a game started without Play; the package first,
             // as the run folder takes its tables from there
-            refresh_package_locales();
-            if let Err(e) = sync_run_folder(&load_config(app.handle())) {
-                eprintln!("[run folder] {e}");
+            // not under another process's setup or update: Set up and Play bring the run folder in step
+            if let Ok(_lock) = lock::acquire(&exe_dir()) {
+                refresh_package_locales();
+                if let Err(e) = sync_run_folder(&load_config(app.handle())) {
+                    eprintln!("[run folder] {e}");
+                }
             }
             Ok(())
         })

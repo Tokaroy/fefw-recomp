@@ -1086,6 +1086,14 @@ fn shader_steps(r: &Runner, p: &Paths, jobs: usize, cwd: &Path) -> Result<bool, 
     Ok(true)
 }
 
+/// Linux with no display for fefw.exe (a launcher run without the window, say by a background service): it does not fail then, it waits
+/// for ever. A runner the player set may bring a display of its own (xvfb-run, gamescope), so only the automatic one is judged.
+fn no_display(runner_setting: &str, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    cfg!(target_os = "linux")
+        && runner_setting.trim().is_empty()
+        && ["DISPLAY", "WAYLAND_DISPLAY"].iter().all(|k| var(k).is_none_or(|v| v.is_empty()))
+}
+
 /// Compiles the shader parts of every program of the game on this GPU and driver (fefw.exe --prepare-shaders), so the first play session has no
 /// shader to compile. Needs the translated shaders and fefw.ini. It saves time and nothing else: when it cannot run or fails, Set up goes on
 /// (the game then compiles while it is played) and the step is marked given up. Instant when the runtime's state file says this GPU and driver
@@ -1100,6 +1108,10 @@ fn prepare_step(r: &Runner, p: &Paths, jobs: usize, runner_setting: &str) -> Res
         r.log(vec![format!("Shader preparation skipped ({what}). The game compiles shaders while you play instead; Set up tries again next time.")]);
         let _ = fs::write(&skipped, what);
     };
+    if no_display(runner_setting, |k| std::env::var_os(k)) {
+        give_up("there is no display: DISPLAY and WAYLAND_DISPLAY are not set".into());
+        return Ok(true);
+    }
     if !p.programs_bin().is_file() {
         // a Set up from before the list existed: list the programs again (about half a minute), keeping nothing else of the extraction
         let tmp = p.prepare_file("programs-tmp");
@@ -1528,6 +1540,18 @@ mod tests {
         assert_eq!(lift_sites_file(&p).unwrap(), own);
         assert!(!p.libs().join("main_with_mods.sites").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shader_preparation_needs_a_display() {
+        let env =
+            |set: &'static [(&'static str, &'static str)]| move |k: &str| set.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(v));
+        assert!(no_display("", env(&[])));
+        assert!(no_display(" ", env(&[("DISPLAY", "")])));
+        assert!(!no_display("", env(&[("DISPLAY", ":0")])));
+        assert!(!no_display("", env(&[("WAYLAND_DISPLAY", "wayland-1")])));
+        assert!(!no_display("xvfb-run wine", env(&[])));
     }
 
     #[cfg(target_os = "linux")]
