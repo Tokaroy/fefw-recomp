@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The launcher without its window, for a program that drives it, such as a Steam Deck plugin (launcher/README.md): --status,
-//! --check-update, --update and --rebuild. They use the saved settings (launcher.json) as the window does. Every line on stdout is
+//! --check-update, --update, --rebuild, --settings, --set and --fetch-upscaler. They use the saved settings (launcher.json) as the window does. Every line on stdout is
 //! one JSON object: any number with "event": "progress", then one with "event": "end" and "state": "done", "error" or "cancelled".
 //! Exit code 0 for "done", else 1. A line "cancel" on stdin stops --update or --rebuild.
 
-use crate::{cpu, lock, settings, setup, update, Config};
+use crate::{cpu, fetch, gpu, ini::Ini, lock, manifest, settings, setup, update, Config};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::BufRead;
@@ -18,20 +18,29 @@ pub const API: u32 = 1;
 const GAME_RUNNING: &str = "The game is running. Close it first.";
 const TAURI_CONF: &str = include_str!("../tauri.conf.json");
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Command {
     Status,
     CheckUpdate,
     Update,
     Rebuild,
+    Settings,
+    /// "id=choice"
+    Set(String),
+    /// the kind, and whether the licence was accepted
+    Fetch(String, bool),
 }
 
 pub fn command(args: &[String]) -> Option<Command> {
-    args.iter().find_map(|a| match a.as_str() {
+    let value = |i: usize| args.get(i + 1).cloned().unwrap_or_default();
+    args.iter().enumerate().find_map(|(i, a)| match a.as_str() {
         "--status" => Some(Command::Status),
         "--check-update" => Some(Command::CheckUpdate),
         "--update" => Some(Command::Update),
         "--rebuild" => Some(Command::Rebuild),
+        "--settings" => Some(Command::Settings),
+        "--set" => Some(Command::Set(value(i))),
+        "--fetch-upscaler" => Some(Command::Fetch(value(i), args.iter().any(|a| a == "--accept-licence"))),
         _ => None,
     })
 }
@@ -43,6 +52,9 @@ pub fn run(cmd: Command) -> i32 {
         Command::CheckUpdate => check_update(),
         Command::Update => run_update(&cfg),
         Command::Rebuild => rebuild(&cfg),
+        Command::Settings => list_settings(&cfg),
+        Command::Set(pick) => set_setting(&cfg, &pick),
+        Command::Fetch(kind, accepted) => fetch_upscaler(&cfg, &kind, accepted),
     });
     let end = result.unwrap_or_else(|message| json!({ "state": "error", "message": message }));
     let code = if end["state"] == "done" { 0 } else { 1 };
@@ -279,6 +291,100 @@ fn run_update(cfg: &Config) -> Result<Value, String> {
     }
 }
 
+/// The run folder's fefw.ini and the manifest's settings. Before Set up there is no ini to change.
+fn settings_and_ini(cfg: &Config) -> Result<(Vec<manifest::Setting>, Ini, PathBuf), String> {
+    let repo = crate::need_repo(cfg)?;
+    let game_dir = crate::game_dir_of(cfg, &repo);
+    let path = repo.join("recomplauncher.json");
+    let all = manifest::parse(&fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?)?;
+    let ini = fs::read(game_dir.join(settings::GAME_INI)).map_err(|_| "The game has no settings yet: run Set up first.".to_string())?;
+    Ok((all, Ini::parse(&String::from_utf8_lossy(&ini)), game_dir))
+}
+
+/// Whether a caller may offer this value of [dlss] upscaler, and the download that has to come first (--fetch-upscaler).
+fn upscaler_choice(value: &str, files: &crate::UpscalerFiles, nvidia: bool) -> (bool, Option<&'static str>) {
+    match value {
+        "fsr3" => (true, (!files.fsr_upscaling.found).then_some("fsr")),
+        "xess" => (true, (!files.xess.found).then_some("xess")),
+        // NVIDIA's files are downloaded in the window only
+        "dlss" => (nvidia && files.dlss.found, None),
+        _ => (true, None),
+    }
+}
+
+fn upscaler_files(cfg: &Config, ini: &Ini) -> Result<crate::UpscalerFiles, String> {
+    let dir = |key: &str| ini.get("upscale", key).unwrap_or_default();
+    crate::upscaler_state(cfg, dir("fsr_dll"), dir("dlss_dll"), Some(dir("xess_dll")), None)
+}
+
+fn list_settings(cfg: &Config) -> Result<Value, String> {
+    let (all, ini, _) = settings_and_ini(cfg)?;
+    let files = upscaler_files(cfg, &ini)?;
+    let nvidia = gpu::get().nvidia;
+    let shown: Vec<Value> = all
+        .iter()
+        .map(|s| {
+            let choices: Vec<Value> = s
+                .choices
+                .iter()
+                .map(|c| {
+                    let (available, download) = c.set.get("dlss/upscaler").map_or((true, None), |v| upscaler_choice(v, &files, nvidia));
+                    json!({ "label": c.label, "available": available, "download": download })
+                })
+                .collect();
+            json!({ "id": s.id, "label": s.label, "help": s.help, "current": manifest::current(s, &ini).map(|c| &c.label), "choices": choices })
+        })
+        .collect();
+    let consent: serde_json::Map<String, Value> = ["fsr", "xess"].iter().filter_map(|k| Some((k.to_string(), fetch::consent(k)?.into()))).collect();
+    Ok(json!({ "state": "done", "settings": shown, "consent": consent }))
+}
+
+/// Writes one choice into fefw.ini, as the Settings page does. The game reads these when it starts.
+fn set_setting(cfg: &Config, pick: &str) -> Result<Value, String> {
+    let (id, label) = pick.split_once('=').ok_or("--set needs id=choice.")?;
+    let _lock = lock::acquire(&crate::exe_dir())?;
+    let (all, ini, game_dir) = settings_and_ini(cfg)?;
+    let setting = all.iter().find(|s| s.id == id).ok_or_else(|| format!("There is no setting \"{id}\"."))?;
+    settings::apply(&game_dir, &manifest::edits(setting, label, &ini)?)?;
+    Ok(json!({ "state": "done", "message": format!("{}: {label}", setting.label) }))
+}
+
+/// The Settings page's Download button, for a caller that showed the player the consent text and had it accepted.
+fn fetch_upscaler(cfg: &Config, kind: &str, accepted: bool) -> Result<Value, String> {
+    let Some(consent) = fetch::consent(kind) else {
+        return Err(format!("\"{kind}\" cannot be downloaded without the window."));
+    };
+    if !accepted {
+        return Err(format!("{consent} Accept it with --accept-licence."));
+    }
+    let install = crate::exe_dir();
+    let _lock = lock::acquire(&install)?;
+    let (_, ini, _) = settings_and_ini(cfg)?;
+    // into the folder set for this upscaler, as the game looks there first
+    let custom = ini.get("upscale", &format!("{kind}_dll")).unwrap_or_default();
+    let shared = Arc::new(fetch::Shared::default());
+    let s = shared.clone();
+    on_cancel(move || s.cancel.store(true, Ordering::SeqCst));
+    let result = std::thread::scope(|scope| {
+        let job = scope.spawn(|| fetch::run(&shared, &install, kind, &custom));
+        let mut said = String::new();
+        while !job.is_finished() {
+            let now = shared.lock().clone();
+            if !now.message.is_empty() && now.message != said {
+                emit("progress", json!({ "phase": "download", "done": now.done, "total": now.total, "message": now.message }));
+                said = now.message;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        job.join().unwrap_or_else(|_| Err("The download stopped unexpectedly.".into()))
+    });
+    match result {
+        Ok(message) => Ok(json!({ "state": "done", "message": message })),
+        Err(message) if message == fetch::CANCELLED => Ok(json!({ "state": "cancelled", "message": message })),
+        Err(message) => Err(message),
+    }
+}
+
 /// How far a whole setup is, from the progress of the step that runs.
 pub struct Overall {
     base: f64,
@@ -375,6 +481,11 @@ mod tests {
         assert_eq!(command(&args(&["--check-update"])), Some(Command::CheckUpdate));
         assert_eq!(command(&args(&["--update"])), Some(Command::Update));
         assert_eq!(command(&args(&["--rebuild"])), Some(Command::Rebuild));
+        assert_eq!(command(&args(&["--settings"])), Some(Command::Settings));
+        assert_eq!(command(&args(&["--set", "output=720p"])), Some(Command::Set("output=720p".into())));
+        assert_eq!(command(&args(&["--set"])), Some(Command::Set(String::new())));
+        assert_eq!(command(&args(&["--fetch-upscaler", "fsr"])), Some(Command::Fetch("fsr".into(), false)));
+        assert_eq!(command(&args(&["--fetch-upscaler", "fsr", "--accept-licence"])), Some(Command::Fetch("fsr".into(), true)));
         // the window, and the setup RecompLauncher runs
         assert_eq!(command(&args(&[])), None);
         assert_eq!(command(&args(&["--game", "/dump"])), None);

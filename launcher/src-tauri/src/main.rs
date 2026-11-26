@@ -13,6 +13,7 @@ mod lang;
 mod locale;
 mod lock;
 mod lsfg;
+mod manifest;
 mod nup;
 mod play;
 mod screen;
@@ -465,9 +466,19 @@ fn upscaler_files(
     xess_dir: Option<String>,
     frame_gen_dir: Option<String>,
 ) -> Result<UpscalerFiles, String> {
-    let cfg = load_config(&app);
-    let repo = need_repo(&cfg)?;
-    let game = game_dir_of(&cfg, &repo);
+    upscaler_state(&load_config(&app), fsr_dir, dlss_dir, xess_dir, frame_gen_dir)
+}
+
+/// upscaler_files for these settings, also for a run without the window (headless.rs).
+fn upscaler_state(
+    cfg: &Config,
+    fsr_dir: String,
+    dlss_dir: String,
+    xess_dir: Option<String>,
+    frame_gen_dir: Option<String>,
+) -> Result<UpscalerFiles, String> {
+    let repo = need_repo(cfg)?;
+    let game = game_dir_of(cfg, &repo);
     let exe = if package_tools().is_some() { game.join("fefw.exe") } else { setup::exe_path(&repo) };
     let with_extra_defaults = |mut v: Vec<PathBuf>| {
         if let Some(d) = exe.parent() {

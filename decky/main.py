@@ -58,5 +58,15 @@ class Plugin:
     async def note(self, text: str):
         decky.logger.info("panel: %s", text)
 
+    async def set_setting(self, setting: str, choice: str):
+        try:
+            await self.controller.set_setting(setting, choice)
+        except fefw_launcher.LauncherError as e:
+            self.controller.error = str(e)
+        return self._answer()
+
+    async def download(self, kind: str, setting: str, choice: str):
+        return self._answer(lambda: self.controller.download(kind, setting, choice))
+
     async def cancel(self):
         return self._answer(self.controller.cancel)
