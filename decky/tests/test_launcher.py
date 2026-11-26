@@ -288,6 +288,66 @@ class Jobs(Case):
         self.assertEqual((len(self.runs()), self.done), (before, []))
 
 
+class Watching(Case):
+    def asked(self):
+        return [r["argument"] for r in self.runs()].count("--status")
+
+    async def busy(self, reason="game"):
+        await self.ready(status=[["end", dict(STATUS, busy=reason)]])
+        self.controller.busy_again = 0.1
+
+    async def watch_until(self, condition):
+        for _ in range(200):
+            self.controller.watch()
+            if condition():
+                return
+            await asyncio.sleep(0.02)
+        self.fail("did not happen")
+
+    async def test_a_game_that_ends_is_noticed_while_the_panel_asks(self):
+        await self.busy()
+        self.write_plan()
+        self.assertEqual(self.controller.watch()["status"]["busy"], "game")  # not before it is due
+        self.assertEqual(self.asked(), 1)
+        await self.watch_until(lambda: self.controller.status["busy"] is None)
+        # nothing busy: no more looks
+        await asyncio.sleep(0.3)
+        self.controller.watch()
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.asked(), 2)
+
+    async def test_only_one_look_at_a_time_and_none_without_asking(self):
+        await self.busy("job")
+        self.write_plan(status=[["sleep", 0.6], ["end", dict(STATUS, busy="job")]])
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.asked(), 1)  # the panel is closed
+        for _ in range(10):
+            self.controller.watch()
+            await asyncio.sleep(0.03)
+        self.assertEqual(self.asked(), 2)
+        await asyncio.wait_for(self.controller._watching, 5)
+
+    async def test_a_look_that_fails_keeps_what_was_read_and_the_error_shown(self):
+        await self.busy()
+        self.controller.error = "Something to read."
+        self.write_plan(status=[["die", "busy"]])
+        await self.watch_until(lambda: self.asked() == 2)
+        await asyncio.wait_for(self.controller._watching, 5)
+        self.assertEqual((self.controller.status["busy"], self.controller.error), ("game", "Something to read."))
+
+    async def test_a_look_does_not_cut_across_a_check_the_player_asked_for(self):
+        await self.busy()
+        self.write_plan(status=[["sleep", 0.5], ["end", STATUS]])
+        await asyncio.sleep(0.2)
+        refresh = asyncio.ensure_future(self.controller.refresh())
+        await self.until(lambda: self.asked() == 2)
+        await asyncio.sleep(0.2)
+        self.controller.watch()
+        await asyncio.wait_for(refresh, 10)
+        self.assertEqual(self.asked(), 2)
+        self.assertEqual((self.controller.status["busy"], self.controller.update["newer"]), (None, True))
+
+
 class Closing(Case):
     # as the real launcher's, these questions do not listen for "cancel"
     def alive(self):

@@ -24,6 +24,7 @@ QUERY_TIMEOUT = 120.0
 # The shader preparation runs the game. A display that does not work can leave it waiting for ever, with nothing said.
 PREPARE_TIMEOUT = 600.0
 POLL = 1.0  # how often a silent launcher is looked at
+BUSY_AGAIN = 5.0  # how often an install seen busy is looked at again, while the panel is open
 
 
 class LauncherError(Exception):
@@ -233,6 +234,10 @@ class Controller:
         self._running = set()  # every command under way, the panel's questions too
         # the latest status read and update check: an earlier one that answers late says nothing
         self._status_number = self._check_number = 0
+        self.busy_again = BUSY_AGAIN
+        self._status_at = 0.0  # when the status was last asked for
+        self._looking = 0  # refreshes under way
+        self._watching = None
         self._task = None
         self._cancel = False
         self._closing = False
@@ -314,15 +319,31 @@ class Controller:
         finally:
             self._running.discard(command)
 
-    async def _look(self):
-        if await self._read_status():
-            await self._check_update()
+    def watch(self):
+        """The state, for the panel's regular question while it is open. An install last seen busy (the game running, the
+        launcher's window at work) is looked at again, so that Play and the other buttons come back by themselves."""
+        due = (self.status and self.status.get("busy") and time.monotonic() - self._status_at >= self.busy_again
+               and not (self.job or self._looking or self._closing) and (not self._watching or self._watching.done()))
+        if due:
+            self._watching = asyncio.ensure_future(self._read_status(quietly=True))
+        return self.state()
 
-    async def _read_status(self):
-        """Reads the install's status, which stays on this device. False when it cannot be read, with the reason in `error`."""
+    async def _look(self):
+        self._looking += 1
+        try:
+            if await self._read_status():
+                await self._check_update()
+        finally:
+            self._looking -= 1
+
+    async def _read_status(self, quietly=False):
+        """Reads the install's status, which stays on this device. False when it cannot be read, with the reason in `error`.
+        quietly: a look nobody asked for, which leaves the error shown and, if it fails, what was read before."""
         if self._closing:
             return False
-        self.error = None
+        if not quietly:
+            self.error = None
+        self._status_at = time.monotonic()
         folder = self.install_dir
         self._status_number += 1
         number = self._status_number
@@ -335,7 +356,7 @@ class Controller:
             if status.get("state") != "done":
                 raise LauncherError(status.get("message") or "The status could not be read.")
         except LauncherError as e:
-            if number == self._status_number:
+            if number == self._status_number and not quietly:
                 self._forget(folder)
                 self.error = str(e)
             return False

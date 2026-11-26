@@ -3,7 +3,8 @@
 Updates and rebuilds the game from the Steam Deck's Quick Access Menu (Game Mode), through
 [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Early: tried on CachyOS Handheld, not on SteamOS.
 
-The panel: choose the game's folder (the one with `fefw-launcher.AppImage`), see its version, **Update** (then builds the game when
+The panel: choose the game's folder (the one with `fefw-launcher.AppImage`), see its version, **Play** (starts the game's Steam
+shortcut, which the launcher's **Add to Steam** makes), **Update** (then builds the game when
 the new release needs it), **Build the game**, **Cancel**. First-time setup stays in Desktop Mode, in the launcher: the plugin uses
 the settings it saved there.
 
@@ -38,6 +39,9 @@ Unpack the zip into Decky's plugin folder (`~/homebrew/plugins/`, which may need
   without one the launcher skips that step. If the step says nothing for ten minutes it is stopped, and the game is ready without it.
 - `--status` and `--check-update` are run with no usable display, so a launcher too old for them cannot open its window. After an
   update the new launcher is asked the same way before it is told to build, and one without the commands is left alone.
+- **Play** asks Steam to run the shortcut (`src/play.ts`, an undocumented part of the Steam client), so the game starts as from the
+  library. It shows when the game is built and nothing is at work on it. Which shortcuts there are comes from the launcher. While
+  the panel is open, an install seen busy is looked at again every few seconds, so Play comes back when the game ends.
 - The panel shows the time a job has run: some steps report nothing for minutes.
 - While a job runs, Steam's auto-sleep is turned off and put back afterwards, unless **Prevent auto-sleep** under the progress
   bar is off (remembered). The power button works as usual. It uses an undocumented part of the Steam client (`src/sleep.ts`); the

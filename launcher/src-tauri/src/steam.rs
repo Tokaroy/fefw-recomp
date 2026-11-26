@@ -146,6 +146,35 @@ fn is_ours(e: &[(Vec<u8>, Node)], exe: &Path) -> bool {
     str_of(e, "Exe").trim().trim_matches('"') == exe.to_string_lossy()
 }
 
+/// The ids in `files` (accounts' shortcuts.vdf) of the shortcuts that start `exe`, each once. A file that cannot be read as one,
+/// and an entry without an id, say nothing.
+fn ids_in(files: impl Iterator<Item = Vec<u8>>, exe: &Path) -> Vec<u32> {
+    let mut ids = Vec::new();
+    for top in files.filter_map(|d| parse(&d).ok()) {
+        let Some(Node::Map(list)) = get(&top, "shortcuts") else { continue };
+        for (_, v) in list {
+            if let Node::Map(e) = v {
+                if let (true, Some(Node::Int(id))) = (is_ours(e, exe), get(e, "appid")) {
+                    if !ids.contains(id) {
+                        ids.push(*id);
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Linux: the ids of the Steam shortcuts that start this fefw.exe, as saved on disk, at most one an account unless the player made
+/// more. Steam starts a shortcut by its id (the Decky plugin's Play).
+pub fn shortcut_ids(exe: &Path) -> Vec<u32> {
+    let Some(inst) = find_install().filter(|_| cfg!(target_os = "linux")) else {
+        return vec![];
+    };
+    let files = accounts(&inst.root).into_iter().filter_map(|a| fs::read(a.join("config").join("shortcuts.vdf")).ok());
+    ids_in(files, exe)
+}
+
 /// The variables the launcher puts in front of %command% in a shortcut's launch options: NXRT_LAUNCHER_DIR, and LSFG-VK's (lsfg.rs)
 /// with the game's own frame generation turned off while it is on. Any of them the shortcut has is replaced; the rest is the player's.
 const OUR_VARS: [&str; 7] = [
@@ -567,6 +596,24 @@ mod tests {
         assert_eq!(launch_options(&on, &none()), "PROTON_LOG=1 %command% -x");
         // an unquoted value, and a name that only ends like one of ours, are handled
         assert_eq!(launch_options("LSFGVK_MULTIPLIER=4 MY_LSFGVK_ENV=1 %command%", &none()), "MY_LSFGVK_ENV=1 %command%");
+    }
+
+    #[test]
+    fn the_shortcuts_that_start_an_exe() {
+        let exe = Path::new("/games/fefw/fefw.exe");
+        let file = |exes: &[&str]| {
+            let mut top = vec![];
+            for e in exes {
+                upsert(&mut top, Path::new(e), Path::new("/games"), &[]).unwrap();
+            }
+            write(&top)
+        };
+        let ours = shortcut_id("\"/games/fefw/fefw.exe\"", APP_NAME);
+        // two accounts with the same shortcut and one without it, beside other games and a file that is not one
+        let files = vec![file(&["/games/other.exe", "/games/fefw/fefw.exe"]), file(&["/games/fefw/fefw.exe"]), file(&["/games/other.exe"])];
+        assert_eq!(ids_in(files.into_iter().chain([b"junk".to_vec()]), exe), vec![ours]);
+        assert_eq!(ids_in(std::iter::empty(), exe), Vec::<u32>::new());
+        assert_eq!(ids_in(std::iter::once(file(&["/games/fefw-old/fefw.exe"])), exe), Vec::<u32>::new());
     }
 
     #[test]

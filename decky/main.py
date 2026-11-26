@@ -32,6 +32,9 @@ class Plugin:
     async def get_state(self):
         return self._answer()
 
+    async def watch(self):
+        return self.controller.watch()
+
     async def set_install(self, folder: str):
         return self._answer(lambda: self.controller.set_install(folder))
 

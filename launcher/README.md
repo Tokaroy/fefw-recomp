@@ -17,7 +17,7 @@ the install the launcher is in, with the settings the window saved (`launcher.js
 
 | Command | Does | Fields of its last line, besides `state` |
 | --- | --- | --- |
-| `--status` | Reports the install. Changes nothing. | `version`, `package`, `install_dir`, `game_dir`, `dump_dir`, `busy` (`"game"`, `"job"` or null), `exe_exists`, `setup_complete`, `problem` (why setup cannot run, else null), `rebuild` (null when it cannot tell), `rebuild_reason` |
+| `--status` | Reports the install. Changes nothing. | `version`, `package`, `install_dir`, `game_dir`, `dump_dir`, `busy` (`"game"`, `"job"` or null), `exe_exists`, `setup_complete`, `problem` (why setup cannot run, else null), `rebuild` (null when it cannot tell), `rebuild_reason`, `steam_shortcuts` (Linux: the ids of the Steam shortcuts that start this `fefw.exe`, as saved on disk; empty when there is none) |
 | `--check-update` | Asks GitHub for the latest release. | `current`, `newer`, `package`, `latest` |
 | `--update` | Downloads, checks and installs a newer release (release package only). | `updated`, `version`, `rebuild`, `rebuild_reason`, `message` |
 | `--rebuild` | The Set up button: builds whatever is not done, such as the game after an update. | `message` |
