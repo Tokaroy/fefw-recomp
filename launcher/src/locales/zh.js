@@ -331,6 +331,7 @@ export const zh = {
     'settings.windowMode.borderless': '无边框全屏',
     'settings.windowMode.exclusive': '独占全屏',
     'settings.windowSize.label': '窗口尺寸',
+    'settings.windowSize.hint': '仅在窗口模式下生效。',
     'settings.fpsLimit.label': '帧率上限',
     'settings.fpsLimit.short': '自动跟随显示器刷新率。0 为不限制。',
     'settings.fpsLimit.hint': '自动跟随显示器刷新率。0 为不限制。',

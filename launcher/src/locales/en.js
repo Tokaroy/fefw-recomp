@@ -363,6 +363,7 @@ export const en = {
     'settings.windowMode.borderless': 'Borderless fullscreen',
     'settings.windowMode.exclusive': 'Exclusive fullscreen',
     'settings.windowSize.label': 'Window size',
+    'settings.windowSize.hint': 'Only used in windowed mode.',
     'settings.fpsLimit.label': 'Frame rate limit',
     'settings.fpsLimit.short': 'Auto follows your display. 0 is unlimited.',
     'settings.fpsLimit.hint': "Auto follows the display refresh rate. 0 is unlimited. 60 and 120 fps gameplay raise a lower number to their own rate while they are on.",
