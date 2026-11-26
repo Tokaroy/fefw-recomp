@@ -8,6 +8,7 @@ const MAX_REPORTS_PER_IP_PER_DAY = 10;
 const MAX_REPORTS_GLOBAL_PER_DAY = 500;
 const MAX_TOTAL_REPORTS = 20_000;
 const MAX_TOTAL_STORAGE_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB cap (stays under 10 GiB R2 free tier)
+const RETENTION_DAYS = 90;
 const ALLOWED_TRIGGERS = new Set(['crash', 'freeze', 'fatal', 'exit_code', 'hitch', 'low_fps']);
 
 function json(data, status = 200) {
@@ -80,8 +81,10 @@ async function dailyIpBucket(request, env, day) {
 }
 
 async function checkAndConsumeLimits(request, env, day, incomingBytes) {
-  // Prune previous days' rate-limit counters opportunistically.
+  // Prune previous days' rate-limit counters and expired D1 rows (matching the 90-day R2 lifecycle rule).
+  const cutoffIso = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
   await env.REPORTS_DB.prepare('DELETE FROM rate_limits WHERE day < ?').bind(day).run();
+  await env.REPORTS_DB.prepare('DELETE FROM reports WHERE created_at < ?').bind(cutoffIso).run();
 
   // Enforce total storage and row budget before accepting a new upload.
   const totals = await env.REPORTS_DB.prepare(

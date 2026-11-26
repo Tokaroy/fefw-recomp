@@ -515,6 +515,7 @@ impl Scrubber {
             ("upscale", "fsr_dll", "<UPSCALER_PATH>"),
             ("upscale", "dlss_dll", "<UPSCALER_PATH>"),
             ("upscale", "xess_dll", "<UPSCALER_PATH>"),
+            ("dlss", "frame_gen_dll", "<UPSCALER_PATH>"),
         ] {
             if let Some(val) = ini.get(sec, key) {
                 s.add_path(&val, token);
