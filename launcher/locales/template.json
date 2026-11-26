@@ -340,6 +340,7 @@
     "settings.windowMode.borderless": "",
     "settings.windowMode.exclusive": "",
     "settings.windowSize.label": "",
+    "settings.windowSize.hint": "",
     "settings.fpsLimit.label": "",
     "settings.fpsLimit.short": "",
     "settings.fpsLimit.hint": "",
