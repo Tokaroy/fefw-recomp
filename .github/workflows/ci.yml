@@ -2,6 +2,7 @@
 #
 #   oracle-lock  recomp/oracle/SHA256SUMS still matches the locked oracle files (recomp/oracle/LOCKED, scripts/oracle_sums.py)
 #   linux        launcher: cargo fmt, clippy, cargo test, the frontend build; Python: every .py under recomp/ and tools/ compiles
+#   decky        the Decky plugin: type check, tests, build and pack (the zip is kept with the run)
 #   runtime      Windows, only when runtime/, recomp/include, tools/tiling or tools/textures change: nxrt_tests under
 #                CTest. The graphics groups (nxrt_gfx_tests) need a Vulkan GPU and the lift tests the
 #                recomp toolchain and Unicorn venv, so neither runs here.
@@ -77,6 +78,30 @@ jobs:
 
       - name: Lifter worker tests
         run: python recomp/tests/lift_workers_test.py
+
+  decky:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: decky
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # as old as the loader's own Python is likely to be
+      - run: npx --yes pnpm@9 install --frozen-lockfile
+      - run: npx --yes pnpm@9 run check
+      - run: npx --yes pnpm@9 test
+      - run: npx --yes pnpm@9 run build
+      - run: python3 package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decky-plugin
+          path: decky/out/fefw-recomp-decky.zip
+          if-no-files-found: error
 
   changes:
     runs-on: ubuntu-latest

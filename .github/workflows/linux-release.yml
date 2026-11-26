@@ -5,8 +5,9 @@
 #             (game-build/scripts/build_fefw.ps1, make-release.ps1)
 #   linux     makes fefw-recomp-<version>-linux-x64.tar.gz from that zip (game-build/scripts/make-release-linux.sh), then publishes
 #             both: added to the release when it exists (same names are replaced), else a new release at this commit
+#   decky     the Decky plugin as fefw-recomp-<version>-decky.zip (decky/package.py), published with the packages
 #
-# With publish off the packages are only kept as artifacts of the run.
+# With publish off all of them are only kept as artifacts of the run.
 name: Release
 
 on:
@@ -208,8 +209,37 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-  linux:
+  # the Steam Deck plugin, stamped with the release's version
+  decky:
     needs: windows
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.windows.outputs.version }}
+    defaults:
+      run:
+        working-directory: decky
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npx --yes pnpm@9 install --frozen-lockfile
+      - run: npx --yes pnpm@9 run check
+      - run: npx --yes pnpm@9 test
+      - run: npx --yes pnpm@9 run build
+      - run: python3 package.py --version "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decky
+          path: decky/out/fefw-recomp-${{ needs.windows.outputs.version }}-decky.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  linux:
+    needs: [windows, decky]
     # the oldest supported runner: the AppImage and the Python wheels then run on older glibc too
     runs-on: ubuntu-22.04
     env:
@@ -274,16 +304,21 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: decky
+          path: work/base
+
       - name: Release
         if: inputs.publish
         run: |
           files=("work/base/fefw-recomp-$VERSION-win64.zip" "work/release/fefw-recomp-$VERSION-linux-x64.tar.gz"
-                 "work/base/fefw-recomp-$VERSION-win64-symbols.zip")
+                 "work/base/fefw-recomp-$VERSION-win64-symbols.zip" "work/base/fefw-recomp-$VERSION-decky.zip")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
-            notes=$(printf 'Version %s, built from %s.\n\n- **Linux and Steam Deck:** `fefw-recomp-%s-linux-x64.tar.gz`. Extract, run `fefw-launcher.AppImage`, Set up, Play.\n- **Windows:** `fefw-recomp-%s-win64.zip`. Extract, run `fefw-launcher.exe`.\n\nSee README.txt in the package.' \
-              "$VERSION" "$GITHUB_SHA" "$VERSION" "$VERSION")
+            notes=$(printf 'Version %s, built from %s.\n\n- **Linux and Steam Deck:** `fefw-recomp-%s-linux-x64.tar.gz`. Extract, run `fefw-launcher.AppImage`, Set up, Play.\n- **Windows:** `fefw-recomp-%s-win64.zip`. Extract, run `fefw-launcher.exe`.\n- **Decky plugin** (early; updates and builds from Game Mode): `fefw-recomp-%s-decky.zip`.\n\nSee README.txt in the package.' \
+              "$VERSION" "$GITHUB_SHA" "$VERSION" "$VERSION" "$VERSION")
             gh release create "$TAG" "${files[@]}" --target "$GITHUB_SHA" --title "$VERSION" --latest=false --notes "$notes"
           fi
           gh release edit "$TAG" --draft=false --latest
