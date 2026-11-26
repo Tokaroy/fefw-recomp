@@ -80,6 +80,9 @@ bool file_edit_wanted(const std::string& image_path);
 // Hook sites (a mod's exefs/*.sites, built in by Set up): how many sites the mod in mod_dir lists for this game build that the running
 // fefw.exe was not lifted with (0 = all there); -1 when the build's own list (<exe>.sites) is unknown. Any thread.
 int sites_missing(const std::string& mod_dir);
+// Whether <exe>.sites, the list the running fefw.exe was lifted with, has a hook site of this kind (inline, midhook, entryhook) at this
+// guest address; false when the list is unknown. Any thread.
+bool site_built(const char* kind, uint64_t guest_addr);
 // What the overlay shows on screen at start about code mods (installed mods whose sites are missing): lines, "" for nothing.
 std::string notice();
 bool file_edit_run(const std::string& image_path, std::vector<uint8_t>& data);

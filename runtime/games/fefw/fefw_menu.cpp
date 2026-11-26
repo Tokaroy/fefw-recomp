@@ -513,7 +513,7 @@ void display_page(UiHost& host, Menu& m, const play::LiveStatus& live) {
 
 // ---- Graphics ---------------------------------------------------------------------------------------------------------------------------
 constexpr const char* kOutputNames[] = {"Console (the game's choice: 1440p docked)", "1280 x 720", "1920 x 1080", "2560 x 1440", "3840 x 2160",
-                                        "2560 x 1080 (21:9)", "3440 x 1440 (21:9)", "5120 x 1440 (32:9, drawn at 3840 x 1080)", "The window's size at start"};
+                                        "2560 x 1080 (21:9)", "3440 x 1440 (21:9)", "5120 x 1440 (32:9)", "The window's size at start"};
 constexpr const char* kOutputVals[] = {"console", "720p", "1080p", "1440p", "2160p", "2560x1080", "3440x1440", "5120x1440", "window"};
 constexpr int kOutputCount = static_cast<int>(std::size(kOutputVals));
 constexpr const char* kWideNames[] = {"Auto (outputs wider than 16:9)", "Off (16:9, stretched)"};
@@ -560,11 +560,7 @@ void output_size(const std::string& v, bool wide, int* w, int* h) {
         }
     } else std::sscanf(o.c_str(), "%dx%d", w, h);
     if (wide && *w > 0 && *h > 0 && static_cast<double>(*w) * 9.0 * 1.01 < static_cast<double>(*h) * 16.0) *h = (*w * 9 / 16) & ~1;
-    if (wide && wide_aspect(*w, *h) && (*w > 3840 || *h > 2160)) {   // the shape within the 3840x2160 window textures
-        const double s = std::min(3840.0 / *w, 2160.0 / *h);
-        *w = 2 * static_cast<int>(std::lround(*w * s / 2));
-        *h = 2 * static_cast<int>(std::lround(*h * s / 2));
-    }
+    if (wide && wide_aspect(*w, *h)) res_wide_fit(w, h);
 }
 
 void resolution_group(Menu& m) {
@@ -577,8 +573,8 @@ void resolution_group(Menu& m) {
             const std::string v = lower(ini_now(out));
             const char* cur = v == "4k" ? "2160p" : v.c_str();
             row(m, "Output size", When::Restart,
-                "The size the game renders its picture, UI and post effects at (its DLSS output). Up to 3840 x 2160 at 16:9; wider shapes "
-                "need Ultrawide. The window scales it (Display > Scaling to the window).");
+                "The size the game renders its picture, UI and post effects at (its DLSS output). Up to 3840 x 2160 at 16:9, or "
+                "5120 x 2160 for wider shapes, which need Ultrawide. The window scales it (Display > Scaling to the window).");
             if (!env_locked(out)) {
                 int idx = -1;
                 for (int i = 0; i < kOutputCount; ++i)
