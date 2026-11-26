@@ -324,17 +324,31 @@ class PluginZip(unittest.TestCase):
         kept = Path(offer["artifact"][len("file://"):])
         self.assertEqual((offer["version"], offer["hash"]), ("1.1.0", hashlib.sha256(data).hexdigest()))
         self.assertEqual((kept.parent, kept.read_bytes()), (self.kept, data))
-        # the install's file changes, as in an update: what was offered stays, and the next offer replaces it
+        # the install's file changes, as in an update: what was offered stays, for a question that is still open
         plugin_zip(self.zip, "1.2.0")
         self.assertEqual(kept.read_bytes(), data)
-        self.assertEqual(self.offer()["version"], "1.2.0")
-        self.assertEqual(len(list(self.kept.iterdir())), 1)
+        newer = self.offer()
+        self.assertEqual(newer["version"], "1.2.0")
+        self.assertNotEqual(newer["artifact"], offer["artifact"])
+        self.assertEqual(kept.read_bytes(), data)
+        self.assertEqual(len(list(self.kept.iterdir())), 2)
 
     def test_only_a_newer_one(self):
         plugin_zip(self.zip, "1.10.0")
         self.assertIsNotNone(self.offer("1.9.3"))
         for current in ("1.10.0", "1.11.0", "2.0.0", None, "dev"):
             self.assertIsNone(self.offer(current), current)
+
+    def test_a_release_comes_after_its_early_versions(self):
+        order = ["1.0.9", "1.1.0-alpha", "1.1.0-beta", "1.1.0-beta.2", "1.1.0-beta.10", "1.1.0-rc.1", "1.1.0", "1.1.1-beta"]
+        for older, newer in zip(order, order[1:]):
+            with self.subTest(f"{older} < {newer}"):
+                plugin_zip(self.zip, newer)
+                self.assertIsNotNone(self.offer(older))
+                plugin_zip(self.zip, older)
+                self.assertIsNone(self.offer(newer))
+        plugin_zip(self.zip, "1.1.0+build.7")
+        self.assertIsNone(self.offer("1.1.0"))
 
     def test_an_install_without_one(self):
         self.assertIsNone(self.offer())

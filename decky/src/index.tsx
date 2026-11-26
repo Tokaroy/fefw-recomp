@@ -24,6 +24,7 @@ declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps } | unde
 declare const appStore: AppStore | undefined;
 
 const decky = () => (window as unknown as { DeckyBackend?: DeckyRoutes }).DeckyBackend;
+const NOT_ASKED = "Decky could not be asked: to update the plugin, run the installer in Desktop Mode.";
 
 interface Result {
   state: "done" | "error" | "cancelled";
@@ -238,7 +239,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
                   <Button label={`Update the plugin to ${plugin.version}`} onClick={() => void askToUpdate(decky(), plugin).then((asked) => setPluginFailed(!asked))} />
                 </>
               )}
-              {pluginFailed && <Note text="Decky could not be asked: to update the plugin, run the installer in Desktop Mode." />}
+              {pluginFailed && <Note text={NOT_ASKED} />}
               {update?.newer && (
                 <Button label={`Update to ${update.latest?.version}`} onClick={() => start("update").then(show)} disabled={!!busy || checking} />
               )}
@@ -301,7 +302,11 @@ export default definePlugin(() => {
     const title = result.state === "done" ? "FEFW Recomp: finished" : result.state === "cancelled" ? "FEFW Recomp: cancelled" : "FEFW Recomp: failed";
     toaster.toast({ title, body: result.message });
     // the game was updated: Decky asks whether the plugin may follow. On a no, the panel's button stays.
-    if (result.plugin_update) void askToUpdate(decky(), result.plugin_update);
+    if (result.plugin_update) {
+      void askToUpdate(decky(), result.plugin_update).then((asked) => {
+        if (!asked) toaster.toast({ title: "FEFW Recomp: plugin not updated", body: NOT_ASKED });
+      });
+    }
   });
   // also while the panel is closed: auto-sleep follows the job, and timers left off by an earlier run are put back
   const keeper = new SleepKeeper(

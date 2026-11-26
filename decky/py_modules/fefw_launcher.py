@@ -222,8 +222,13 @@ def _timers(value):
 
 
 def _version(text):
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)", str(text or ""))
-    return tuple(map(int, match.groups())) if match else None
+    """A version as something to compare, in semantic versioning's order (1.2.0-beta.2 < 1.2.0-beta.10 < 1.2.0), or None."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", str(text or ""))
+    if not match:
+        return None
+    early = match[4]
+    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in early.split(".")] if early else []
+    return int(match[1]), int(match[2]), int(match[3]), not early, parts
 
 
 def _inside_plugin(name):
@@ -252,7 +257,8 @@ def read_plugin(data):
 def plugin_offer(install, current, keep_dir):
     """What to hand Decky's installer, {"version", "artifact", "hash"}, when the install's release carries a newer plugin than
     `current`; else None. The checked ZIP is copied to keep_dir: Decky removes the old plugin before it checks the hash, so the
-    file must stay as it is until then, which the install's does not while the game is updated."""
+    file must stay as it is until then, which the install's does not while the game is updated. Earlier copies stay too: a question
+    of Decky's that is still open names one (a release adds a few tens of KB)."""
     source = Path(install) / PLUGIN_ZIP
     try:
         if source.stat().st_size > PLUGIN_LIMIT:
@@ -271,9 +277,6 @@ def plugin_offer(install, current, keep_dir):
             part = kept.with_suffix(".part")
             part.write_bytes(data)
             part.replace(kept)
-        for other in kept.parent.glob("plugin-*.zip"):
-            if other != kept:
-                other.unlink()
     except OSError:
         return None
     return {"version": version, "artifact": f"file://{kept}", "hash": digest}
