@@ -8,6 +8,7 @@
 #include "nxrt/memory.h"
 
 #include "nxrt/config.h"
+#include "nxrt/diag.h"
 #include "nxrt/gauge.h"
 #include "nxrt/log.h"
 #include "nxrt/write_watch.h"
@@ -534,6 +535,14 @@ uint64_t heap_reserved() {
     return g_heap_size;
 }
 
+namespace {
+// The cause the crash report starts with when the system cannot commit the game's heap: the game answers with svcBreak, which on its own
+// says nothing. The launcher shows this sentence after "The game stopped: " (launcher/src-tauri/src/memory.rs has the same one).
+constexpr const char* kOutOfMemoryHint =
+    "it ran out of memory. Close other programs and try again; on Windows, keep the page file on (system managed).";
+bool g_oom_hinted = false;   // under g_heap_mu: the hint is ours to clear
+}  // namespace
+
 bool heap_commit(uint64_t offset, uint64_t size) {
     std::lock_guard lk(g_heap_mu);
     if (!g_heap_size) {
@@ -569,7 +578,15 @@ bool heap_commit(uint64_t offset, uint64_t size) {
         NXLOG_E(kTag, "heap_commit [%llx, +%llx): VirtualAlloc failed, error %lu",
                 static_cast<unsigned long long>(start), static_cast<unsigned long long>(end - start),
                 static_cast<unsigned long>(e));
+        if (e == ERROR_COMMITMENT_LIMIT || e == ERROR_NOT_ENOUGH_MEMORY || e == ERROR_COMMITMENT_MINIMUM) {
+            crash_set_hint(kOutOfMemoryHint);
+            g_oom_hinted = true;
+        }
         return false;
+    }
+    if (g_oom_hinted) {         // the game asked again and got it: whatever ends the run now has another cause
+        crash_set_hint("");
+        g_oom_hinted = false;
     }
     for (uint64_t p = start / kPage; p < end / kPage; p++) {
         if (!bit_test(p)) {
