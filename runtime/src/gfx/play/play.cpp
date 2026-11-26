@@ -500,9 +500,13 @@ namespace {
 void set_window_mode(const std::string& mode) {
     G& st = g();
     if (!st.window) return;
-    const platform::FullscreenMode want = mode == "borderless" ? platform::FullscreenMode::Borderless
+    platform::FullscreenMode want = mode == "borderless" ? platform::FullscreenMode::Borderless
                                          : mode == "exclusive" ? platform::FullscreenMode::Exclusive
                                                                : platform::FullscreenMode::Windowed;
+    if (platform::allowed_mode(want) != want) {
+        NXLOG_W(kTag, "windowed mode is not used on this GPU ([gfx] borderless_only): borderless instead");
+        want = platform::allowed_mode(want);
+    }
     if (platform::fullscreen_mode() == want) return;
     if (!platform::set_fullscreen(want)) {
         NXLOG_W(kTag, "window mode '%s' was refused", mode.c_str());
@@ -1468,7 +1472,9 @@ bool start(const StartOptions& opt) {
     if (st.window || st.overlay) svc_set_busy_hook(&busy_pump);
     kernel::set_blocked_hook(GetCurrentThreadId(), &keyboard_service);
     if (st.window && st.settings.display.monitor > 0) platform::move_to_display(st.settings.display.monitor);
-    if (st.window && st.settings.display.window_mode != "windowed") set_window_mode(st.settings.display.window_mode);
+    // The window starts windowed: also call this for "windowed" where that is not allowed. The saved setting is left as it is.
+    const bool no_windowed = platform::allowed_mode(platform::FullscreenMode::Windowed) != platform::FullscreenMode::Windowed;
+    if (st.window && (st.settings.display.window_mode != "windowed" || no_windowed)) set_window_mode(st.settings.display.window_mode);
 
     const GamePlay* gp = game_play();
     {   // display options: the internal resolution comes from the window as it is now (after the window mode change above)
