@@ -123,8 +123,13 @@ export async function render(el, ctx) {
     refreshIcons();
     el.querySelector('#check')?.addEventListener('click', () => checkNow());
     el.querySelector('#auto')?.addEventListener('change', async (ev) => {
+      const saved = cfg;
       cfg = { ...cfg, skip_update_check: !ev.target.checked };
-      await api('save_config', { config: cfg }).catch((e) => toast(errText(e), 'error'));
+      await api('save_config', { config: cfg }).catch((e) => {
+        cfg = saved;
+        draw(); // the box shows what is saved
+        toast(errText(e), 'error');
+      });
     });
     el.querySelector('#update')?.addEventListener('click', () =>
       api('start_update', { release: upd.check.latest }).catch((e) => toast(errText(e), 'error')),

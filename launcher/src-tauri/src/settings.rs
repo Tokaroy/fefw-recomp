@@ -194,8 +194,8 @@ pub fn apply_update_opt_out(dir: &Path, skip: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The launcher's "Check for updates at start" was switched: [update] check follows. A fefw.ini that is not there yet stays so (Set up
-/// writes it, with an opt-out).
+/// The launcher's "Check for updates at start (launcher and game)" was switched: [update] check follows. A fefw.ini that is not there
+/// yet stays so (Set up writes it, with an opt-out).
 pub fn set_update_check(dir: &Path, on: bool) -> Result<(), String> {
     let path = dir.join(GAME_INI);
     let Some(mut ini) = load(&path) else { return Ok(()) };

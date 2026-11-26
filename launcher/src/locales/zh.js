@@ -418,7 +418,7 @@ export const zh = {
     'about.downloadHint': '启动器会下载并校验新版本，然后请求重启。你的存档、设置与已构建的游戏都会保留。',
     'about.updateTo': '更新到 {version}',
     'about.checkNow': '立即检查',
-    'about.checkOnStart': '启动器启动时检查',
+    'about.checkOnStart': '启动时检查更新（启动器和游戏）',
     'about.checking': '正在检查更新',
     'about.latest': '已是最新版本（{version}）。',
     'about.notChecked': '尚未检查。',

@@ -234,14 +234,14 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     // a page holding an older configuration must not undo a language switch made since it loaded
     let saved = load_saved_config(&app);
     config.lang = saved.lang;
-    store_config(&app, &config)?;
-    // the game makes the same check when it is started: a switch here covers it too
+    // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
+    // switch stays unsaved and can be made again.
     if config.skip_update_check != saved.skip_update_check {
         if let Some(repo) = repo_of(&config) {
             settings::set_update_check(&game_dir_of(&config, &repo), !config.skip_update_check)?;
         }
     }
-    Ok(())
+    store_config(&app, &config)
 }
 
 fn store_config(app: &AppHandle, config: &Config) -> Result<(), String> {
@@ -281,8 +281,10 @@ fn sync_run_folder(cfg: &Config) -> Result<(), String> {
     // no checkout or package found: no run folder to keep in step
     let Some(repo) = repo_of(cfg) else { return Ok(()) };
     let game_dir = game_dir_of(cfg, &repo);
-    settings::apply_update_opt_out(&game_dir, cfg.skip_update_check)?;
-    settings::apply_menu_language(&game_dir, &repo, package_tools().as_deref(), &cfg.lang)
+    // each is tried, whether or not the other fails
+    let opt_out = settings::apply_update_opt_out(&game_dir, cfg.skip_update_check);
+    let language = settings::apply_menu_language(&game_dir, &repo, package_tools().as_deref(), &cfg.lang);
+    opt_out.and(language)
 }
 
 #[tauri::command]
@@ -1084,7 +1086,7 @@ fn main() {
             // as the run folder takes its tables from there
             refresh_package_locales();
             if let Err(e) = sync_run_folder(&load_config(app.handle())) {
-                eprintln!("[locales] {e}");
+                eprintln!("[run folder] {e}");
             }
             Ok(())
         })

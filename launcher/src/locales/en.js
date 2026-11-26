@@ -452,7 +452,7 @@ export const en = {
     'about.downloadHint': 'The launcher downloads and checks the new version, then asks to restart. Your saves, settings and built game stay.',
     'about.updateTo': 'Update to {version}',
     'about.checkNow': 'Check now',
-    'about.checkOnStart': 'Check when the launcher starts',
+    'about.checkOnStart': 'Check for updates at start (launcher and game)',
     'about.checking': 'Checking for updates',
     'about.latest': 'You have the latest version ({version}).',
     'about.notChecked': 'Not checked yet.',

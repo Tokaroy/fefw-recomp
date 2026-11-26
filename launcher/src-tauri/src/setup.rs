@@ -59,7 +59,7 @@ pub struct Paths {
     pub package: Option<PathBuf>,
     /// the launcher's picked interface language (launcher.json `lang`; empty: none picked), for the F1 menu
     pub lang: String,
-    /// "Check for updates at start" is off (launcher.json `skip_update_check`): so is the game's own check
+    /// "Check for updates at start (launcher and game)" is off (launcher.json `skip_update_check`)
     pub skip_update_check: bool,
 }
 
