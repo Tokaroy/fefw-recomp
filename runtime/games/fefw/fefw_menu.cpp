@@ -560,7 +560,7 @@ void output_size(const std::string& v, bool wide, int* w, int* h) {
         }
     } else std::sscanf(o.c_str(), "%dx%d", w, h);
     if (wide && *w > 0 && *h > 0 && static_cast<double>(*w) * 9.0 * 1.01 < static_cast<double>(*h) * 16.0) *h = (*w * 9 / 16) & ~1;
-    if (wide && wide_aspect(*w, *h)) res_wide_fit(w, h);
+    res_fit_output(w, h, wide);
 }
 
 void resolution_group(Menu& m) {

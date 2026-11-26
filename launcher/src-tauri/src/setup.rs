@@ -322,6 +322,17 @@ fn lift_sites_path(p: &Paths) -> PathBuf {
     }
 }
 
+/// Whether the libraries lack a hook site of the repo's main.sites (an update added one): main.sites against CMake's copy beside
+/// the libraries (work/build/fefw/main.sites). CMake writes the copy before compiling; a Set up lift that was paused or failed is
+/// caught by cpu_variant.txt instead (lift_variant_ok). Compared by site, so a changed comment or a removed site lifts nothing.
+/// False when either list is missing (nothing to compare).
+fn libs_lack_own_sites(p: &Paths) -> bool {
+    let own = p.repo.join("recomp").join("games").join("fefw").join("main.sites");
+    let (Some((_, want)), Some((_, lifted))) = (read_site_list(&own), read_site_list(&p.libs().join("main.sites"))) else { return false };
+    let lifted: std::collections::HashSet<(String, u64)> = lifted.into_iter().collect();
+    want.iter().any(|s| !lifted.contains(s))
+}
+
 /// Mods with a hook site that the lifted module libraries lack (the lift step's note).
 pub fn mods_missing_lift_sites(p: &Paths) -> Vec<String> {
     mods_missing_from(p, &lift_sites_path(p))
@@ -339,12 +350,12 @@ fn mod_sites_problem(p: &Paths) -> Option<String> {
     mod_sites(p).err()
 }
 
-/// Whether the lift step has nothing to do: the libraries are newer than the NSO and no mod site is missing from the list they
-/// were lifted with. When Set up wrote a combined list, main's library must also be newer than it: Set up writes the list before
+/// Whether the lift step has nothing to do: the libraries are newer than the NSO, have every site of main.sites and no mod site is
+/// missing from the list they were lifted with. When Set up wrote a combined list, main's library must also be newer than it: Set up writes the list before
 /// starting the lift (and CMake copies it beside the libraries at configure time, before compiling), so a lift that was paused
 /// or failed is not mistaken for a finished one and Set up lifts again.
 fn lift_done(p: &Paths) -> bool {
-    if !libs_ok(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
+    if !libs_ok(p) || libs_lack_own_sites(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
         return false;
     }
     let combined = p.libs().join("main_with_mods.sites");
@@ -1451,6 +1462,19 @@ mod tests {
             fs::write(p.libs().join(format!("fefw_{m}.lib")), "lib").unwrap();
         }
         assert!(lift_done(&p));
+        // an update adds a site to main.sites: the libraries' copy of the list lacks it, so the lift is todo again; a changed
+        // comment or the same sites in the copy are not
+        let copy = p.libs().join("main.sites");
+        fs::write(&copy, &text).unwrap();
+        assert!(lift_done(&p));
+        let before = fs::read_to_string(&own).unwrap();
+        fs::write(&own, format!("{before}# a new comment\n")).unwrap();
+        assert!(lift_done(&p));
+        fs::write(&own, format!("{before}inline 0x71018102c8\n")).unwrap();
+        assert!(!lift_done(&p));
+        fs::write(&copy, format!("{text}inline 0x71018102c8\n")).unwrap();
+        assert!(lift_done(&p));
+        fs::write(&own, before).unwrap();
         // the exe built from that list: nothing missing there either
         fs::write(&list, &text).unwrap();
         assert!(mods_missing_sites(&p).is_empty());

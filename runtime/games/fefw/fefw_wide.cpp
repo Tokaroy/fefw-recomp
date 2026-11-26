@@ -614,6 +614,13 @@ void wide_install(uint64_t base, int out_w, int out_h) {
             out_w, out_h, static_cast<double>(out_w) / out_h, w.k, static_cast<int>(std::lround(out_h * 16.0 / 9.0)), out_h, w.hooks.size());
 }
 
+void wide_output_fitted(int out_w, int out_h) {
+    Wide& w = ws();
+    if (!w.active) return;
+    w.out_w = out_w;   // k and the camera aspect stay: the shape is the same
+    w.out_h = out_h;
+}
+
 void wide_remove() {
     Wide& w = ws();
     for (uint32_t id : w.hooks)
