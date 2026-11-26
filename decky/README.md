@@ -1,0 +1,43 @@
+# fefw recomp, Decky plugin
+
+Updates and rebuilds the game from the Steam Deck's Quick Access Menu (Game Mode), through
+[Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader). Early: tried on CachyOS Handheld, not on SteamOS.
+
+The panel: choose the game's folder (the one with `fefw-launcher.AppImage`), see its version, **Update** (then builds the game when
+the new release needs it), **Build the game**, **Cancel**. First-time setup stays in Desktop Mode, in the launcher: the plugin uses
+the settings it saved there.
+
+All the work is the launcher's (`--status`, `--check-update`, `--update`, `--rebuild`, see `launcher/README.md`). The installed
+release has to be one with those commands.
+
+## Build
+
+Node 22.18 or newer (the panel's tests run TypeScript directly) and pnpm 9:
+
+```
+pnpm install
+pnpm run check
+pnpm test            # the backend against a stand-in launcher, the auto-sleep keeper against a stand-in Steam
+pnpm run build
+python3 package.py   # out/fefw-recomp-decky.zip
+```
+
+## Install for testing
+
+Unpack the zip into Decky's plugin folder (`~/homebrew/plugins/`, which may need `sudo`) and restart the loader
+(`sudo systemctl restart plugin_loader`). The plugin runs as your user, not as root. Its log is under `~/homebrew/logs/`.
+
+## How it works
+
+- `py_modules/fefw_launcher.py` has the logic and needs nothing from Decky; `main.py` only passes the panel's calls on; `src/` is
+  the panel.
+- The loader runs without a display. `--rebuild` gets the one of your running Steam client, so that the shader preparation can run;
+  without one the launcher skips that step. If the step says nothing for ten minutes it is stopped, and the game is ready without it.
+- `--status` and `--check-update` are run with no usable display, so a launcher too old for them cannot open its window. After an
+  update the new launcher is asked the same way before it is told to build, and one without the commands is left alone.
+- The panel shows the time a job has run: some steps report nothing for minutes.
+- While a job runs, Steam's auto-sleep is turned off and put back afterwards, unless **Prevent auto-sleep** under the progress
+  bar is off (remembered). The power button works as usual. It uses an undocumented part of the Steam client (`src/sleep.ts`); the
+  old values are saved first, and put back at the next load if the plugin stopped in between. Not a `systemd-inhibit` block: Steam
+  ignores one for its timers, and a sleep the block refuses leaves Steam stuck on a black screen until a restart.
+- Closing the panel does not stop a job. Unloading the plugin cancels it.
