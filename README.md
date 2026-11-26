@@ -57,7 +57,8 @@ suit it. **Settings > Display > Output resolution** changes it.
 Download `fefw-recomp-<version>-linux-x64.tar.gz` instead, extract it and run `fefw-launcher.AppImage`; the steps are the same. The
 game runs through Proton: Play needs Steam with a Proton installed, [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) (`umu-run`) or Wine, or
 press **Add to Steam** on the Play page and start it from Steam (also in the Steam Deck's Game Mode). After an update, run Set up in
-the launcher (Desktop Mode on a Deck) before playing from Steam.
+the launcher (Desktop Mode on a Deck) before playing from Steam. The game says at start when a newer release is out, so you know
+when to open the launcher (F1 > **Game** turns that check off).
 
 FSR 3 frame generation does not work through Proton, so the Linux launcher offers [LSFG-VK](https://lsfg-vk.dev) instead (it needs
 Lossless Scaling on Steam). **Settings > Frame rate** can install the layer, and shows its multiplier, flow scale and performance

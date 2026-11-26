@@ -94,7 +94,8 @@ jobs:
       # launcher (or only the runtime) rebuilds only that part and reuses the rest.
       #
       # the runtime: the files make-release.ps1 takes from the build, built from runtime/, game-build/fefw, recomp/include and the
-      # texture transcoder (its third-party sources are fetched by a script that is part of tools/textures, so they are covered)
+      # texture transcoder (its third-party sources are fetched by a script that is part of tools/textures, so they are covered), and
+      # tauri.conf.json for the version the DLL names as its release (game-build/fefw/CMakeLists.txt)
       - name: Cache key inputs
         id: ver
         run: |
@@ -117,7 +118,7 @@ jobs:
             game-build/fefw/build/rtdll/fefw_rt.lib
             game-build/fefw/build/rtdll/fonts
             game-build/fefw/build/rtdll/astcdec-*-shared.dll
-          key: rt-nasm-${{ steps.ver.outputs.image }}-${{ env.LLVM_VERSION }}-${{ hashFiles('runtime/**', 'game-build/fefw/**', 'recomp/include/**', 'tools/textures/**', 'game-build/scripts/build_fefw.ps1') }}
+          key: rt-nasm-${{ steps.ver.outputs.image }}-${{ env.LLVM_VERSION }}-${{ hashFiles('runtime/**', 'game-build/fefw/**', 'recomp/include/**', 'tools/textures/**', 'game-build/scripts/build_fefw.ps1', 'launcher/src-tauri/tauri.conf.json') }}
 
       - name: Texture transcoder sources
         if: steps.rt.outputs.cache-hit != 'true'

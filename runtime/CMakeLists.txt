@@ -51,7 +51,16 @@ target_include_directories(nxrt PUBLIC include)
 if(EXISTS "${NXRT_RECOMP_INCLUDE}")
     target_include_directories(nxrt PUBLIC "${NXRT_RECOMP_INCLUDE}")
 endif()
-target_link_libraries(nxrt PUBLIC psapi)
+target_link_libraries(nxrt PUBLIC psapi winhttp)
+# The release check (include/nxrt/update_check.h): only a build that names its release asks GitHub (game-build/fefw sets these for the
+# release package).
+if(NXRT_RELEASE_VERSION)
+    set(_nxrt_update_defs "NXRT_RELEASE_VERSION=\"${NXRT_RELEASE_VERSION}\"" "NXRT_UPDATE_REPO=\"${NXRT_UPDATE_REPO}\"")
+    if(NXRT_RELEASE_BY_TAG)
+        list(APPEND _nxrt_update_defs NXRT_RELEASE_BY_TAG=1)
+    endif()
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/diag/update_check.cpp" PROPERTIES COMPILE_DEFINITIONS "${_nxrt_update_defs}")
+endif()
 # The known ini keys for config_log_unread (src/diag/config.cpp): regenerated when a source file or CONFIG.md changes.
 set(NXRT_CONFIG_KEYS "${CMAKE_CURRENT_BINARY_DIR}/generated/config_keys.inc")
 file(GLOB_RECURSE NXRT_CONFIG_KEY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"

@@ -59,6 +59,8 @@ pub struct Paths {
     pub package: Option<PathBuf>,
     /// the launcher's picked interface language (launcher.json `lang`; empty: none picked), for the F1 menu
     pub lang: String,
+    /// "Check for updates at start" is off (launcher.json `skip_update_check`): so is the game's own check
+    pub skip_update_check: bool,
 }
 
 impl Paths {
@@ -1360,6 +1362,7 @@ mod tests {
             game_dir: game.clone(),
             package: None,
             lang: String::new(),
+            skip_update_check: false,
         };
         // main's NSO header: .text size at +0x18 covering every site below, the build ID at +0x40
         let mut nso = vec![0u8; 0x60];
@@ -1499,6 +1502,7 @@ mod tests {
             game_dir: game.clone(),
             package: Some(root.join("tools")),
             lang: String::new(),
+            skip_update_check: false,
         };
         fs::create_dir_all(p.spirv()).unwrap();
         fs::write(p.exe(), b"MZ").unwrap(); // non-executable PE stub: fails if invoked directly without a runner
