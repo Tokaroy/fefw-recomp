@@ -20,6 +20,9 @@ const LOW_FREE: u64 = 4 * GIB;
 const SMALL_PAGE_FILE: u64 = 2 * GIB;
 /// What the game wants free when the limit cannot grow: the heap, its own memory and the driver's.
 const NEED_FIXED_LIMIT: u64 = 20 * GIB;
+/// How old the periodic memory line may be at a failure to say anything about it (the runtime writes one every 30 s). Older than
+/// that, Windows may have grown the page file or another program given memory back.
+const FIGURE_AGE_S: f64 = 45.0;
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Warning {
@@ -103,11 +106,10 @@ fn line_time(line: &str) -> Option<f64> {
 
 /// Whether a run that ended badly ran out of memory, from its log. An allocation that fails is not enough on its own: full video
 /// memory fails the same way, and many failures are harmless. It takes the heap the game could not get, or a failure in the last
-/// minute while the system had next to no commit left.
+/// minute while the system had next to no commit left, by the failing line's own figure or one taken shortly before it.
 pub fn ran_out(log: &str) -> bool {
     let end = log.lines().filter_map(line_time).fold(0.0, f64::max);
-    let mut failed_without_figure = false;
-    let mut last_free = None;
+    let mut last_figure: Option<(f64, f64)> = None; // (time, free commit) of the periodic memory line
     for line in log.lines() {
         // ERROR_COMMITMENT_LIMIT, ERROR_NOT_ENOUGH_MEMORY, ERROR_COMMITMENT_MINIMUM (after the runtime's retries)
         if line.contains("heap_commit [")
@@ -116,29 +118,32 @@ pub fn ran_out(log: &str) -> bool {
             return true;
         }
         if line.contains("memory: system: RAM ") {
-            if let Some((_, commit)) = line.split_once(" GB, commit ") {
-                last_free = number_after(&format!("commit {commit}"), "commit ");
+            let free = line.split_once(" GB, commit ").and_then(|(_, rest)| number_after(&format!("commit {rest}"), "commit "));
+            if let (Some(at), Some(free)) = (line_time(line), free) {
+                last_figure = Some((at, free));
             }
         }
-        if line_time(line).is_none_or(|t| t < end - 60.0) {
+        let Some(t) = line_time(line).filter(|t| *t >= end - 60.0) else {
             continue;
-        }
+        };
+        // for a failure that does not say what was left itself (older runtimes, the movie decoder)
+        let low_just_before = last_figure.is_some_and(|(at, free)| t - at <= FIGURE_AGE_S && free < 2.0);
         let vk = line.contains("vk.memory: allocation failed (-1)") || line.contains("vk.memory: allocation failed (-2)");
         let render = line.contains("render thread C++ exception (system commit free ");
         if vk || render {
             // newer runtimes say what the system had left at that moment: that decides, either way
             match number_after(line, "system commit free ") {
                 Some(free) if (0.0..1.0).contains(&free) => return true,
-                Some(_) => {}
-                None => failed_without_figure = true,
+                None if low_just_before => return true,
+                _ => {}
             }
         }
-        if line.contains("movie: AV1 decode error -12") {
-            failed_without_figure = true; // ENOMEM
+        // -12: ENOMEM
+        if line.contains("movie: AV1 decode error -12") && low_just_before {
+            return true;
         }
     }
-    // older runtimes: the periodic memory line, at most 30 s old
-    failed_without_figure && last_free.is_some_and(|f| f < 2.0)
+    false
 }
 
 #[cfg(test)]
@@ -168,9 +173,10 @@ mod tests {
 
     #[test]
     fn a_failed_allocation_counts_only_with_no_commit_left() {
-        let mem = |free: &str| {
-            format!("[ 30.0 I t1 -] memory: system: RAM 17.8 GB free of 31.9 GB, commit {free} GB free of 31.9 GB; video memory: 8.0 GB\n")
+        let mem_at = |t: f64, free: &str| {
+            format!("[ {t} I t1 -] memory: system: RAM 17.8 GB free of 31.9 GB, commit {free} GB free of 31.9 GB; video memory: 8.0 GB\n")
         };
+        let mem = |free: &str| mem_at(30.0, free);
         let vk = |t: f64, extra: &str| {
             format!("[ {t} E t2 nvn-render] vk.memory: allocation failed (-2), bytes 8388608, live 250 (1 failures since the last line, 1 in all){extra}\n")
         };
@@ -180,7 +186,12 @@ mod tests {
         assert!(!ran_out(&(mem("12.0") + &vk(46.2, "") + end)), "video memory, not the system's");
         assert!(!ran_out(&(mem("0.2") + end)), "little left but nothing failed");
         assert!(!ran_out(&(vk(0.9, "") + &mem("0.5") + "[ 600.0 I t1 -] x: y\n")), "a failure long before the end");
-        assert!(ran_out(&(mem("1.2") + "[ 203.9 E t3 movie-vdec] movie: AV1 decode error -12 (packet at 1)\n[ 219.0 W t2 x] y: z\n")));
+        let av1 = "[ 203.9 E t3 movie-vdec] movie: AV1 decode error -12 (packet at 1)\n[ 219.0 W t2 x] y: z\n";
+        assert!(ran_out(&(mem_at(180.5, "1.2") + av1)));
+        // a figure from minutes before the failure, or from after it, says nothing about it
+        assert!(!ran_out(&(mem("0.2") + av1)));
+        assert!(!ran_out(&(mem("0.2") + &vk(200.0, "") + "[ 201.0 I t1 -] x: y\n")));
+        assert!(!ran_out(&(mem_at(180.5, "9.0") + &vk(203.0, "") + &mem_at(210.5, "0.3"))));
         // newer runtimes: the figure on the line decides
         assert!(ran_out(&(vk(8.7, "; system commit free 0.1 GB") + "[ 8.8 I t1 -] x: y\n")));
         assert!(!ran_out(&(mem("0.5") + &vk(46.2, "; system commit free 9.3 GB") + end)));

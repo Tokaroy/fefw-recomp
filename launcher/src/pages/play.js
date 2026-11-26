@@ -33,6 +33,7 @@ function reportHtml(s) {
 }
 
 export async function render(el, ctx) {
+  const visit = el.dataset.visit; // changes when the page is left (main.js)
   const isLinux = (await api('platform').catch(() => '')) === 'linux';
   const [cfg, ov] = await Promise.all([api('get_config'), api('get_overview')]);
   const setup = ov.repo_ok ? await api('setup_status') : null;
@@ -47,6 +48,22 @@ export async function render(el, ctx) {
   let addingSteam = false;
   // Linux handhelds: the Decky plugin, when it is not installed
   let decky = await api('decky_offer').catch(() => null);
+
+  function memoryHtml() {
+    if (!memory || status.state === 'running') return '';
+    const key = memory.kind === 'noPageFile' ? 'play.memoryNoPageFile' : 'play.memoryLow';
+    return `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t(key, { free: memory.free_gb.toFixed(1) }))}</div></div>`;
+  }
+
+  // Asks again, and redraws only the warning: the rest of the page stays as the player left it.
+  async function checkMemory() {
+    const now = await api('memory_warning').catch(() => null);
+    if (el.dataset.visit !== visit || JSON.stringify(now) === JSON.stringify(memory)) return;
+    memory = now;
+    const box = el.querySelector('#memory');
+    if (box) box.innerHTML = memoryHtml();
+    refreshIcons();
+  }
 
   function draw() {
     const running = status.state === 'running';
@@ -65,7 +82,7 @@ export async function render(el, ctx) {
           <p class="dim">${esc(t('play.intro'))}</p>
         </div>
         ${problems.map((p) => `<div class="banner danger">${icon('circle-x')}<div>${esc(p)}</div></div>`).join('')}
-        ${memory && !running ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t(memory.kind === 'noPageFile' ? 'play.memoryNoPageFile' : 'play.memoryLow', { free: memory.free_gb.toFixed(1) }))}</div></div>` : ''}
+        <div id="memory" style="display: contents">${memoryHtml()}</div>
         ${problems.length && ov.repo_ok ? `<div><button class="btn primary" id="to-setup">${icon(chosen ? 'hammer' : 'folder-open')}${esc(t(chosen ? 'play.openSetup' : 'play.chooseFiles'))}</button></div>` : ''}
 
         <div class="row wrap">
@@ -174,14 +191,16 @@ export async function render(el, ctx) {
     );
   }
 
-  ctx.onStatus(async (s) => {
+  ctx.onStatus((s) => {
     status = s;
     draw();
-    if (s.state === 'exited') {
-      memory = await api('memory_warning').catch(() => null);
-      draw();
-    }
+    if (s.state === 'exited') checkMemory();
   });
+  // programs closed or opened while the page is on show
+  const memoryTimer = setInterval(() => {
+    if (el.dataset.visit !== visit) clearInterval(memoryTimer);
+    else if (status.state !== 'running') checkMemory();
+  }, 5000);
   ctx.onLanguage(draw);
   draw();
 }
