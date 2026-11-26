@@ -97,6 +97,9 @@ jobs:
       - run: npx --yes pnpm@9 test
       - run: npx --yes pnpm@9 run build
       - run: python3 package.py
+      - name: Installer tests
+        working-directory: installer
+        run: python3 -m unittest discover -s tests
       - uses: actions/upload-artifact@v4
         with:
           name: decky-plugin
