@@ -1,4 +1,4 @@
-# <img src="launcher/src-tauri/steam-art/icon.png" alt="" height="48" align="center"> fefw-recomp
+# <img src="launcher/src-tauri/steam-art/icon.png" alt="" height="48" align="absmiddle"> fefw-recomp
 
 A native Windows PC port of **Fire Emblem: Fortune's Weave** (Nintendo Switch 2), made by static recompilation. The game's code is
 translated to C++ and compiled into a regular Windows program, which runs on a small runtime that stands in for the console's system
