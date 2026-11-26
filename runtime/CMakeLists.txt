@@ -123,6 +123,10 @@ if(EXISTS "${NXRT_RECOMP_INCLUDE}")
     target_include_directories(nxrt PUBLIC "${NXRT_RECOMP_INCLUDE}")
 endif()
 target_link_libraries(nxrt PUBLIC psapi winhttp)
+# Media Foundation (src/media/movie_mf.cpp, Switch 1 movies) is loaded only when a movie asks for it: Windows N editions ship without
+# it, and a load-time import would keep the game from starting there at all (0xC0000135).
+target_link_libraries(nxrt PUBLIC delayimp)
+target_link_options(nxrt PUBLIC /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
 # The release check (include/nxrt/update_check.h): only a build that names its release asks GitHub (game-build/fefw sets these for the
 # release package).
 if(NXRT_RELEASE_VERSION)
