@@ -341,6 +341,15 @@ pub fn start(
         if other_fatal.is_none() && files.iter().any(|f| f.fresh && f.name == "fefw_crash.txt") {
             other_fatal = likely_cause(&std::fs::read_to_string(dir.join("fefw_crash.txt")).unwrap_or_default());
         }
+        // a run that ended badly because the system ran out of memory, which most such ends do not say themselves
+        if other_fatal.is_none()
+            && !cpu_fatal
+            && code != Some(0)
+            && files.iter().any(|f| f.fresh && f.name == "fefw.log")
+            && crate::memory::ran_out(&crate::memory::log_tail(&dir.join("fefw.log")))
+        {
+            other_fatal = Some(crate::memory::OUT_OF_MEMORY.to_string());
+        }
         let message = match (&wait_err, code) {
             (Some(e), _) => format!("Lost track of fefw.exe: {e}"),
             (None, Some(0)) => "fefw.exe exited normally.".to_string(),

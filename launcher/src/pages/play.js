@@ -39,6 +39,8 @@ export async function render(el, ctx) {
   const report = cfg.dump_dir && ov.repo_ok ? await api('validate_dump', { path: cfg.dump_dir }) : null;
   const chosen = report && report.chosen;
   let status = await api('game_status');
+  // Windows: little memory left for the game to take (memory.rs)
+  let memory = await api('memory_warning').catch(() => null);
   let reportsPrompted = !!cfg.reports_prompted;
   // Linux: fefw.exe as a non-Steam game (steam.rs)
   let steam = await api('steam_status').catch(() => ({ available: false }));
@@ -63,6 +65,7 @@ export async function render(el, ctx) {
           <p class="dim">${esc(t('play.intro'))}</p>
         </div>
         ${problems.map((p) => `<div class="banner danger">${icon('circle-x')}<div>${esc(p)}</div></div>`).join('')}
+        ${memory && !running ? `<div class="banner warn">${icon('triangle-alert')}<div>${esc(t(memory.kind === 'noPageFile' ? 'play.memoryNoPageFile' : 'play.memoryLow', { free: memory.free_gb.toFixed(1) }))}</div></div>` : ''}
         ${problems.length && ov.repo_ok ? `<div><button class="btn primary" id="to-setup">${icon(chosen ? 'hammer' : 'folder-open')}${esc(t(chosen ? 'play.openSetup' : 'play.chooseFiles'))}</button></div>` : ''}
 
         <div class="row wrap">
@@ -171,9 +174,13 @@ export async function render(el, ctx) {
     );
   }
 
-  ctx.onStatus((s) => {
+  ctx.onStatus(async (s) => {
     status = s;
     draw();
+    if (s.state === 'exited') {
+      memory = await api('memory_warning').catch(() => null);
+      draw();
+    }
   });
   ctx.onLanguage(draw);
   draw();

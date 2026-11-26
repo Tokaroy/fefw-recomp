@@ -16,6 +16,7 @@ mod locale;
 mod lock;
 mod lsfg;
 mod manifest;
+mod memory;
 mod nup;
 mod play;
 mod report;
@@ -301,6 +302,12 @@ fn decline_decky(app: AppHandle) -> Result<(), String> {
 fn store_config(app: &AppHandle, config: &Config) -> Result<(), String> {
     let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
     settings::write_atomic(&config_path(app)?, &text).map_err(|e| format!("cannot save launcher settings: {e}"))
+}
+
+/// Windows: a warning when little memory is left for the game to take.
+#[tauri::command]
+fn memory_warning() -> Option<memory::Warning> {
+    memory::warning()
 }
 
 /// The language the launcher shows: the picked one, else the system's.
@@ -1204,6 +1211,7 @@ fn main() {
             open_decky_installer,
             decline_decky,
             ui_language,
+            memory_warning,
             set_language,
             get_overview,
             pick_folder,
