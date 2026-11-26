@@ -67,6 +67,7 @@
               </svg>
               <span id="hero-primary-label">Download Latest</span>
             </a>
+            <a href="#handheld-installer" class="btn btn-secondary btn-lg" data-needs-installer hidden>Steam Deck &amp; Handhelds</a>
             <a href="#releases" class="btn btn-secondary btn-lg">Release Notes</a>
             <a href="https://recomplauncher.com/game/fefw-recomp" class="btn btn-ghost btn-lg" target="_blank" rel="noopener noreferrer">RecompLauncher</a>
           </div>
@@ -182,6 +183,27 @@
 
         <div id="download-status" class="status-banner" hidden></div>
 
+        <!-- shown by app.js when the latest release has the installer -->
+        <div id="handheld-installer" class="card handheld-card" data-needs-installer hidden>
+          <div class="handheld-head">
+            <div>
+              <span class="pill pill-gold">Steam Deck &amp; handhelds</span>
+              <h3>One-file installer</h3>
+              <p>In Desktop Mode, download one file and open it. It installs the game, Decky Loader and the fefw-recomp plugin, and adds the game to your Steam library with artwork, asking before each step.</p>
+            </div>
+            <a id="handheld-download" class="btn btn-primary btn-lg" href="https://github.com/metrist38/fefw-recomp/releases/latest">Download Installer</a>
+          </div>
+          <ol class="steps-list">
+            <li><strong>Switch to Desktop Mode</strong> and download <code>fefw-recomp-install.desktop</code>. If your browser saves it ending in <code>.download</code>, remove that ending.</li>
+            <li><strong>Open the file</strong> (choose to run it if asked) and answer its questions.</li>
+            <li><strong>In the launcher</strong> it opens, choose your dump and press <strong>Set up</strong>.</li>
+            <li><strong>Back in Game Mode,</strong> play from your library. The plugin in the Quick Access Menu updates and rebuilds the game and changes its main graphics settings.</li>
+          </ol>
+          <p class="note-text">
+            For SteamOS-style handhelds; the Decky plugin is early. So far tried on CachyOS Handheld, not yet on SteamOS or Bazzite. On Bazzite, install Decky Loader first with <code>ujust setup-decky</code>.
+          </p>
+        </div>
+
         <div id="downloads-grid" class="downloads-grid">
           <div class="card download-card skeleton">
             <div class="skeleton-line w-40"></div>
@@ -251,8 +273,11 @@
                 <li><strong>Play via Proton:</strong> Play uses Steam Proton, <code>umu-run</code>, or Wine — or click <strong>Add to Steam</strong> on the Play page to launch from Steam (including Steam Deck Game Mode).</li>
                 <li><strong>Frame Generation:</strong> Install <strong>LSFG-VK</strong> from <strong>Settings &gt; Frame rate</strong> (requires Lossless Scaling on Steam).</li>
               </ol>
+              <p class="note-text" data-needs-installer hidden>
+                <strong>On a handheld?</strong> The <a href="#handheld-installer">one-file installer</a> does these steps for you and adds updating from Game Mode.
+              </p>
               <p class="note-text">
-                <strong>Steam Deck tip:</strong> After updating to a new release, run <strong>Set up</strong> in Desktop Mode before launching from Game Mode.
+                <strong>Steam Deck tip:</strong> After updating to a new release, run <strong>Set up</strong> in Desktop Mode (without the Decky plugin) before launching from Game Mode.
               </p>
             </div>
           </div>

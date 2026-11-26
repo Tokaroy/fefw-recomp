@@ -461,6 +461,18 @@ function renderDownloadCard({ title, subtitle, asset, fallbackUrl, recommended, 
   `;
 }
 
+// Everything about the handheld installer stays hidden until the latest release has it.
+function showInstaller(release) {
+  const asset = (release.assets || []).find((a) => a.name === "fefw-recomp-install.desktop");
+  const url = asset && safeUrl(asset.browser_download_url);
+  if (!url) return;
+  document.querySelectorAll("[data-needs-installer]").forEach((el) => {
+    el.hidden = false;
+  });
+  const download = document.getElementById("handheld-download");
+  if (download) download.href = url;
+}
+
 function renderReleases(releases) {
   const userOS = detectOS();
   const latest = releases.find((r) => !r.prerelease) || releases[0];
@@ -500,6 +512,8 @@ function renderReleases(releases) {
       primaryLabel.textContent = `Download ${tag}`;
     }
   }
+
+  showInstaller(latest);
 
   // Downloads grid
   const downloadsGrid = document.getElementById("downloads-grid");
