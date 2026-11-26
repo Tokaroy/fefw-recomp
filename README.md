@@ -27,6 +27,8 @@ software and draws with Vulkan. It is not an emulator.
 - An in-game settings overlay (**F1**)
 - A launcher that sets everything up from your dump, with nothing else to install
 - Linux and Steam Deck through Proton, with LSFG-VK frame generation
+- On Steam Deck-style handhelds: a [one-file installer](#steam-deck-and-other-handhelds) and a Decky plugin to play, update and
+  change settings from Game Mode
 
 ## Requirements
 
@@ -52,13 +54,34 @@ Your saves are in the `save\` folder next to the launcher.
 On a screen smaller than 2560x1440, such as a handheld's, the first **Set up** lowers the output resolution to 1080p or 720p to
 suit it. **Settings > Display > Output resolution** changes it.
 
-### Linux and Steam Deck
+### Steam Deck and other handhelds
 
-Download `fefw-recomp-<version>-linux-x64.tar.gz` instead, extract it and run `fefw-launcher.AppImage`; the steps are the same. The
-game runs through Proton: Play needs Steam with a Proton installed, [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) (`umu-run`) or Wine, or
-press **Add to Steam** on the Play page and start it from Steam (also in the Steam Deck's Game Mode). After an update, run Set up in
-the launcher (Desktop Mode on a Deck) before playing from Steam. The game says at start when a newer release is out, so you know
-when to open the launcher (F1 > **Game** turns that check off).
+The quickest way on a handheld with Steam's Game Mode, such as a Steam Deck or one running Bazzite or CachyOS Handheld:
+
+1. Switch to **Desktop Mode** and download `fefw-recomp-install.desktop` from the [latest release](../../releases/latest). If your
+   browser saves it ending in `.download`, remove that ending.
+2. Open the file (choose to run it if asked). It installs the game (or uses the install you already have), offers
+   [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) if it is missing, installs this project's Decky plugin and adds
+   the game to your Steam library with artwork, asking before each step.
+3. In the launcher it opens, choose your dump and press **Set up**. You still need your own dump, and about 30 GB of free space.
+4. Switch back to Game Mode and start the game from your library. The **FEFW Recomp** plugin in the Quick Access Menu plays and
+   updates the game, builds it again when an update needs that, and changes the graphics preset, frame rate, resolution and upscaler.
+
+Installing the plugin needs administrator rights. If your account has no password, the installer can use a temporary one and remove
+it right afterwards. Run the installer again to finish a step you skipped, or to update the plugin.
+[installer/README.md](installer/README.md) has the details.
+
+The plugin is early. This has been tried on CachyOS Handheld, not yet on SteamOS or Bazzite; reports are welcome. On Bazzite, install
+Decky Loader first with `ujust setup-decky`.
+
+### Linux
+
+On desktop Linux, or to set a handheld up by hand: download `fefw-recomp-<version>-linux-x64.tar.gz`, extract it and run
+`fefw-launcher.AppImage`; the steps are the same as on Windows. The game runs through Proton: Play needs Steam with a Proton
+installed, [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher) (`umu-run`) or Wine, or press **Add to Steam** on the
+Play page and start it from Steam (also in the Steam Deck's Game Mode). After an update, run Set up in the launcher (on a handheld in
+Desktop Mode, or with the plugin's **Build the game**) before playing from Steam. The game says at start when a newer release is out
+(F1 > **Game** turns that check off).
 
 FSR 3 frame generation does not work through Proton, so the Linux launcher offers [LSFG-VK](https://lsfg-vk.dev) instead (it needs
 Lossless Scaling on Steam). **Settings > Frame rate** can install the layer, and shows its multiplier, flow scale and performance
