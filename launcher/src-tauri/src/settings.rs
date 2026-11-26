@@ -236,9 +236,14 @@ fn ensure_play_paths_on(dir: &Path, p: &Paths, screen: impl FnOnce() -> Option<(
         ini.set("fs", "save_dir", "save"); // relative to the run folder
         changed = true;
     }
-    if new {
-        // a first ini: the log next to it, the built-in temporal upscaler, the game's own frame rate
+    // the launcher reads fefw.log (its reports, the cause of a failed run); the runtime's own default is another name. Also for an
+    // ini that Settings made before Set up ran. A path the player set stays.
+    if ini.get("log", "path").is_none() {
         ini.set("log", "path", "fefw.log");
+        changed = true;
+    }
+    if new {
+        // a first ini: the built-in temporal upscaler, the game's own frame rate
         ini.set("log", "level", "info");
         ini.set("boot", "gfx", "window");
         ini.set("dlss", "upscaler", "taau");
@@ -329,6 +334,34 @@ mod tests {
         apply(&game, &[Edit { file: "game".into(), section: "fefw".into(), key: "output".into(), value: "console".into() }]).unwrap();
         assert_eq!(ensure_play_paths_on(&game, &p, || panic!("asked again")).unwrap(), None);
         assert_eq!(output_of(&game).as_deref(), Some("console"));
+    }
+
+    #[test]
+    fn every_ini_gets_the_log_the_launcher_reads() {
+        let repo = tmp("repo-log");
+        let game = tmp("game-log");
+        let p = paths_with(&repo, &game);
+        let log = |key: &str| load(&game.join(GAME_INI)).unwrap().get("log", key);
+
+        ensure_play_paths_on(&game, &p, || None).unwrap();
+        assert_eq!((log("path").as_deref(), log("level").as_deref()), (Some("fefw.log"), Some("info")));
+
+        // Settings saved before Set up: the level is the player's, the path still has to be there
+        fs::write(game.join(GAME_INI), "[log]\nlevel = warn\n").unwrap();
+        ensure_play_paths_on(&game, &p, || None).unwrap();
+        assert_eq!((log("path").as_deref(), log("level").as_deref()), (Some("fefw.log"), Some("warn")));
+
+        // an ini Set up has written before, without a path
+        fs::write(game.join(GAME_INI), "[fs]\nexefs = old\n").unwrap();
+        ensure_play_paths_on(&game, &p, || None).unwrap();
+        assert_eq!(log("path").as_deref(), Some("fefw.log"));
+
+        // a path of the player's own stays, also an empty one (no log file)
+        for own in ["logs/mine.log", ""] {
+            fs::write(game.join(GAME_INI), format!("[log]\npath = {own}\n")).unwrap();
+            ensure_play_paths_on(&game, &p, || None).unwrap();
+            assert_eq!(log("path").as_deref(), Some(own));
+        }
     }
 
     #[test]
