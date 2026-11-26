@@ -203,7 +203,7 @@ export const zh = {
     'settings.output.window': '启动时窗口尺寸',
     'settings.output.uw2560': '2560 x 1080（21:9）',
     'settings.output.uw3440': '3440 x 1440（21:9）',
-    'settings.output.uw5120': '5120 x 1440（32:9，按 3840 x 1080 绘制）',
+    'settings.output.uw5120': '5120 x 1440（32:9）',
     'settings.ultrawide.label': '超宽屏',
     'settings.ultrawide.short': '宽屏下 3D 视野变宽，菜单保持 16:9。',
     'settings.ultrawide.hint': '当输出比 16:9 更宽时（上面的宽尺寸，或在宽窗口下启动时的窗口尺寸），3D 视野会在两侧变宽，菜单、HUD 与影片保持在中央的 16:9 区域。关闭则拉伸 16:9 画面。',

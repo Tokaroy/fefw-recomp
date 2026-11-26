@@ -206,7 +206,7 @@ export const en = {
     'settings.output.window': 'Window size at start',
     'settings.output.uw2560': '2560 x 1080 (21:9)',
     'settings.output.uw3440': '3440 x 1440 (21:9)',
-    'settings.output.uw5120': '5120 x 1440 (32:9, drawn at 3840 x 1080)',
+    'settings.output.uw5120': '5120 x 1440 (32:9)',
     'settings.ultrawide.label': 'Ultrawide',
     'settings.ultrawide.short': 'Wider 3D view on wide screens; menus stay 16:9.',
     'settings.ultrawide.hint': 'With an output wider than 16:9 (a wide size above, or the window size at start in a wide window) the 3D view gets wider and the menus, HUD and movies stay in the centre at 16:9. Off stretches the 16:9 picture.',
