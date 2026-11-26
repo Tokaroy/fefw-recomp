@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The launcher without its window, for a program that drives it, such as a Steam Deck plugin (launcher/README.md): --status,
-//! --check-update, --update, --rebuild, --settings, --set and --fetch-upscaler. They use the saved settings (launcher.json) as the window does. Every line on stdout is
+//! --check-update, --update, --rebuild, --settings, --set, --fetch-upscaler and --add-to-steam. They use the saved settings (launcher.json) as the window does. Every line on stdout is
 //! one JSON object: any number with "event": "progress", then one with "event": "end" and "state": "done", "error" or "cancelled".
 //! Exit code 0 for "done", else 1. A line "cancel" on stdin stops --update or --rebuild.
 
-use crate::{cpu, fetch, gpu, ini::Ini, lock, manifest, settings, setup, update, Config};
+use crate::{cpu, fetch, gpu, ini::Ini, lock, manifest, settings, setup, steam, update, Config};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::BufRead;
@@ -29,9 +29,15 @@ pub enum Command {
     Set(String),
     /// the kind, and whether the licence was accepted
     Fetch(String, bool),
+    /// `before_setup`: also when fefw.exe is not built yet. `close_steam`: a running Steam may be shut down (and is started again).
+    AddToSteam {
+        before_setup: bool,
+        close_steam: bool,
+    },
 }
 
 pub fn command(args: &[String]) -> Option<Command> {
+    let flag = |name: &str| args.iter().any(|a| a == name);
     let value = |i: usize| args.get(i + 1).cloned().unwrap_or_default();
     args.iter().enumerate().find_map(|(i, a)| match a.as_str() {
         "--status" => Some(Command::Status),
@@ -40,7 +46,8 @@ pub fn command(args: &[String]) -> Option<Command> {
         "--rebuild" => Some(Command::Rebuild),
         "--settings" => Some(Command::Settings),
         "--set" => Some(Command::Set(value(i))),
-        "--fetch-upscaler" => Some(Command::Fetch(value(i), args.iter().any(|a| a == "--accept-licence"))),
+        "--fetch-upscaler" => Some(Command::Fetch(value(i), flag("--accept-licence"))),
+        "--add-to-steam" => Some(Command::AddToSteam { before_setup: flag("--before-setup"), close_steam: flag("--close-steam") }),
         _ => None,
     })
 }
@@ -55,6 +62,7 @@ pub fn run(cmd: Command) -> i32 {
         Command::Settings => list_settings(&cfg),
         Command::Set(pick) => set_setting(&cfg, &pick),
         Command::Fetch(kind, accepted) => fetch_upscaler(&cfg, &kind, accepted),
+        Command::AddToSteam { before_setup, close_steam } => add_to_steam(&cfg, before_setup, close_steam),
     });
     let end = result.unwrap_or_else(|message| json!({ "state": "error", "message": message }));
     let code = if end["state"] == "done" { 0 } else { 1 };
@@ -407,6 +415,28 @@ fn fetch_upscaler(cfg: &Config, kind: &str, accepted: bool) -> Result<Value, Str
     }
 }
 
+/// The Play page's Add to Steam. An installer may add the game before it is built: Play fails until it is, and Steam need not be
+/// closed a second time.
+fn add_to_steam(cfg: &Config, before_setup: bool, close_steam: bool) -> Result<Value, String> {
+    let repo = crate::need_repo(cfg)?;
+    let game_dir = crate::game_dir_of(cfg, &repo);
+    let exe = if crate::package_tools().is_some() { game_dir.join("fefw.exe") } else { setup::exe_path(&repo) };
+    if !before_setup && !exe.is_file() {
+        return Err("fefw.exe is not built yet. Run Set up first.".into());
+    }
+    let _lock = lock::acquire(&crate::exe_dir())?;
+    fs::create_dir_all(&game_dir).map_err(|e| format!("cannot create {}: {e}", game_dir.display()))?;
+    let vars = crate::steam_vars(cfg, &game_dir)?;
+    // what fefw.ini points the game at, for Flatpak Steam's sandbox; the dump only once one is chosen
+    let mut reads = vec![game_dir.clone(), crate::exe_dir()];
+    if let Ok(p) = crate::paths(cfg) {
+        reads.extend([p.romfs.clone(), p.plain_exefs()]);
+        reads.extend(p.dlc);
+    }
+    let message = steam::add(&exe, &game_dir, &vars, &reads, close_steam)?;
+    Ok(json!({ "state": "done", "message": message, "steam_shortcuts": steam::shortcut_ids(&exe) }))
+}
+
 /// How far a whole setup is, from the progress of the step that runs.
 pub struct Overall {
     base: f64,
@@ -517,6 +547,11 @@ mod tests {
         assert_eq!(command(&args(&["--check-update"])), Some(Command::CheckUpdate));
         assert_eq!(command(&args(&["--update"])), Some(Command::Update));
         assert_eq!(command(&args(&["--rebuild"])), Some(Command::Rebuild));
+        assert_eq!(command(&args(&["--add-to-steam"])), Some(Command::AddToSteam { before_setup: false, close_steam: false }));
+        assert_eq!(
+            command(&args(&["--add-to-steam", "--before-setup", "--close-steam"])),
+            Some(Command::AddToSteam { before_setup: true, close_steam: true })
+        );
         assert_eq!(command(&args(&["--settings"])), Some(Command::Settings));
         assert_eq!(command(&args(&["--set", "output=720p"])), Some(Command::Set("output=720p".into())));
         assert_eq!(command(&args(&["--set"])), Some(Command::Set(String::new())));

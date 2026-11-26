@@ -386,6 +386,20 @@ pub fn state(exe: &Path, vars: &[(String, String)]) -> State {
     State { available: true, running: running().is_some(), added, stale }
 }
 
+/// The library art for the shortcut that starts `exe`, in `config` (its account's), and its icon in the entry when that has none.
+fn add_art(top: &mut [(Vec<u8>, Node)], exe: &Path, config: &Path) {
+    let Some(Node::Map(list)) = top.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(b"shortcuts")).map(|(_, v)| v) else { return };
+    for (_, v) in list {
+        let Node::Map(e) = v else { continue };
+        let Some(&Node::Int(id)) = get(e, "appid").filter(|_| is_ours(e, exe)) else { continue };
+        if let Some(icon) = crate::art::apply(config, id) {
+            if str_of(e, "icon").is_empty() {
+                set(e, "icon", Node::Str(icon.to_string_lossy().into_owned().into_bytes()));
+            }
+        }
+    }
+}
+
 fn update_file(path: &Path, exe: &Path, start_dir: &Path, vars: &[(String, String)]) -> Result<bool, String> {
     let old = fs::read(path).ok();
     let mut top = match &old {
@@ -399,6 +413,9 @@ fn update_file(path: &Path, exe: &Path, start_dir: &Path, vars: &[(String, Strin
         None => vec![],
     };
     let existed = upsert(&mut top, exe, start_dir, vars)?;
+    if let Some(config) = path.parent() {
+        add_art(&mut top, exe, config);
+    }
     // the file as it was before the launcher first changed it: a later Add to Steam does not replace it
     let backup = path.with_extension("vdf.fefw-backup");
     if let (Some(d), false) = (&old, backup.exists()) {
@@ -614,6 +631,36 @@ mod tests {
         assert_eq!(ids_in(files.into_iter().chain([b"junk".to_vec()]), exe), vec![ours]);
         assert_eq!(ids_in(std::iter::empty(), exe), Vec::<u32>::new());
         assert_eq!(ids_in(std::iter::once(file(&["/games/fefw-old/fefw.exe"])), exe), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn adding_brings_the_art_and_keeps_the_players_icon() {
+        let d = std::env::temp_dir().join(format!("fefw-steam-art-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let vdf = d.join("config").join("shortcuts.vdf");
+        let exe = Path::new("/games/fefw/fefw.exe");
+        let entry = |key: &str| {
+            let top = parse(&fs::read(&vdf).unwrap()).unwrap();
+            let Some(Node::Map(list)) = get(&top, "shortcuts") else { panic!("no list") };
+            let Node::Map(e) = &list[0].1 else { panic!("no entry") };
+            str_of(e, key)
+        };
+        assert_eq!(update_file(&vdf, exe, Path::new("/games/fefw"), &[]), Ok(false));
+        let id = shortcut_id("\"/games/fefw/fefw.exe\"", APP_NAME);
+        let icon = d.join("config").join("grid").join(format!("{id}_icon.png"));
+        assert_eq!(entry("icon"), icon.to_string_lossy());
+        assert!(d.join("config").join("grid").join(format!("{id}p.png")).is_file());
+        // the player's own icon is not replaced
+        let mut top = parse(&fs::read(&vdf).unwrap()).unwrap();
+        if let Node::Map(list) = &mut top[0].1 {
+            if let Node::Map(e) = &mut list[0].1 {
+                set(e, "icon", Node::Str(b"/mine.png".to_vec()));
+            }
+        }
+        fs::write(&vdf, write(&top)).unwrap();
+        assert_eq!(update_file(&vdf, exe, Path::new("/games/fefw"), &[]), Ok(true));
+        assert_eq!(entry("icon"), "/mine.png");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

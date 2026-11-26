@@ -3,6 +3,7 @@
 //! repository's own lift and build scripts on this PC, writes fefw.ini in a run folder and starts the game. It ships no game files.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod art;
 mod cpu;
 mod dump;
 mod fetch;
@@ -730,9 +731,9 @@ async fn lsfg_status() -> lsfg::Status {
 
 /// The variables a Steam shortcut puts in front of %command% (steam::launch_options): NXRT_LAUNCHER_DIR when the game does not find
 /// the upscalers next to itself, and LSFG-VK's when it is on (Err: it is on but cannot be used, why).
-fn steam_vars(cfg: &Config, p: &setup::Paths) -> Result<Vec<(String, String)>, String> {
+fn steam_vars(cfg: &Config, game_dir: &Path) -> Result<Vec<(String, String)>, String> {
     let mut v = Vec::new();
-    if p.game_dir != exe_dir() {
+    if game_dir != exe_dir() {
         v.push(("NXRT_LAUNCHER_DIR".to_string(), dump::game_path(&exe_dir())));
     }
     if cfg.lsfg {
@@ -757,7 +758,8 @@ async fn steam_status(app: AppHandle) -> steam::State {
         match paths(&cfg) {
             // LSFG-VK on but unusable: compare with what it would be without it (Add to Steam then says why it cannot add it)
             Ok(p) => {
-                let vars = steam_vars(&cfg, &p).unwrap_or_else(|_| steam_vars(&Config { lsfg: false, ..cfg.clone() }, &p).unwrap_or_default());
+                let without = || steam_vars(&Config { lsfg: false, ..cfg.clone() }, &p.game_dir).unwrap_or_default();
+                let vars = steam_vars(&cfg, &p.game_dir).unwrap_or_else(|_| without());
                 steam::state(&p.exe(), &vars)
             }
             Err(_) => steam::State::default(),
@@ -777,7 +779,7 @@ async fn add_to_steam(app: AppHandle) -> Result<String, String> {
     if !exe.is_file() {
         return Err("fefw.exe is not built yet. Run Set up first.".into());
     }
-    let vars = steam_vars(&cfg, &p)?;
+    let vars = steam_vars(&cfg, &p.game_dir)?;
     let close = if steam::state(&exe, &vars).running {
         app.dialog()
             .message(
