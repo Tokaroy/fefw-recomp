@@ -1543,7 +1543,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[cfg(target_os = "linux")]
     #[test]
     fn shader_preparation_needs_a_display() {
         let env =
@@ -1555,6 +1554,7 @@ mod tests {
         assert!(!no_display("xvfb-run wine", env(&[])));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn prepare_step_runs_exe_through_linux_runner() {
         let root = std::env::temp_dir().join(format!("fefw-prepare-runner-{}", std::process::id()));

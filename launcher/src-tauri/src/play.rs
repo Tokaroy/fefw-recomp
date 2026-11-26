@@ -261,7 +261,9 @@ pub fn exe_command(exe: &Path, game_dir: &Path, runner: &[String], extra_env: &[
     cmd
 }
 
-/// `launcher_dir`: the folder the package's upscalers/ is in (the AppImage's folder, not its mount).
+/// `launcher_dir`: the folder the package's upscalers/ is in (the AppImage's folder, not its mount). `lock`: the install's, held
+/// until the game's process has been started.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     app: &AppHandle,
     exe: &Path,
@@ -270,6 +272,7 @@ pub fn start(
     minimize: bool,
     runner_setting: &str,
     extra_env: Vec<(String, String)>,
+    lock: crate::lock::Lock,
 ) -> Result<(), String> {
     if app.state::<PlayState>().0.lock().unwrap().state == "running" {
         return Err("The game is already running.".into());
@@ -298,7 +301,9 @@ pub fn start(
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no stray console
         }
         let started = SystemTime::now();
-        let mut child = match cmd.spawn() {
+        let spawned = cmd.spawn();
+        drop(lock); // an update or a rebuild now finds the process
+        let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
                 let what = if runner.is_empty() { String::new() } else { format!(" ({})", runner.join(" ")) };

@@ -93,8 +93,8 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// Whether the folder of a Windows path as Wine shows it ("Z:/a/b", "S:/b") is one of `dirs`. Z: is the whole file system. What
 /// another letter stands for is the prefix's business, so there the rest of the path has to be the end of the folder's.
 fn wine_dir_is(drive: char, rest: &str, dirs: &[PathBuf]) -> bool {
-    if drive.eq_ignore_ascii_case(&'z') && dirs.iter().any(|d| same_dir(Path::new(&format!("/{rest}")), d)) {
-        return true;
+    if drive.eq_ignore_ascii_case(&'z') {
+        return dirs.iter().any(|d| same_dir(Path::new(&format!("/{rest}")), d));
     }
     let parts = |s: &str| s.split(['/', '\\']).filter(|x| !x.is_empty()).map(str::to_lowercase).collect::<Vec<_>>();
     let tail = parts(rest);
@@ -129,9 +129,18 @@ fn names_game(cmdline: &[u8], cwd: Option<&Path>, dirs: &[PathBuf]) -> bool {
     })
 }
 
-/// Linux: whether the fefw.exe of one of `dirs` runs, however it was started (Steam, a window of the launcher). Another install's
-/// does not count. Windows refuses to replace a running program by itself.
+/// Windows: a running program's file cannot be opened for writing (a sharing violation). Nothing is written.
+fn in_use(exe: &Path) -> bool {
+    const SHARING_VIOLATION: i32 = 32;
+    cfg!(windows) && fs::OpenOptions::new().write(true).open(exe).is_err_and(|e| e.raw_os_error() == Some(SHARING_VIOLATION))
+}
+
+/// Whether the fefw.exe of one of `dirs` runs, however it was started (Steam, a window of the launcher). Another install's does not
+/// count.
 fn game_running(dirs: &[PathBuf]) -> bool {
+    if cfg!(windows) {
+        return dirs.iter().any(|d| in_use(&d.join("fefw.exe")));
+    }
     if !cfg!(target_os = "linux") {
         return false;
     }
@@ -181,7 +190,7 @@ fn status(cfg: &Config) -> Value {
     let package = crate::package_tools().is_some();
     let busy = if game_running(&install_dirs(cfg)) {
         Some("game")
-    } else if lock::acquire(&install).is_err() {
+    } else if lock::held(&install) {
         Some("job")
     } else {
         None
@@ -227,15 +236,24 @@ fn run_update(cfg: &Config) -> Result<Value, String> {
     let _lock = lock::acquire(&install)?;
     let dirs = install_dirs(cfg);
     idle(&dirs)?;
+    let game_dir = crate::repo_of(cfg).map(|r| crate::game_dir_of(cfg, &r)).unwrap_or_else(|| install.clone());
     let check = update::check(&crate::current_version(conf("version")), true)?;
     let release = check.latest.filter(|_| check.newer);
     let Some(release) = release else {
-        return Ok(json!({ "state": "done", "updated": false, "version": check.current, "message": "This is the latest version." }));
+        // an earlier update may still wait for its rebuild
+        let (rebuild, reason) = update::rebuild_needed(&install, &game_dir);
+        return Ok(json!({
+            "state": "done",
+            "updated": false,
+            "version": check.current,
+            "rebuild": rebuild,
+            "rebuild_reason": reason,
+            "message": "This is the latest version.",
+        }));
     };
     if release.asset_url.is_empty() {
         return Err(format!("Release {} has no package for this system yet.", release.version));
     }
-    let game_dir = crate::repo_of(cfg).map(|r| crate::game_dir_of(cfg, &r)).unwrap_or_else(|| install.clone());
     let shared = Arc::new(update::Shared::default());
     let s = shared.clone();
     on_cancel(move || s.cancel.store(true, Ordering::SeqCst));
@@ -254,7 +272,7 @@ fn run_update(cfg: &Config) -> Result<Value, String> {
             "rebuild_reason": s.rebuild_reason,
             "message": format!("Version {} is installed.", release.version),
         })),
-        Err(message) if shared.cancel.load(Ordering::SeqCst) => Ok(json!({ "state": "cancelled", "message": message })),
+        Err(message) if message == update::CANCELLED => Ok(json!({ "state": "cancelled", "message": message })),
         Err(message) => Err(message),
     }
 }
@@ -263,8 +281,8 @@ fn run_update(cfg: &Config) -> Result<Value, String> {
 pub struct Overall {
     base: f64,
     steps: f64,
-    /// the step last seen, how many were, and the furthest answer so far
-    seen: Mutex<(String, usize, f64)>,
+    /// the step last seen and how many were
+    seen: Mutex<(String, usize)>,
 }
 
 impl Overall {
@@ -274,10 +292,10 @@ impl Overall {
     }
 
     fn of(steps: usize, base: f64) -> Overall {
-        Overall { base, steps: steps as f64, seen: Mutex::new((String::new(), 0, 0.0)) }
+        Overall { base, steps: steps as f64, seen: Mutex::new((String::new(), 0)) }
     }
 
-    /// 0..1, never less than before: a step may count its parts from the start again
+    /// 0..1. It goes back when a step starts its next part, which counts from the start again.
     pub fn at(&self, pr: &setup::Progress) -> f64 {
         let mut g = self.seen.lock().unwrap();
         if g.0 != pr.step {
@@ -285,9 +303,7 @@ impl Overall {
             g.1 += 1;
         }
         let within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
-        let now = (self.base + (1.0 - self.base) * (g.1.saturating_sub(1) as f64 + within) / self.steps).clamp(0.0, 1.0);
-        g.2 = g.2.max(now);
-        g.2
+        (self.base + (1.0 - self.base) * (g.1.saturating_sub(1) as f64 + within) / self.steps).clamp(0.0, 1.0)
     }
 }
 
@@ -338,6 +354,8 @@ fn rebuild(cfg: &Config) -> Result<Value, String> {
         return Err("Setup ended, but the game is not ready. See setup.log.".into());
     }
     settings::ensure_play_paths(&p.game_dir, &p)?;
+    // a step skipped at the end (the shader preparation) reports nothing: finish the bar
+    emit("progress", json!({ "phase": "done", "done": 1, "total": 1, "fraction": 1.0, "message": "Ready to play." }));
     Ok(json!({ "state": "done", "message": "Ready to play." }))
 }
 
@@ -362,11 +380,12 @@ mod tests {
     }
 
     #[test]
-    fn overall_progress_does_not_go_back() {
+    fn overall_progress_follows_the_part_that_runs() {
         let o = Overall::of(2, 0.0);
         let at = |step: &str, done, total| o.at(&setup::Progress { step: step.into(), done, total, ..Default::default() });
         assert_eq!(at("build", 3, 6), 0.25);
-        assert_eq!(at("build", 0, 100), 0.25);
+        // the step's next part: not held at the furthest point of the one before
+        assert_eq!(at("build", 0, 100), 0.0);
         assert_eq!(at("build", 100, 100), 0.5);
         assert_eq!(at("prepare", 0, 0), 0.5);
         assert_eq!(at("prepare", 10, 10), 1.0);
@@ -379,6 +398,13 @@ mod tests {
         assert_eq!(counted(&done), 2);
         assert_eq!(counted(&[step("build", "todo"), step("shaders", "done"), step("ini", "done"), step("prepare", "done")]), 3);
         assert_eq!(counted(&[]), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_running_program_is_in_use() {
+        assert!(in_use(&std::env::current_exe().unwrap()));
+        assert!(!in_use(Path::new("no-such-folder/fefw.exe")));
     }
 
     #[cfg(not(windows))]
@@ -400,6 +426,7 @@ mod tests {
         assert!(!runs("/home/p/games/other/fefw.exe\0", None));
         assert!(!runs("Z:\\home\\p\\games\\fefw-old\\fefw.exe\0", None));
         assert!(!runs("S:\\p\\other\\fefw\\fefw.exe\0", None));
+        assert!(!runs("Z:\\games\\fefw\\fefw.exe\0", None)); // the end of the path, but Z: says where it starts
         assert!(!runs("wine\0./fefw.exe\0", Some("/home/p/games/other")));
         // not the game
         assert!(!runs("/home/p/games/fefw/fefw-launcher.AppImage\0--update\0", None));

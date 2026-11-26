@@ -25,11 +25,13 @@ the install the launcher is in, with the settings the window saved (`launcher.js
 - Every line on stdout is a JSON object with `event` and `api` (this interface's version, 1). `--update` and `--rebuild` print
   `"event": "progress"` lines (`phase`, `done`, `total`, `message`; `--rebuild` also `fraction`, 0 to 1). Every command ends with one
   `"event": "end"` line: `state` is `done`, `error` or `cancelled`, with a `message` for the last two. The exit code is 0 for `done`,
-  else 1. Messages are in English.
+  else 1. Messages are in English. `fraction` goes back when a step starts its next part (checking, then translating, then
+  compiling).
 - Write `cancel` and a newline to stdin to stop `--update` (until it starts installing) or `--rebuild`. Ending the process instead
   can leave a rebuild's compilers running.
-- `--update` and `--rebuild` refuse while this install's `fefw.exe` runs (on Windows the system refuses to replace it), and while
-  another setup or update, in the window or not, works on the install (`launcher.lock`).
+- `--update` and `--rebuild` refuse while this install's `fefw.exe` runs, and while another job, in the window or not, works on
+  the install (`launcher.lock`: a setup, an update, a `.nup` being unpacked, the game being started). While a command works, the
+  window does not start those, and does not save settings into the install.
 - On Linux the last step of `--rebuild`, preparing the shaders, runs `fefw.exe`, which needs a display. With neither `DISPLAY` nor
   `WAYLAND_DISPLAY` set (and no runner of the player's own) it is skipped, and the game compiles shaders while it is played instead. Pass
   the session's display to have it done. A display that is set but does not work can still leave the step waiting.

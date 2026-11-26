@@ -239,6 +239,7 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
     // switch stays unsaved and can be made again.
     if config.skip_update_check != saved.skip_update_check {
+        let _lock = lock::for_write(&exe_dir())?;
         if let Some(repo) = repo_of(&config) {
             settings::set_update_check(&game_dir_of(&config, &repo), !config.skip_update_check)?;
         }
@@ -268,6 +269,8 @@ fn set_language(app: AppHandle, code: String) -> Result<(), String> {
     let mut cfg = load_saved_config(&app);
     cfg.lang = code;
     store_config(&app, &cfg)?;
+    // under another process's setup or update the run folder is left alone: Set up and Play bring it in step
+    let Ok(_lock) = lock::for_write(&exe_dir()) else { return Ok(()) };
     sync_run_folder(&cfg)
 }
 
@@ -339,6 +342,8 @@ async fn import_nup(app: AppHandle, state: State<'_, Arc<setup::Shared>>, path: 
     if state.progress.lock().unwrap().state == "running" {
         return Err("Setup is running. Pause it first.".into());
     }
+    // held while the dump is written: a rebuild reads it
+    let _lock = lock::acquire(&exe_dir())?;
     let cfg = load_config(&app);
     let repo = need_repo(&cfg)?;
     let out = if package_tools().is_some() { game_dir_of(&cfg, &repo).join("nup_dump") } else { repo.join("game").join("nup_dump") };
@@ -388,6 +393,7 @@ fn read_settings(app: AppHandle) -> Result<settings::SettingsDump, String> {
 
 #[tauri::command]
 fn write_settings(app: AppHandle, edits: Vec<settings::Edit>) -> Result<(), String> {
+    let _lock = lock::for_write(&exe_dir())?;
     let cfg = load_config(&app);
     settings::apply(&game_dir_of(&cfg, &need_repo(&cfg)?), &edits)
 }
@@ -532,6 +538,8 @@ fn upscaler_files(
 /// (`dir`), else upscalers/<name> next to the launcher. The page asks the player first (the licence and the source are shown there); see fetch.rs.
 #[tauri::command]
 fn fetch_upscaler(app: AppHandle, state: State<Arc<fetch::Shared>>, kind: String, dir: Option<String>) -> Result<(), String> {
+    // not begun under another process's job; not held on to, as Play need not wait for a download
+    drop(lock::for_write(&exe_dir())?);
     {
         let mut s = state.lock();
         if s.state == "running" {
@@ -671,7 +679,8 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
     if !setup::complete(&p) {
         return Err("Setup is not finished: open Setup and press Set up.".into());
     }
-    drop(lock::acquire(&exe_dir())?); // not while an update or a rebuild changes the files
+    // not while an update or a rebuild changes the files, and held until the game's process is there for them to see
+    let lock = lock::acquire(&exe_dir())?;
     settings::ensure_play_paths(&p.game_dir, &p)?;
     let mut extra_env = Vec::new();
     if cfg.lsfg && cfg!(target_os = "linux") {
@@ -681,7 +690,7 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         }
         extra_env = lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance);
     }
-    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env)
+    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock)
 }
 
 /// Opens LSFG-VK's install instructions in the browser (Settings, when the layer is missing). A fixed address, nothing from the page.
@@ -1102,9 +1111,12 @@ fn main() {
         .setup(|app| {
             // at every start, so that an update or a new default also reaches a game started without Play; the package first,
             // as the run folder takes its tables from there
-            refresh_package_locales();
-            if let Err(e) = sync_run_folder(&load_config(app.handle())) {
-                eprintln!("[run folder] {e}");
+            // not under another process's setup or update: Set up and Play bring the run folder in step
+            if let Ok(_lock) = lock::acquire(&exe_dir()) {
+                refresh_package_locales();
+                if let Err(e) = sync_run_folder(&load_config(app.handle())) {
+                    eprintln!("[run folder] {e}");
+                }
             }
             Ok(())
         })

@@ -30,6 +30,7 @@ const PACKAGE: (&str, &str, [&str; 4]) =
 const PACKAGE: (&str, &str, [&str; 4]) =
     ("-linux-x64.tar.gz", "Linux", ["fefw-launcher.AppImage", "fefw_rt.dll", "tools/build/fefw_build.py", "tools/python/bin/python3"]);
 const AGENT: &str = "fefw-launcher";
+pub const CANCELLED: &str = "Update cancelled.";
 const CURL: &str = if cfg!(windows) { "curl.exe" } else { "curl" };
 const TAR: &str = if cfg!(windows) { "tar.exe" } else { "tar" };
 /// The launcher's working folder inside the install folder: downloads, the unpacked package, the previous version's files.
@@ -186,7 +187,7 @@ impl Run<'_> {
 
     fn cancelled(&self) -> Result<(), String> {
         if self.shared.cancel.load(Ordering::SeqCst) {
-            Err("Update cancelled.".into())
+            Err(CANCELLED.into())
         } else {
             Ok(())
         }
@@ -253,7 +254,7 @@ impl Run<'_> {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = fs::remove_file(&part);
-                return Err("Update cancelled.".into());
+                return Err(CANCELLED.into());
             }
             let got = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
             self.set("download", got, rel.size, &format!("Downloading {} ({:.0} of {:.0} MiB)", rel.asset_name, mb(got), mb(rel.size)));
