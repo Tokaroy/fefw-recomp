@@ -12,6 +12,10 @@ own setup steps on your PC (see docs/BUILDING.md), writes `fefw.ini` in a run fo
   `icon/make_steam_art.py` draws the Steam library art from it into `src-tauri/steam-art/`, which **Add to Steam** puts beside the
   shortcut, leaving any picture the account already has for it.
 
+On a Linux handheld without the Decky plugin (a session with Steam's Game Mode in `/usr/share/wayland-sessions`, or Decky Loader
+installed), the release package's **Play** page offers it: a link to the latest release's installer (`installer/`), until the plugin
+is there or the player says no (`src-tauri/src/decky.rs`).
+
 ## Without the window
 
 For a program that drives the launcher, such as a Steam Deck plugin (`src-tauri/src/headless.rs`). No display is needed. They act on

@@ -75,6 +75,12 @@ export const zh = {
     'play.updateSteam': '更新 Steam 快捷方式',
     'play.steamStale': '游戏的 Steam 快捷方式与当前设置不一致（LSFG-VK 帧生成或启动器所在文件夹已更改），从 Steam 游玩会沿用旧设置。请更新快捷方式以应用新设置。',
     'play.addToSteamHint': '把 fefw.exe 作为非 Steam 游戏添加到 Steam（Steam 用 Proton 运行），可在大屏幕模式和 Steam Deck 的游戏模式中启动。',
+    'play.deckyTitle': '在游戏模式中游玩和更新',
+    'play.deckyText': 'Decky 插件可在快捷访问菜单中启动游戏、更新和构建游戏，并更改主要画面设置。',
+    'play.deckyHint': '请在桌面模式下下载安装程序并打开该文件。它会安装插件，如缺少 Decky Loader 也会一并安装。如果浏览器保存的文件名以 .download 结尾，请删掉这个后缀。',
+    'play.deckyFolder': '安装程序询问游戏位置时，请选择此文件夹：',
+    'play.deckyGet': '下载安装程序',
+    'play.deckyOpened': '浏览器正在下载安装程序，打开该文件即可运行。',
     'play.footer': '游戏内：F1 打开运行时的设置浮层。此处设置会写入 fefw.ini 与 controls.ini，下次启动生效。',
 
     // ----- 构建 -----

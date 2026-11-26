@@ -43,6 +43,8 @@ export async function render(el, ctx) {
   // Linux: fefw.exe as a non-Steam game (steam.rs)
   let steam = await api('steam_status').catch(() => ({ available: false }));
   let addingSteam = false;
+  // Linux handhelds: the Decky plugin, when it is not installed
+  let decky = await api('decky_offer').catch(() => null);
 
   function draw() {
     const running = status.state === 'running';
@@ -76,6 +78,17 @@ export async function render(el, ctx) {
           <div class="row" style="margin-top: var(--space-4)">
             <button class="btn primary" id="reports-enable">${icon('circle-check')}${esc(t('play.reportsEnable'))}</button>
             <button class="btn quiet" id="reports-dismiss">${esc(t('play.reportsDismiss'))}</button>
+          </div>
+        </div>` : ''}
+        ${decky ? `
+        <div class="card" id="decky-offer">
+          <h2>${icon('gamepad-2')}${esc(t('play.deckyTitle'))}</h2>
+          <p class="dim">${esc(t('play.deckyText'))}</p>
+          <p class="faint" style="margin-top: var(--space-2)">${esc(t('play.deckyHint'))}</p>
+          ${decky.folder ? `<p class="faint" style="margin-top: var(--space-2)">${esc(t('play.deckyFolder'))}</p><div class="path">${esc(decky.folder)}</div>` : ''}
+          <div class="row" style="margin-top: var(--space-4)">
+            <button class="btn primary" id="decky-get">${icon('download')}${esc(t('play.deckyGet'))}</button>
+            <button class="btn quiet" id="decky-dismiss">${esc(t('play.reportsDismiss'))}</button>
           </div>
         </div>` : ''}
         ${steam.available && steam.stale ? `<div class="banner warn">${icon('triangle-alert')}<div style="flex:1">${esc(t('play.steamStale'))}</div><button class="btn" id="update-steam" ${ov.exe_exists && !addingSteam ? '' : 'disabled'}>${icon('gamepad-2')}${esc(t('play.updateSteam'))}</button></div>` : ''}
@@ -124,6 +137,18 @@ export async function render(el, ctx) {
     };
     el.querySelector('#reports-enable')?.addEventListener('click', () => answerReports(true));
     el.querySelector('#reports-dismiss')?.addEventListener('click', () => answerReports(false));
+    el.querySelector('#decky-get')?.addEventListener('click', () =>
+      api('open_decky_installer').then(() => toast(t('play.deckyOpened'), 'ok')).catch((e) => toast(errText(e), 'error')),
+    );
+    el.querySelector('#decky-dismiss')?.addEventListener('click', async () => {
+      try {
+        await api('decline_decky');
+        decky = null;
+        draw();
+      } catch (e) {
+        toast(errText(e), 'error');
+      }
+    });
     el.querySelector('#to-setup')?.addEventListener('click', () => ctx.go('setup'));
     el.querySelector('#open-dir')?.addEventListener('click', () => api('open_game_dir').catch((e) => toast(errText(e), 'error')));
     el.querySelector('#open-mods')?.addEventListener('click', () => api('open_mods_dir').catch((e) => toast(errText(e), 'error')));
