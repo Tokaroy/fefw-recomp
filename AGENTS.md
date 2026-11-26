@@ -35,7 +35,15 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
   cd launcher && npm ci && npm run build
   cd src-tauri && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings && cargo test --release
   ```
-- Python, as CI checks it: `python -m compileall -q recomp tools`
+- Python, as CI checks it:
+  ```bash
+  python -m compileall -q recomp tools
+  python recomp/tests/lift_workers_test.py
+  ```
+- Oracle hash lock, as CI checks it (the files listed in `recomp/oracle/SHA256SUMS` must be unchanged):
+  ```bash
+  python3 recomp/scripts/oracle_sums.py check
+  ```
 
 ### Runtime on Linux (clang-cl cross-build, tests under Wine)
 
