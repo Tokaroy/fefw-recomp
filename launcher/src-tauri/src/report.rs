@@ -30,6 +30,20 @@ const MAX_CRASH_FILE: usize = 256 * 1024;
 const MAX_COMPRESSED_BYTES: usize = 1_572_864; // 1.5 MiB (matches Worker limit)
 const DAY_SECS: u64 = 24 * 60 * 60;
 
+// When a run counts as a performance problem. Boot and loading screens stutter on every PC, so only what happens in play counts.
+// With these figures 8 of the first 56 "hitch" reports would still be sent.
+/// Boot and the first load: nothing before this many seconds counts.
+const BOOT_S: f64 = 90.0;
+/// A loading screen counts from this long before the runtime saw it (the stall that starts one) to this long after it ended.
+const LOAD_LEAD_S: f64 = 2.0;
+const LOAD_TAIL_S: f64 = 3.0;
+/// No loading screen counts for longer than this (the longest seen took 10 s): one whose end is missing from the log must not hide
+/// the rest of the run.
+const MAX_LOAD_S: f64 = 60.0;
+/// Play it takes to judge stutters, and summary windows (10 s each) to judge the frame rate.
+const MIN_PLAY_S: f64 = 120.0;
+const MIN_PLAY_WINDOWS: usize = 12;
+
 /// Options passed from `main.rs` into `play::start` for post-exit reporting.
 #[derive(Clone, Default)]
 pub struct Options {
@@ -54,6 +68,22 @@ struct LogMetrics {
     hitch_count: u32,
     build_id: String,
     gpu: String,
+    play: PlayMetrics,
+}
+
+/// What happened in play: after boot, outside loading screens.
+#[derive(Debug, Default, PartialEq)]
+struct PlayMetrics {
+    /// Seconds the frame summaries cover.
+    secs: f64,
+    /// Logged stutters (the runtime writes at most one a second) of at least 100 ms, 250 ms and 1 s.
+    over_100: u32,
+    over_250: u32,
+    over_1000: u32,
+    /// Summary windows that lie wholly in play, and the medians of their mean and 1% low frame rates.
+    windows: usize,
+    mean_fps: f64,
+    low1_fps: f64,
 }
 
 #[derive(Serialize)]
@@ -145,11 +175,22 @@ pub fn prepare(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[Repo
     let metrics = parse_log_metrics(&log_raw);
     let trigger = detect_trigger(code, files, &metrics)?;
 
+    // the crash and freeze files of this run: they name the cause and the GPU where the log does not
+    let mut found = BTreeMap::new();
+    for f in files {
+        if f.fresh && f.name != "fefw.log" {
+            if let Ok(bytes) = fs::read(game_dir.join(&f.name)) {
+                found.insert(f.name.clone(), String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_CRASH_FILE)]).into_owned());
+            }
+        }
+    }
+    let crash_cause = crash_cause.map(str::to_string).or_else(|| known_cause(code, found.get("fefw_crash.txt").map(String::as_str)));
+
     let build_id =
         if !metrics.build_id.is_empty() { metrics.build_id.clone() } else { crate::update::BUILD_ID.unwrap_or(&opts.launcher_version).to_string() };
 
     let now = now_unix_s();
-    let sig = crash_cause.unwrap_or("").chars().take(80).collect::<String>();
+    let sig = crash_cause.as_deref().unwrap_or("").chars().take(80).collect::<String>();
     if !allow_by_rate_limit(cfg_dir, now, trigger, &build_id, &sig) {
         return None;
     }
@@ -158,26 +199,18 @@ pub fn prepare(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[Repo
     let ini = Ini::parse(&ini_text);
 
     let scrubber = Scrubber::from_env(game_dir, &opts.dump_dir, &opts.launcher_dir, &ini);
+    let clean_log = scrubber.scrub(&slice_log(&log_raw, MAX_LOG_HEAD, MAX_LOG_TAIL));
     let gpu = {
-        let g = scrubber.scrub(&metrics.gpu);
+        let named = if metrics.gpu.is_empty() { found.values().find_map(|t| gpu_in_report(t)).unwrap_or_default() } else { metrics.gpu.clone() };
+        let g = scrubber.scrub(&named);
         if g.trim().is_empty() {
             "unknown".to_string()
         } else {
             g
         }
     };
-    let clean_cause = crash_cause.map(|c| scrubber.scrub(c));
-    let clean_log = scrubber.scrub(&slice_log(&log_raw, MAX_LOG_HEAD, MAX_LOG_TAIL));
-
-    let mut crash_files = BTreeMap::new();
-    for f in files {
-        if f.fresh && f.name != "fefw.log" {
-            if let Ok(bytes) = fs::read(game_dir.join(&f.name)) {
-                let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_CRASH_FILE)]);
-                crash_files.insert(f.name.clone(), scrubber.scrub(&text));
-            }
-        }
-    }
+    let clean_cause = crash_cause.map(|c| scrubber.scrub(&c));
+    let crash_files: BTreeMap<String, String> = found.into_iter().map(|(name, text)| (name, scrubber.scrub(&text))).collect();
 
     let settings = safe_ini_settings(&ini);
     let bundle = ReportBundle {
@@ -336,21 +369,151 @@ fn detect_trigger(code: Option<i32>, files: &[ReportFile], m: &LogMetrics) -> Op
     if code != Some(0) {
         return Some("exit_code");
     }
-    if m.worst_ms.is_some_and(|w| w >= 250.0) || (m.measured_s >= 60.0 && m.hitch_count >= 10) {
-        return Some("hitch");
+    let p = &m.play;
+    if p.secs >= MIN_PLAY_S {
+        // often enough for its size: 6 of 100 ms in 10 minutes, 2 of 250 ms, or several that froze the game for a second
+        let often = |n: u32, least: u32, per_10_min: f64| n >= least && f64::from(n) * 600.0 / p.secs >= per_10_min;
+        if often(p.over_100, 5, 6.0) || often(p.over_250, 3, 2.0) || p.over_1000 >= 3 {
+            return Some("hitch");
+        }
     }
-    if m.measured_s >= 120.0 && (m.mean_fps.is_some_and(|f| f < 28.0) || m.low1_fps.is_some_and(|f| f < 18.0)) {
+    if p.windows >= MIN_PLAY_WINDOWS && (p.mean_fps < 28.0 || p.low1_fps < 18.0) {
         return Some("low_fps");
     }
     None
+}
+
+/// A cause the exit code or the crash report shows plainly, for a run the launcher has no explanation of its own for.
+fn known_cause(code: Option<i32>, crash_report: Option<&str>) -> Option<String> {
+    if let Some(report) = crash_report {
+        if report.contains("GPU DEVICE LOST") {
+            return Some("GPU device lost".to_string());
+        }
+        if let Some((_, rest)) = report.split_once("HOST EXCEPTION ") {
+            let kind = rest.lines().next().unwrap_or("").split(" at host address").next().unwrap_or("").trim();
+            if !kind.is_empty() {
+                return Some(format!("host exception {kind}"));
+            }
+        }
+    }
+    match code.map(|c| c as u32) {
+        Some(0xC000_0135) => Some("a DLL was not found (0xC0000135)".to_string()),
+        Some(0xCFFF_FFFF) => Some("ended while not responding (0xCFFFFFFF)".to_string()),
+        _ => None,
+    }
+}
+
+/// The device's name in a "NAME (vendor 0x..., ..." description.
+fn device_name(description: &str) -> Option<String> {
+    // older runtimes: "NAME, queue family 0, ..."
+    let name = description.split_once(" (vendor ").or_else(|| description.split_once(", queue family "))?.0.trim();
+    (!name.is_empty()).then(|| name.chars().take(128).collect())
+}
+
+/// The "GPU: NAME (vendor ..." line of a device lost report.
+fn gpu_in_report(report: &str) -> Option<String> {
+    report.lines().find_map(|l| device_name(l.trim_start().strip_prefix("GPU: ")?))
+}
+
+/// A log line's time in seconds: "[  12.345678 I t1 name] ...".
+fn line_time(line: &str) -> Option<f64> {
+    line.strip_prefix('[')?.split_whitespace().next()?.parse().ok()
+}
+
+/// "... hitch] hitch: frame 8 took 893.5 ms (t=3.5 s); ..." as (time, milliseconds).
+fn parse_stutter(line: &str) -> Option<(f64, f64)> {
+    let (_, rest) = line.split_once("hitch] hitch: frame ")?;
+    let (_, rest) = rest.split_once(" took ")?;
+    let (ms, rest) = rest.split_once(" ms (t=")?;
+    let (at, _) = rest.split_once(" s)")?;
+    Some((at.parse().ok()?, ms.parse().ok()?))
+}
+
+/// Seconds of [from, to] inside the spans, which do not overlap.
+fn covered(spans: &[(f64, f64)], from: f64, to: f64) -> f64 {
+    spans.iter().map(|&(a, b)| (b.min(to) - a.max(from)).max(0.0)).sum()
+}
+
+/// 0 for no values; between the two middle ones for an even number.
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    (v[(n - 1) / 2] + v[n / 2]) / 2.0
+}
+
+/// `windows`: (end, length, mean fps, 1% low) of the frame summaries; `stutters`: (time, ms); `loads`: when a loading screen was up.
+fn play_metrics(windows: &[(f64, f64, f64, f64)], stutters: &[(f64, f64)], mut loads: Vec<(f64, f64)>) -> PlayMetrics {
+    for load in &mut loads {
+        load.1 = load.1.min(load.0 + MAX_LOAD_S);
+    }
+    loads.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in loads {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let mut p = PlayMetrics::default();
+    let (mut means, mut lows) = (Vec::new(), Vec::new());
+    for &(end, len, mean, low) in windows {
+        let from = (end - len).max(BOOT_S);
+        if end <= from {
+            continue;
+        }
+        let loading = covered(&merged, from, end);
+        p.secs += end - from - loading;
+        if end - len >= BOOT_S && loading == 0.0 {
+            means.push(mean);
+            lows.push(low);
+        }
+    }
+    for &(at, ms) in stutters {
+        // counted where the time is counted: in play, inside a summary window
+        if at < BOOT_S || merged.iter().any(|&(a, b)| at >= a && at <= b) || !windows.iter().any(|w| at > w.0 - w.1 && at <= w.0) {
+            continue;
+        }
+        p.over_100 += u32::from(ms >= 100.0);
+        p.over_250 += u32::from(ms >= 250.0);
+        p.over_1000 += u32::from(ms >= 1000.0);
+    }
+    p.windows = means.len();
+    p.mean_fps = median(means);
+    p.low1_fps = median(lows);
+    p
 }
 
 fn parse_log_metrics(log: &str) -> LogMetrics {
     let mut m = LogMetrics::default();
     let mut weighted_fps = 0.0;
     let mut weight_s = 0.0;
+    let (mut windows, mut stutters, mut loads) = (Vec::new(), Vec::new(), Vec::new());
+    let mut loading_since = None;
+    let mut now = 0.0;
 
     for line in log.lines() {
+        // a long log is read without its middle: a load that began before the gap says nothing about what follows it
+        if line.starts_with("... [skipped ") {
+            if let Some(since) = loading_since.take() {
+                loads.push((since - LOAD_LEAD_S, now + LOAD_TAIL_S));
+            }
+        }
+        let at = line_time(line);
+        now = at.unwrap_or(now);
+        // `nvn.replay: loading start (present ...)` and `loading end (...)` (nvn_replay.cpp)
+        if line.contains(": loading start (present ") {
+            loading_since = loading_since.or(at);
+        } else if line.contains(": loading end (present ") {
+            if let Some(end) = at {
+                loads.push((loading_since.take().unwrap_or(end) - LOAD_LEAD_S, end + LOAD_TAIL_S));
+            }
+        }
+        if let Some(s) = parse_stutter(line) {
+            stutters.push(s);
+        }
         // Hitch warnings from gauge.cpp: `[  12.345 W t123 hitch] ...`
         if line.contains(" W ") && line.contains("hitch") {
             m.hitch_count = m.hitch_count.saturating_add(1);
@@ -363,13 +526,19 @@ fn parse_log_metrics(log: &str) -> LogMetrics {
             weight_s += span_s;
             m.low1_fps = Some(m.low1_fps.map_or(low1, |prev| prev.min(low1)));
             m.worst_ms = Some(m.worst_ms.map_or(worst, |prev| prev.max(worst)));
+            if let Some(end) = at {
+                windows.push((end, span_s, mean, low1));
+            }
         }
         // Runtime session stamp (runtime/src/core/build_info.cpp):
         // `runtime: session: <app_build>, ABI <N>; gpu <name>; ...`
         if let Some((_, rest)) = line.split_once("runtime: session:") {
             parse_session_stamp(rest, &mut m);
         } else if m.gpu.is_empty() {
-            if let Some((_, rest)) = line.split_once("Vulkan device:") {
+            // `gfx: device ready: <name> (vendor ...)`: there from the start, the session stamp only after a minute
+            if let Some(name) = line.split_once("gfx: device ready: ").and_then(|(_, rest)| device_name(rest)) {
+                m.gpu = name;
+            } else if let Some((_, rest)) = line.split_once("Vulkan device:") {
                 let g = rest.split([',', ';', '|']).next().unwrap_or("").trim();
                 if !g.is_empty() {
                     m.gpu = g.chars().take(128).collect();
@@ -377,6 +546,10 @@ fn parse_log_metrics(log: &str) -> LogMetrics {
             }
         }
     }
+    if let Some(since) = loading_since {
+        loads.push((since - LOAD_LEAD_S, f64::INFINITY));
+    }
+    m.play = play_metrics(&windows, &stutters, loads);
 
     if weight_s > 0.0 {
         m.mean_fps = Some((weighted_fps / weight_s * 10.0).round() / 10.0);
@@ -678,15 +851,111 @@ mod tests {
         assert_eq!(m.mean_fps, Some(25.5));
         assert_eq!(m.low1_fps, Some(16.5));
         assert_eq!(m.worst_ms, Some(90.0));
-        assert_eq!(detect_trigger(Some(0), &[], &m), Some("low_fps"));
+    }
 
-        let healthy =
-            LogMetrics { measured_s: 180.0, mean_fps: Some(60.0), low1_fps: Some(55.0), worst_ms: Some(32.0), hitch_count: 1, ..Default::default() };
-        assert_eq!(detect_trigger(Some(0), &[], &healthy), None);
+    /// A log of `secs` seconds: a summary every 10 s at `fps` (1% low `low`), then `extra`.
+    fn log_of(secs: u32, fps: f64, low: f64, extra: &str) -> String {
+        let mut log: String = (1..=secs / 10)
+            .map(|i| format!("[{}.000 I t2 hitch] hitch: 600 frames in 10.0 s: mean {fps} fps, 1% low {low} fps, worst 40.0 ms, 0 over 2x the median (16.7 ms)\n", i * 10))
+            .collect();
+        log.push_str(extra);
+        log
+    }
 
-        let hitchy =
-            LogMetrics { measured_s: 30.0, mean_fps: Some(58.0), low1_fps: Some(40.0), worst_ms: Some(310.0), hitch_count: 2, ..Default::default() };
-        assert_eq!(detect_trigger(Some(0), &[], &hitchy), Some("hitch"));
+    fn stutter(at: f64, ms: f64) -> String {
+        format!("[{:.3} W t2 hitch] hitch: frame 8 took {ms:.1} ms (t={at:.1} s); nothing tracked changed in it\n", at + 0.2)
+    }
+
+    fn trigger(log: &str) -> Option<&'static str> {
+        detect_trigger(Some(0), &[], &parse_log_metrics(log))
+    }
+
+    #[test]
+    fn stutters_at_boot_and_in_loading_screens_do_not_make_a_report() {
+        let boot: String = (1..=40).map(|i| stutter(f64::from(i) * 2.0, 900.0)).collect();
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &boot)), None);
+
+        let loads: String = (0..6)
+            .map(|i| {
+                let t = 150.0 + f64::from(i) * 60.0;
+                format!("[{t:.3} I t1 nvn-render] nvn.replay: loading start (present 1, 1 draws)\n{}{}[{:.3} I t1 nvn-render] nvn.replay: loading end (present 9, 40 draws)\n",
+                        stutter(t - 1.0, 1500.0), stutter(t + 4.0, 1500.0), t + 8.0)
+            })
+            .collect();
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &loads)), None);
+        // the same stutters with no loading screen around them
+        let bare: String = (0..6).map(|i| stutter(150.0 + f64::from(i) * 60.0, 1500.0)).collect();
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &bare)), Some("hitch"));
+    }
+
+    #[test]
+    fn stutters_in_play_count_by_size_and_rate() {
+        let many = |n: u32, ms: f64| -> String { (0..n).map(|i| stutter(100.0 + f64::from(i) * 20.0, ms)).collect() };
+        assert_eq!(trigger(&log_of(480, 60.0, 55.0, &many(5, 120.0))), Some("hitch"), "5 of 100 ms in 6.5 minutes");
+        assert_eq!(trigger(&log_of(480, 60.0, 55.0, &many(4, 120.0))), None);
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &many(5, 120.0))), None, "5 of 100 ms in 8.5 minutes");
+        assert_eq!(trigger(&log_of(3600, 60.0, 55.0, &many(20, 120.0))), None, "20 of 100 ms in an hour");
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &many(3, 300.0))), Some("hitch"));
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &many(2, 1200.0))), None);
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &many(3, 1200.0))), Some("hitch"));
+        assert_eq!(trigger(&log_of(200, 60.0, 55.0, &many(5, 400.0))), None, "too little play to judge");
+        let after_end: String = (0..9).map(|i| stutter(601.0 + f64::from(i), 400.0)).collect();
+        assert_eq!(trigger(&log_of(600, 60.0, 55.0, &after_end)), None, "outside any summary window");
+    }
+
+    #[test]
+    fn a_low_frame_rate_counts_when_it_lasts() {
+        assert_eq!(trigger(&log_of(600, 25.0, 22.0, "")), Some("low_fps"));
+        assert_eq!(trigger(&log_of(600, 30.0, 12.0, "")), Some("low_fps"));
+        assert_eq!(trigger(&log_of(600, 30.0, 27.0, "")), None);
+        assert_eq!(trigger(&log_of(190, 20.0, 10.0, "")), None, "ten windows after boot");
+        // half the windows at 20 fps, half at 30: the middle is 25
+        let half = log_of(210, 30.0, 22.0, "").replacen("mean 30 fps", "mean 20 fps", 15);
+        assert_eq!(parse_log_metrics(&half).play.windows, 12);
+        assert_eq!(parse_log_metrics(&half).play.mean_fps, 25.0);
+        assert_eq!(trigger(&half), Some("low_fps"));
+        // a few bad windows among many good ones
+        let mut log = log_of(600, 60.0, 55.0, "");
+        log = log.replacen("1% low 55 fps", "1% low 3 fps", 20);
+        assert_eq!(trigger(&log), None);
+    }
+
+    #[test]
+    fn a_load_cut_off_by_the_skipped_middle_does_not_swallow_the_rest() {
+        let head = "[ 95.000 I t1 nvn-render] nvn.replay: loading start (present 1, 1 draws)\n... [skipped 9000000 bytes] ...\n";
+        let tail: String = (0..5).map(|i| stutter(200.0 + f64::from(i) * 20.0, 400.0)).collect();
+        assert_eq!(trigger(&format!("{head}{}", log_of(600, 60.0, 55.0, &tail))), Some("hitch"));
+    }
+
+    #[test]
+    fn a_load_that_never_ends_hides_a_minute_not_the_run() {
+        let start = "[ 95.000 I t1 nvn-render] nvn.replay: loading start (present 1, 1 draws)\n";
+        let late: String = (0..5).map(|i| stutter(300.0 + f64::from(i) * 20.0, 400.0)).collect();
+        assert_eq!(trigger(&format!("{start}{}", log_of(600, 60.0, 55.0, &late))), Some("hitch"));
+        let early: String = (0..5).map(|i| stutter(100.0 + f64::from(i) * 20.0, 400.0)).collect();
+        assert_eq!(trigger(&format!("{start}{}", log_of(600, 60.0, 55.0, &early))), None);
+    }
+
+    #[test]
+    fn names_the_gpu_from_the_log_or_a_crash_report() {
+        let log = "[ 0.281 I t1 -] gfx: device ready: AMD Radeon RX 7900 XTX (vendor 0x1002, device 0x744c, Vulkan 1.4.359), queue family 0\n";
+        assert_eq!(parse_log_metrics(log).gpu, "AMD Radeon RX 7900 XTX");
+        let old = "[ 0.592 I t1 -] gfx: device ready: NVIDIA GeForce RTX 3050, queue family 0, validation off, window surface\n";
+        assert_eq!(parse_log_metrics(old).gpu, "NVIDIA GeForce RTX 3050");
+        let report = "GPU DEVICE LOST (reason: VK_ERROR_DEVICE_LOST)\n  GPU: NVIDIA GeForce RTX 4070 Ti (vendor 0x10de, device 0x2782, discrete)\n";
+        assert_eq!(gpu_in_report(report).as_deref(), Some("NVIDIA GeForce RTX 4070 Ti"));
+        assert_eq!(gpu_in_report("HOST EXCEPTION 0xC0000005\n"), None);
+    }
+
+    #[test]
+    fn names_the_causes_it_can_tell() {
+        assert_eq!(known_cause(Some(5), Some("GPU DEVICE LOST (reason: x)\n")).as_deref(), Some("GPU device lost"));
+        let host = "HOST EXCEPTION 0xE0000003 (GUEST BREAK (svcBreak)) at host address 0x7fff2c15cf19 on thread main (tid 30488)\n  in x.dll\n";
+        assert_eq!(known_cause(Some(4), Some(host)).as_deref(), Some("host exception 0xE0000003 (GUEST BREAK (svcBreak))"));
+        assert_eq!(known_cause(Some(-1073741515), None).as_deref(), Some("a DLL was not found (0xC0000135)"));
+        assert_eq!(known_cause(Some(-805306369), None).as_deref(), Some("ended while not responding (0xCFFFFFFF)"));
+        assert_eq!(known_cause(Some(1), None), None);
+        assert_eq!(known_cause(None, None), None);
     }
 
     #[test]
