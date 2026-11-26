@@ -324,6 +324,25 @@ fn lift_sites_path(p: &Paths) -> PathBuf {
     }
 }
 
+/// A site list's lines without comments, each as its words (a patch line has two more than a hook's kind and address).
+fn site_lines(path: &Path) -> Option<std::collections::HashSet<String>> {
+    let text = fs::read_to_string(path).ok()?;
+    let words = |l: &str| l.split('#').next().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    Some(text.lines().map(words).filter(|l| !l.is_empty()).collect())
+}
+
+/// Whether the libraries were lifted with another main.sites than the repo has now (an update changed it): main.sites against
+/// CMake's copy beside the libraries (work/build/fefw/main.sites). A line the copy lacks counts, and so does a line only the copy
+/// has unless it is a hook: the copy may hold mods' hooks, and a hook nobody attaches to does no harm, but a patch that is gone
+/// is still in the code. Comments do not count. CMake writes the copy before compiling; a Set up lift that was paused or failed
+/// is caught by cpu_variant.txt instead (lift_variant_ok). False when either list is missing (nothing to compare).
+fn lifted_sites_stale(p: &Paths) -> bool {
+    let own = p.repo.join("recomp").join("games").join("fefw").join("main.sites");
+    let (Some(want), Some(lifted)) = (site_lines(&own), site_lines(&p.libs().join("main.sites"))) else { return false };
+    let hook = |l: &str| l.split(' ').next().is_some_and(|kind| MOD_SITE_KINDS.contains(&kind));
+    !want.is_subset(&lifted) || lifted.difference(&want).any(|l| !hook(l))
+}
+
 /// Mods with a hook site that the lifted module libraries lack (the lift step's note).
 pub fn mods_missing_lift_sites(p: &Paths) -> Vec<String> {
     mods_missing_from(p, &lift_sites_path(p))
@@ -341,12 +360,12 @@ fn mod_sites_problem(p: &Paths) -> Option<String> {
     mod_sites(p).err()
 }
 
-/// Whether the lift step has nothing to do: the libraries are newer than the NSO and no mod site is missing from the list they
-/// were lifted with. When Set up wrote a combined list, main's library must also be newer than it: Set up writes the list before
-/// starting the lift (and CMake copies it beside the libraries at configure time, before compiling), so a lift that was paused
-/// or failed is not mistaken for a finished one and Set up lifts again.
+/// Whether the lift step has nothing to do: the libraries are newer than the NSO, were lifted with the current main.sites and no
+/// mod site is missing from the list they were lifted with. When Set up wrote a combined list, main's library must also be newer
+/// than it: Set up writes the list before starting the lift (and CMake copies it beside the libraries at configure time, before
+/// compiling), so a lift that was paused or failed is not mistaken for a finished one and Set up lifts again.
 fn lift_done(p: &Paths) -> bool {
-    if !libs_ok(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
+    if !libs_ok(p) || lifted_sites_stale(p) || mod_sites_problem(p).is_some() || !mods_missing_lift_sites(p).is_empty() {
         return false;
     }
     let combined = p.libs().join("main_with_mods.sites");
@@ -1453,6 +1472,29 @@ mod tests {
         for m in MODULES {
             fs::write(p.libs().join(format!("fefw_{m}.lib")), "lib").unwrap();
         }
+        assert!(lift_done(&p));
+        // an update changes main.sites: CMake's copy beside the libraries no longer matches it, so the lift is todo again
+        let copy = p.libs().join("main.sites");
+        fs::write(&copy, &text).unwrap(); // the combined list: main.sites plus mods' hooks
+        assert!(lift_done(&p));
+        let before = fs::read_to_string(&own).unwrap();
+        fs::write(&own, format!("{before}# a new comment\n")).unwrap();
+        assert!(lift_done(&p), "a comment is no change");
+        fs::write(&own, format!("{before}inline 0x71007bf1c4\n")).unwrap();
+        assert!(!lift_done(&p), "a new site");
+        fs::write(&copy, format!("{text}inline 0x71007bf1c4\n")).unwrap();
+        assert!(lift_done(&p));
+        fs::write(&own, &before).unwrap();
+        assert!(lift_done(&p), "a hook that is gone does no harm");
+        fs::write(&own, format!("{before}patch 0x71007bf1c8 d503201f d65f03c0\n")).unwrap();
+        assert!(!lift_done(&p), "a new patch");
+        fs::write(&copy, format!("{text}patch 0x71007bf1c8 d503201f d65f03c0\n")).unwrap();
+        assert!(lift_done(&p));
+        fs::write(&own, format!("{before}patch 0x71007bf1c8 d503201f d503201f\n")).unwrap();
+        assert!(!lift_done(&p), "a patch with another word");
+        fs::write(&own, &before).unwrap();
+        assert!(!lift_done(&p), "a patch that is gone");
+        fs::write(&copy, &text).unwrap();
         assert!(lift_done(&p));
         // the exe built from that list: nothing missing there either
         fs::write(&list, &text).unwrap();
