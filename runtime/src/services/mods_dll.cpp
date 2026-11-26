@@ -541,11 +541,6 @@ int sites_missing(const std::string& mod_dir) {
     return missing;
 }
 
-bool site_built(const char* kind, uint64_t guest_addr) {
-    const SiteList& l = lifted_sites();
-    return l.known && l.sites.count({kind, guest_addr}) != 0;
-}
-
 std::string notice() {
     std::lock_guard<std::mutex> lk(st().mu);
     std::string out;

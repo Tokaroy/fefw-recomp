@@ -20,9 +20,6 @@ inline 0x710180ef44
 # (`fdiv s0, s1, s0`) and the hook may replace it with the frame's real step
 inline 0x71007358b8
 inline 0x7100735934
-# ultrawide outputs wider than 3840 (runtime games/fefw/fefw_res.cpp): before the graphics object's constructor (`bl 0x6464b0`) reads the
-# seed size at x1 ({3840, 2160}: the window textures), the hook raises its width (5120x1440)
-inline 0x71018102c8
 # ultrawide (runtime games/fefw/fefw_wide.cpp, [fefw] ultrawide). The camera, UI, scissor, marker, 2D-effect and movie sites follow Kompas9's
 # MIT-licensed 3440x1440 IPS for this build (github.com/Kompas9/Switch-Game-Patches, games/Fire-Emblem-Fortunes-Weave); the picture / window
 # and off-screen indicator sites are this port's. The runtime computes every value from the output's aspect.

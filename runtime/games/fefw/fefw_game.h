@@ -74,8 +74,8 @@ void detail_install();
 std::string detail_summary();      // "" when nothing is changed
 // The render-target pool's allocator was given room past the pool ([fefw] rt_pool_overflow_mb): renders above half of a 2160p output fit.
 bool res_rt_pool_extended();
-// Shrinks an output size to what this build draws. wide ([fefw] ultrawide on) and wider than 16:9: the same shape, within 5120x2160 when
-// fefw.exe has the window-size hook site and the render-target pool has enough room past it, else within 3840x2160. Any other size: each
+// Shrinks an output size to what the runtime draws. wide ([fefw] ultrawide on) and wider than 16:9: the same shape, within 5120x2160 when
+// the render-target pool has enough room past it and raising the window size has not failed, else within 3840x2160. Any other size: each
 // side within the game's 3840x2160. Sizes that fit are left as they are.
 void res_fit_output(int* w, int* h, bool wide);
 // fefw_crowd.cpp: [fefw] npc_distance scales the hub crowd's NPC model limit, display distance and draw budget (1 = the game's own:
