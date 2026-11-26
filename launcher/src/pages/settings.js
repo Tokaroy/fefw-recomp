@@ -230,6 +230,7 @@ const TABS = [
         title: 'settings.sec.general', icon: 'sliders-horizontal', file: 'config',
         fields: [
           { id: 'minimize_on_play', type: 'toggle', label: 'settings.minimizeOnPlay.label', sec: '', key: 'minimize_on_play', def: '0' },
+          { id: 'send_reports', type: 'toggle', label: 'settings.sendReports.label', sec: '', key: 'send_reports', def: '0', hint: 'settings.sendReports.hint' },
         ],
       },
       {
@@ -299,7 +300,7 @@ export async function render(el, ctx) {
   let lsfgTimer = 0;
   const fieldCtx = { get lsfgReady() { return !!(lsfgSt && lsfgSt.layer && lsfgSt.dll); } };
   const data = await api('read_settings').catch(() => ({ game_dir: '', game: {}, controls: {}, controls_exists: false }));
-  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', runner: cfg.runner || '',
+  const files = { game: data.game, controls: data.controls, config: { repo_dir: cfg.repo_dir, game_dir: cfg.game_dir, jobs: String(cfg.jobs || 0), minimize_on_play: cfg.minimize_on_play ? '1' : '0', send_reports: cfg.send_reports ? '1' : '0', runner: cfg.runner || '',
     lsfg: cfg.lsfg ? '1' : '0', lsfg_multiplier: String(cfg.lsfg_multiplier || 2), lsfg_flow_scale: cfg.lsfg_flow_scale || '1', lsfg_performance: cfg.lsfg_performance ? '1' : '0' } };
   const exists = { game: true, controls: data.controls_exists, config: true };
   const keyOf = (f, k) => (f.file === 'config' ? k : `${f.sec}.${k}`);
@@ -739,7 +740,7 @@ export async function render(el, ctx) {
     for (const f of dirtyFields()) {
       for (const [sec, key, value] of WRITE[f.type](f, model[f.id])) {
         if (f.file === 'config') {
-          cfgNew[key] = ['minimize_on_play', 'lsfg', 'lsfg_performance'].includes(key) ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'lsfg_multiplier' ? clamp(parseInt(value, 10) || 2, 2, 4) : key === 'lsfg_flow_scale' ? String(value) : key === 'runner' ? String(value).trim() : fwd(value);
+          cfgNew[key] = ['minimize_on_play', 'send_reports', 'lsfg', 'lsfg_performance'].includes(key) ? value === '1' : key === 'jobs' ? parseInt(value, 10) || 0 : key === 'lsfg_multiplier' ? clamp(parseInt(value, 10) || 2, 2, 4) : key === 'lsfg_flow_scale' ? String(value) : key === 'runner' ? String(value).trim() : fwd(value);
         } else {
           edits.push({ file: f.file, section: sec, key, value });
         }

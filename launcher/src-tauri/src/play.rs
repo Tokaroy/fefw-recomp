@@ -273,6 +273,7 @@ pub fn start(
     runner_setting: &str,
     extra_env: Vec<(String, String)>,
     lock: crate::lock::Lock,
+    report_opts: crate::report::Options,
 ) -> Result<(), String> {
     if app.state::<PlayState>().0.lock().unwrap().state == "running" {
         return Err("The game is already running.".into());
@@ -343,7 +344,7 @@ pub fn start(
         let message = match (&wait_err, code) {
             (Some(e), _) => format!("Lost track of fefw.exe: {e}"),
             (None, Some(0)) => "fefw.exe exited normally.".to_string(),
-            (None, Some(_)) if other_fatal.is_some() => other_fatal.unwrap_or_default(),
+            (None, Some(_)) if other_fatal.is_some() => other_fatal.clone().unwrap_or_default(),
             (None, Some(4)) if cpu_fatal => match crate::cpu::build_variant() {
                 // fefw.exe was built for another processor (the folder moved, the processor changed): Set up builds the one for this
                 Some(_) => "fefw.exe stopped before the game started: it was built for a processor with features this one lacks (fefw_fatal.txt says which). Run Set up again: it builds the version of the game for this processor.".to_string(),
@@ -352,7 +353,13 @@ pub fn start(
             (None, Some(c)) => format!("fefw.exe exited with code {} (0x{:08X}).", c, c as u32),
             (None, None) => "fefw.exe was ended by the system.".to_string(),
         };
+        // Snapshot the finished run's log and crash files before Play becomes available again, so an immediate restart
+        // cannot truncate or rotate them before the background upload runs.
+        let prepared_report = crate::report::prepare(&report_opts, &dir, code, &files, other_fatal.as_deref());
         set_status(&app2, Status { state: "exited".into(), code, crashed, files, message });
+        if let Some(prepared) = prepared_report {
+            std::thread::spawn(move || crate::report::send(prepared));
+        }
         if minimize {
             if let Some(w) = app2.get_webview_window("main") {
                 let _ = w.unminimize();
