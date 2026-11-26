@@ -22,6 +22,9 @@ pnpm run build
 python3 package.py   # out/fefw-recomp-decky.zip
 ```
 
+CI runs these on every pull request and keeps the zip with the run. A release (`.github/workflows/linux-release.yml`) publishes
+`fefw-recomp-<version>-decky.zip` beside the packages, with the release's version in it (`package.py --version`).
+
 ## Install for testing
 
 Unpack the zip into Decky's plugin folder (`~/homebrew/plugins/`, which may need `sudo`) and restart the loader
