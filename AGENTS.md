@@ -39,6 +39,7 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
   ```bash
   python -m compileall -q recomp tools
   python recomp/tests/lift_workers_test.py
+  python game-build/release/object_cache_test.py
   ```
 - Oracle hash lock, as CI checks it (the files listed in `recomp/oracle/SHA256SUMS` must be unchanged):
   ```bash
