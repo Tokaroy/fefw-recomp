@@ -250,11 +250,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub's Ubuntu mirror is at times very slow (minutes for these packages), so what apt downloads is kept for later runs: a
+      # new cache each week, started from the last one. apt fetches only what the cache lacks.
+      - name: Week (names the package cache)
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-ubuntu-22.04-${{ steps.week.outputs.week }}
+          restore-keys: apt-ubuntu-22.04-
+
       - name: System packages (Tauri, AppImage)
         run: |
+          mkdir -p ~/apt-archives/partial
+          apt=(sudo apt-get -o "Dir::Cache::archives=$HOME/apt-archives" -o APT::Keep-Downloaded-Packages=true)
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+          "${apt[@]}" install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
             build-essential file
+          "${apt[@]}" autoclean   # drops the versions that have been replaced
+          # apt wrote as root; the cache is saved by the runner's user
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
 
       - uses: actions/setup-node@v4
         with:
