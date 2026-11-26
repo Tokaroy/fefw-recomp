@@ -18,6 +18,7 @@ LOADER_VARIABLES = ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH",
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "GAMESCOPE_WAYLAND_DISPLAY")
 # For the questions: with WAYLAND_DISPLAY unset a window toolkit still tries the session's wayland-0, so a name that is not there.
 NO_DISPLAY = {"WAYLAND_DISPLAY": "fefw-plugin-no-display"}
+QUESTIONS = ("--status", "--check-update")  # these do not listen for "cancel"
 LINE_LIMIT = 4 * 1024 * 1024  # the release notes come as one line
 QUERY_TIMEOUT = 120.0
 # The shader preparation runs the game. A display that does not work can leave it waiting for ever, with nothing said.
@@ -74,9 +75,11 @@ class Command:
         self.process = None
         self.timed_out = False
         self._cancelled = False
+        self._starting = None  # an event, set once the program has started or failed to
 
     async def run(self, on_progress=None, timeout=None, prepare_timeout=PREPARE_TIMEOUT):
         """The command's end line. LauncherError when it gives none."""
+        self._starting = asyncio.Event()
         try:
             self.process = await asyncio.create_subprocess_exec(
                 str(self.install / APPIMAGE), self.argument, cwd=str(self.install), env=self.env, limit=LINE_LIMIT,
@@ -84,6 +87,8 @@ class Command:
                 start_new_session=True)
         except OSError as e:
             raise LauncherError(f"Cannot start the launcher: {e}") from e
+        finally:
+            self._starting.set()
         if self._cancelled:
             self.cancel()
         errors = deque(maxlen=5)
@@ -168,20 +173,26 @@ class Command:
                 pass
 
     async def stop(self, grace=3.0):
-        """Cancel, and end the launcher if it does not stop. An update is never ended: it takes no cancel while it moves the new
-        files into place, and stopping it there would leave a mix of two releases."""
+        """Cancel, and end the launcher if it does not stop (a question at once: it would not). An update is never ended: it takes
+        no cancel while it moves the new files into place, and stopping it there would leave a mix of two releases."""
         self.cancel()
+        if self._starting:  # a program still being started has to be there to be stopped
+            try:
+                await asyncio.wait_for(self._starting.wait(), grace)
+            except asyncio.TimeoutError:
+                return
         if not self.process or self.process.returncode is not None:
             return
         try:
-            await asyncio.wait_for(self.process.wait(), grace)
+            await asyncio.wait_for(self.process.wait(), 0 if self.argument in QUESTIONS else grace)
         except asyncio.TimeoutError:
             if self.argument == "--update":
                 self._leave()
                 return
             try:
                 os.killpg(self.process.pid, 9)
-            except OSError:
+                await asyncio.wait_for(self.process.wait(), 1)  # gone when this returns
+            except (OSError, asyncio.TimeoutError):
                 pass
 
     def _leave(self):
@@ -220,6 +231,8 @@ class Controller:
         self.prepare_timeout = PREPARE_TIMEOUT
         self._command = None  # the job's
         self._running = set()  # every command under way, the panel's questions too
+        # the latest status read and update check: an earlier one that answers late says nothing
+        self._status_number = self._check_number = 0
         self._task = None
         self._cancel = False
         self._closing = False
@@ -311,6 +324,8 @@ class Controller:
             return False
         self.error = None
         folder = self.install_dir
+        self._status_number += 1
+        number = self._status_number
         try:
             # with no display: a launcher too old for these commands then cannot open its window, and ends instead
             try:
@@ -320,10 +335,11 @@ class Controller:
             if status.get("state") != "done":
                 raise LauncherError(status.get("message") or "The status could not be read.")
         except LauncherError as e:
-            self._forget(folder)
-            self.error = str(e)
+            if number == self._status_number:
+                self._forget(folder)
+                self.error = str(e)
             return False
-        if folder != self.install_dir:
+        if number != self._status_number or folder != self.install_dir:
             return False
         self.status = status
         return True
@@ -333,17 +349,19 @@ class Controller:
         if self._closing:
             return
         folder = self.install_dir
+        self._check_number += 1
+        number = self._check_number
         try:
             check = await self._run(self._new("--check-update", NO_DISPLAY), timeout=QUERY_TIMEOUT)
             if check.get("state") != "done":
                 raise LauncherError(check.get("message") or "The update check failed.")
         except LauncherError as e:
-            if folder == self.install_dir:
+            if number == self._check_number and folder == self.install_dir:
                 self.update = None  # what an earlier check said may no longer hold
                 if not self.job:
                     self.error = str(e)
             return
-        if folder == self.install_dir:
+        if number == self._check_number and folder == self.install_dir:
             self.update = check
 
     def _forget(self, folder):
@@ -361,6 +379,9 @@ class Controller:
             raise LauncherError("The install's status has not been read yet.")
         self._cancel = False
         self.result = self.error = None
+        # what was asked before the job describes the install before it
+        self._status_number += 1
+        self._check_number += 1
         self._started = time.monotonic()
         self.job = {"kind": kind, "step": kind, "phase": None, "message": "Starting", "fraction": None, "cancelling": False}
         self._task = asyncio.ensure_future(self._job(kind))

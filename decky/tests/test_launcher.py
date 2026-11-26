@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py_modules"))
 import fefw_launcher as fl  # noqa: E402
@@ -205,6 +206,35 @@ class Jobs(Case):
         await self.finish()
         self.assertEqual(self.controller.update["latest"]["version"], "1.1.0")
 
+    async def test_a_slow_check_from_before_does_not_replace_a_newer_answer(self):
+        update = [["end", {"state": "done", "rebuild": False, "message": "Installed."}]]
+        old = dict(CHECK, latest={"version": "1.1.0"})
+        new = dict(CHECK, newer=False)
+        # the first job's check is slow and still names the release that the second job installs
+        await self.ready(update=update)
+        self.write_plan(update=update, check_update=[["sleep", 1.5], ["end", old]])
+        self.controller.start("update")
+        await self.until(lambda: self.done)
+        first = self.controller._task
+        await self.until(lambda: [r["argument"] for r in self.runs()].count("--check-update") == 2)
+        self.write_plan(update=update, check_update=[["end", new]])
+        self.controller.start("update")
+        await self.finish()
+        await asyncio.wait_for(first, 10)
+        self.assertEqual((self.controller.update["newer"], self.controller.error), (False, None))
+
+    async def test_a_status_asked_before_a_job_does_not_replace_the_jobs(self):
+        done = [["end", {"state": "done", "message": "Ready to play."}]]
+        await self.ready(rebuild=done)
+        self.write_plan(status=[["sleep", 1.5], ["end", dict(STATUS, version="0.9.0")]], rebuild=done)
+        asked = asyncio.ensure_future(self.controller.refresh())
+        await self.until(lambda: [r["argument"] for r in self.runs()].count("--status") == 2)
+        self.write_plan(rebuild=done)
+        self.controller.start("rebuild")
+        await self.finish()
+        await asyncio.wait_for(asked, 10)
+        self.assertEqual(self.controller.status["version"], "1.0.0")
+
     async def test_progress_is_shown_and_cancel_reaches_the_launcher(self):
         await self.ready(update=[["progress", {"phase": "download", "done": 1, "total": 4, "message": "Downloading"}],
                                  ["await-cancel", None]])
@@ -259,17 +289,40 @@ class Jobs(Case):
 
 
 class Closing(Case):
+    # as the real launcher's, these questions do not listen for "cancel"
+    def alive(self):
+        return [r["pid"] for r in self.runs() if Path(f"/proc/{r['pid']}").exists()]
+
     async def test_a_question_under_way_is_stopped_and_nothing_new_starts(self):
-        self.write_plan(status=[["await-cancel", None]])
+        self.write_plan(status=[["sleep", 30]])
         self.controller.set_install(str(self.install))
         asked = asyncio.ensure_future(self.controller.refresh())
         await self.until(lambda: (self.install / "runs.jsonl").exists() and self.runs())
-        pid = self.runs()[0]["pid"]
+        started = time.monotonic()
         await asyncio.wait_for(self.controller.close(), 5)
+        self.assertLess(time.monotonic() - started, 2)  # not asked politely first
         await asyncio.wait_for(asked, 5)
-        await self.until(lambda: not Path(f"/proc/{pid}").exists())
+        await self.until(lambda: not self.alive())
         await self.controller.refresh()
         self.assertEqual(len(self.runs()), 1)
+
+    async def test_a_question_still_starting_is_stopped_too(self):
+        self.write_plan(status=[["sleep", 30]])
+        self.controller.set_install(str(self.install))
+        create, started = asyncio.create_subprocess_exec, []
+
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(0.2)  # close() comes while the program is being started
+            started.append(await create(*args, **kwargs))
+            return started[-1]
+
+        with mock.patch("asyncio.create_subprocess_exec", slow):
+            asked = asyncio.ensure_future(self.controller.refresh())
+            await asyncio.sleep(0.05)
+            await asyncio.wait_for(self.controller.close(), 5)
+        self.assertEqual(len(started), 1)
+        self.assertIsNotNone(started[0].returncode)  # over when close() returns
+        await asyncio.wait_for(asked, 5)
 
     async def test_an_update_that_does_not_stop_is_left_to_finish(self):
         await self.ready(update=[["progress", {"phase": "install", "done": 0, "total": 0, "message": "Installing"}], ["sleep", 6]])
