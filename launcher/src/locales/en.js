@@ -236,7 +236,7 @@ export const en = {
     'settings.srTier.highQuality': 'High Quality',
     'settings.upscaler.label': 'Upscaler',
     'settings.upscaler.short': 'TAAU works on any PC; the others need their vendor files.',
-    'settings.upscaler.hint': "Stands in for the console's DLSS. TAAU needs no extra files. FSR 3 needs AMD's files in upscalers/fsr; XeSS needs Intel's libxess.dll in upscalers/xess and the Visual C++ 2015-2022 runtime; DLSS needs NVIDIA's (see the README). If a file is missing the game says which in fefw.log and uses TAAU.",
+    'settings.upscaler.hint': "Stands in for the console's DLSS. TAAU needs no extra files. FSR 3 needs AMD's files in upscalers/fsr; XeSS needs Intel's libxess.dll in upscalers/xess and the Visual C++ 2015-2022 runtime; DLSS needs NVIDIA's. Upscaler files, further down, downloads them. If a file is missing the game says which in fefw.log and uses TAAU.",
     'settings.upscaler.taau': 'Built-in temporal (TAAU)',
     'settings.upscaler.dlss': 'NVIDIA DLSS (RTX; needs the Streamline files)',
     'settings.upscaler.fsr3': "AMD FSR 3 upscaling (any GPU; needs AMD's files)",
