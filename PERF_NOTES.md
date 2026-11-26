@@ -1,6 +1,6 @@
 # Performance Notes (`fefw-recomp`)
 
-Current performance status, shipped optimizations, key toggles, deferred ideas, and open targets as of **v0.2.13+** (late Nov 2026).
+Current performance status, shipped optimizations, key toggles, deferred ideas, and open targets as of **v0.3.1+** (late Nov 2026).
 
 - **Historical v0.2.0 lab log:** [docs/PERF_NOTES_0.2.0.md](docs/PERF_NOTES_0.2.0.md) (archived chronological notes from `stephenjayakar/fefw-recomp` through v0.2.0 / 14 Nov).
 - **Benchmarking & A/B harness:** [docs/PERF_ROUTES.md](docs/PERF_ROUTES.md) (`tools/perf/ab_run.py`, `perf_report.py`, `record_to_route.py`).
@@ -58,7 +58,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 
 ## 3. NVN Render-Thread Replay & GPU Overlap (`runtime/src/gfx/nvn/`)
 
-### Shipped Optimizations (v0.2.0 → v0.2.13+)
+### Shipped Optimizations (v0.2.0 → v0.3.1+)
 - **GPU/CPU overlap & submission splitting:**
   - `[nvn] split_submit_ms = 4` (default on as of `0e10804`, `split_min_draws = 16`): flushes recorded commands at render-pass boundaries mid-submission so the GPU starts work while the render thread keeps recording.
   - `[nvn] submit_batch = auto` defaults to `1` on Windows and Wine+NVIDIA (`0e10804`), keeping `frame` on non-NVIDIA Wine.
@@ -74,7 +74,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
   - **Barriers & counters:** batched `ReportCounter`/`ReportValue`/`SignalEvent` writes, tracked texture copy barriers, narrowed transfer barriers (`742d778`).
 
 ### Experimental / Non-Default
-- **`[nvn] replay_threads = 2` (`nvn_cmdq.cpp`, default `1`):** Offloads `vkCmd*` and `vkUpdateDescriptorSets` to a dedicated `nvn-rec` worker thread (`replay_batch = 16`). Measured 16.8 → 13.6–14.2 ms render-thread work p50 on RTX 3080 at 4K in v0.2.0; needs a fresh A/B on v0.2.13+ (especially after `0e10804` replay optimizations) before considering an `auto` default.
+- **`[nvn] replay_threads = 2` (`nvn_cmdq.cpp`, default `1`):** Offloads `vkCmd*` and `vkUpdateDescriptorSets` to a dedicated `nvn-rec` worker thread (`replay_batch = 16`). Measured 16.8 → 13.6–14.2 ms render-thread work p50 on RTX 3080 at 4K in v0.2.0; needs a fresh A/B on v0.3.1+ (especially after `0e10804` replay optimizations) before considering an `auto` default.
 
 ---
 
@@ -88,9 +88,10 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
   - Lock-free `Region::has_written` + global `write_seq()` and `O(active)` `g_tv_mirrors`/`g_sig_mirrors`/`g_want_mirrors` lists in `mirror_begin_submit()`.
   - Sequential write-watch fault coalescing (`8685a6a`) and elimination of repeated compute-out guard faults (`273f7ad`).
   - Popcount valid-page summary (`write_watch::count_valid`), word-wise `used`/`gpu_inv` bitmaps, 600-present aging for `sig_pages`, `PoolGpu::has_copy_chunk` fast path, inline `page_valid`/`range_valid`, removal of hot-path `LOCK XADD` atomics.
-- **VRAM residency & pressure (`ebdb5a1`, `f1c23e6`, `4a6dce9`, `e4c6ce9`):**
+- **VRAM residency & pressure (`ebdb5a1`, `f1c23e6`, `4a6dce9`, `e4c6ce9`, `676819fb`, `83538ad6`):**
   - Proactive/on-demand LRU mirror chunk eviction (`[nvn] pool_mirror_evict_idle_s = 30`) and budgeted paced mirror/ASTC bursts (`273f7ad`, `f1c23e6`) to prevent post-Dagsion slowdowns and VRAM thrash.
   - `tex_residency_tick()` triggers on raw OS VRAM usage (`max(residency_percent + 5, 85)%`) so VMA fragmentation doesn't stall demotions; unified-memory iGPU & Wine `PagefileUsage` fixes (`d513153`, `e4c6ce9`).
+  - Smaller VMA preferred block size on small heaps (`9a02cd1b`, `676819fb`), finalized textures borrowing rather than retaining live texture images (fixes ~7 GB shadow-map VRAM leaks, `83538ad6`), and `texprep` format-mismatch re-queue loop / BC5 rewrite remake fixes (`3243b466`, `27933b14`, `0a216d46`).
   - `[memory] scale_limits = auto` (`4a6dce9`): scales caches/budgets on ≤20 GiB RAM or ≤8.5 GiB VRAM systems.
 
 ---
@@ -101,7 +102,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 - **Async pipeline & shader compilation:**
   - `fefw.exe --prepare-shaders` (`0e1afa2`, `37dfcfe`): precompiles shader parts at Setup.
   - `[nvn] compute_async = prebuild`, `prewarm_wait = false`, `gpl_burst_threads = 2`, `gpl_link_cache = false`: cut cold-cache battle worst frame from 142 ms → 44 ms.
-  - Frame-time-paced background speculative compiles (`compile_pace_after_ms = 20`, `compile_pace_ms = 8`) and `[nvn] gpl_cold = auto` (off on ≤8 hardware threads) (`ed1af52`).
+  - Frame-time-paced background speculative compiles (`compile_pace_after_ms = 20`, `compile_pace_ms = 8`), `[nvn] gpl_cold = auto` (off on ≤8 hardware threads) (`ed1af52`), and async GPL deferral kept active across hitches instead of falling back to blocking compiles (`8a11afb1`, `b050dee9`).
 - **ASTC GPU transcoding:** Enabled by default on Wine/RADV AMD iGPUs (`5dfc016`); slow-GPU sliding-window handoff (`AstcRateWindow`) and `[gfx] astc_gpu_cap_ms` (`4a6dce9`) protect against TDRs.
 
 ---
@@ -111,6 +112,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 - **Kernel & scheduler (`e5fc38d`):**
   - `[kernel] wait_spin = auto`: enables 30 µs wait/lock spinning on `main` and `Basic_Worker` on ≥8 physical cores (sleeping waits kept on ≤6-core CPUs / Steam Deck).
   - `[sched] starvation_lean = true`: cuts starvation guard CPU overhead from ~88 ms/s → ~24 ms/s.
+- **RomFS cache & loading pacing:** `[fs] romfs_cache` is enabled by default (`b0d45059`, cleared on Set up); the frame limiter now stays active during loading screens (`735ee79f`).
 - **Async logging (`ab56dd1`, `efc9a79`):** `[log] async` background writer (bounded 4 MiB queue) and `[log] repeat_limit` per-call-site throttling.
 - **AV1 Cutscenes (`7c832b0`, `b14478f`):** `dav1d` built with NASM x86-64 AVX2/AVX-512 assembly (15.8 → 69.7+ fps offline decode; runtime warns if built C-only) plus zero-copy NV12 delivery and frame pacing (`#40`).
 
@@ -122,6 +124,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 - **Built-in runtime telemetry (`runtime/docs/CONFIG.md`):**
   - `[prof] replay_stats = N`, `[prof] gpu_stats = N`, `[prof] gpu_passes = true` (per-pass GPU timestamps, profiling only), `[nvn] out_prog_ab = 1`.
   - `[prof] sample_offsets` (supports plain function names as of `ab56dd1`).
+  - Frame-budget gauge tracks game-thread guest sync, IPC, and `nvnQueueFinish` waits (`53927504`), prewarm waits are timed (`b050dee9`), and DLSS-G Reflex sleep is excluded from render-work timing with fixed hot-copy bind counts (`c155dac6`).
   - GPU breadcrumbs around residency ticks, ASTC transcodes, and texture restores (`5a1617c`, `35d810f`).
   - `tools/perf/hitch_report.py`, `hitch_detail.py`, `prof_hitch.py`.
 
@@ -131,7 +134,7 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 
 Ordered roughly by risk-adjusted payoff:
 
-1. **Fresh v0.2.13+ baseline profile:** Re-profile Dagsion hub/street and battle maps on current `master` to see the new main-thread vs render-thread vs GPU balance after all v0.2.1–v0.2.13 NVN work.
+1. **Fresh v0.3.1+ baseline profile:** Re-profile Dagsion hub/street and battle maps on current `master` to see the new main-thread vs render-thread vs GPU balance after all v0.2.1–v0.3.1 NVN work.
 2. **Validate & enable `FEFW_HLE_CULL`:** Native culling replacements (`0x71019786c0`, `0x7101980580`) are already implemented in [fefw_hle.cpp](game-build/fefw/src/fefw_hle.cpp) and include a verification mode (`FEFW_HLE_CULL=2`). Verify zero mismatches across gameplay and A/B measure worker/main-thread savings (especially `Basic_Worker` where `f_7101980580` was ~8–12% of samples).
 3. **Validate & enable `opt.py` `'tregs'` (+ check `'loopbar'`):** ObeliskChamber already ships `opt = ('flags', 'vstore', 'tregs', 'loopbar')` by default, and `4a6dce9` already ported their non-ABI branch-sync fix (`b8d0038` / `opt_tregs_test.py`). Check/port `'loopbar'` (`f481d3d`) to prevent polling-loop hangs, then A/B test with `NXRECOMP_OPT=flags,vstore,tregs` (~2–3.5% main CPU win; note build-stamp re-lift and fresh PGO profile impact).
 4. **Re-test `[nvn] replay_threads = 2`:** Now that render-thread replay has been heavily optimized (`c027497`, `0e10804`), A/B test `replay_threads = 2` across NVIDIA/AMD/Windows/Proton to decide whether it still yields a win worth making `auto` or whether it's redundant.
