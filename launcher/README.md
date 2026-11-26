@@ -9,6 +9,8 @@ own setup steps on your PC (see docs/BUILDING.md), writes `fefw.ini` in a run fo
 - Setup state is read from what exists on disk (the copied ExeFS, the lifted libraries, `fefw.exe`, the shader cache and its
   `work/shaders/setup.json`), so a paused setup continues where it stopped. The full log is `work/setup.log`.
 - The icon is drawn by `icon/make_icon.py` (no outside artwork); `npx tauri icon icon/icon.png -o src-tauri/icons` makes the sizes.
+  `icon/make_steam_art.py` draws the Steam library art from it into `src-tauri/steam-art/`, which **Add to Steam** puts beside the
+  shortcut, leaving any picture the account already has for it.
 
 ## Without the window
 
@@ -23,6 +25,7 @@ the install the launcher is in, with the settings the window saved (`launcher.js
 | `--rebuild` | The Set up button: builds whatever is not done, such as the game after an update. | `message` |
 | `--settings` | Lists the settings of `recomplauncher.json` that are a pick from a list, with what `fefw.ini` holds. | `settings` (`id`, `label`, `help`, `current`: a choice's label, null for something else; `choices`: `label`, `available`, `download`: an upscaler whose files have to be fetched first, else null), `consent` (the text to accept, by download) |
 | `--set <id>=<choice>` | Writes that choice into `fefw.ini`. The game reads it at its next start. | `message` |
+| `--add-to-steam [--before-setup] [--close-steam]` | The Play page's **Add to Steam** (Linux), with the library art. Refused while Steam runs unless `--close-steam`, which shuts it down and starts it again. `--before-setup`: also when `fefw.exe` is not built yet. | `message`, `steam_shortcuts` |
 | `--fetch-upscaler <fsr or xess> --accept-licence` | Downloads the vendor's files, as the Settings page's button does. Only for a player who was shown the `consent` text and accepted it. | `message` |
 
 - Every line on stdout is a JSON object with `event` and `api` (this interface's version, 1). `--update`, `--rebuild` and `--fetch-upscaler` print
