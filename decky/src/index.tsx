@@ -36,6 +36,7 @@ interface State {
 }
 
 const getState = callable<[], State>("get_state");
+const watch = callable<[], State>("watch"); // the same, looking again at an install seen busy
 const setInstall = callable<[folder: string], State>("set_install");
 const refresh = callable<[], State>("refresh");
 const start = callable<[kind: "update" | "rebuild"], State>("start");
@@ -117,7 +118,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
       show(s);
       if (s.install_dir && !s.job) check();
     });
-    const timer = setInterval(() => getState().then(show), 1000);
+    const timer = setInterval(() => watch().then(show), 1000);
     return () => {
       alive.current = false;
       clearInterval(timer);
