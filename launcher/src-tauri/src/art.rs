@@ -2,8 +2,8 @@
 //! The game's Steam library art (steam-art/, drawn from the project's own icon by icon/make_steam_art.py), put beside the shortcut
 //! Add to Steam makes: Steam reads a shortcut's pictures from the account's config/grid, by the shortcut's id.
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 /// What follows the id in the file's name, and the picture.
 const ART: [(&str, &[u8]); 5] = [
@@ -27,12 +27,22 @@ pub fn apply(config: &Path, id: u32) -> Option<PathBuf> {
         let stem = format!("{id}{suffix}");
         let ours = grid.join(format!("{stem}.png"));
         let there = FORMATS.iter().any(|f| grid.join(format!("{stem}.{f}")).exists());
-        let written = !there && fs::write(&ours, picture).is_ok();
+        let written = !there && save(&ours, picture).is_ok();
         if suffix == "_icon" && (written || fs::read(&ours).is_ok_and(|d| d == picture)) {
             icon = Some(ours);
         }
     }
     icon
+}
+
+/// Whole or not at all: a part of a picture under its own name would count as there, and so never be written again.
+fn save(path: &Path, picture: &[u8]) -> io::Result<()> {
+    let part = path.with_extension("fefw-part");
+    let saved = fs::write(&part, picture).and_then(|()| fs::rename(&part, path));
+    if saved.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    saved
 }
 
 #[cfg(test)]
@@ -56,6 +66,22 @@ mod tests {
         }
         // again: the same files, and the icon is still known as the launcher's
         assert_eq!(apply(&d, 2_242_939_390), Some(icon));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// /dev/full stands in for a disk with no space left.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_picture_that_could_not_be_written_is_written_the_next_time() {
+        let d = tmp("full");
+        let grid = d.join("grid");
+        fs::create_dir_all(&grid).unwrap();
+        std::os::unix::fs::symlink("/dev/full", grid.join("7_hero.fefw-part")).unwrap();
+        apply(&d, 7);
+        assert!(!grid.join("7_hero.png").exists() && grid.join("7p.png").is_file());
+        assert!(fs::symlink_metadata(grid.join("7_hero.fefw-part")).is_err(), "the part file is removed");
+        apply(&d, 7);
+        assert!(fs::read(grid.join("7_hero.png")).unwrap().starts_with(b"\x89PNG"));
         let _ = fs::remove_dir_all(&d);
     }
 
