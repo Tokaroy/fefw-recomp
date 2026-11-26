@@ -80,6 +80,21 @@ if(FEFW_RT_DLL)
     # fefw_rt.pdb. The release publishes it beside the package (not in it) to turn crash reports' fefw_rt.dll+0x... into functions and lines
     # (tools/symbolize.py). Set before the runtime's targets exist: CMP0141 (3.25) reads it when a target is made. Codegen is unchanged.
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+    # A release package says so when a newer release is out (runtime include/nxrt/update_check.h): its version is the launcher's, and
+    # FEFW_UPDATE_REPO / FEFW_BUILD_ID mean what they do for the launcher (update.rs, docs/BUILDING.md). A build from source never checks.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${FEFW_ROOT}/launcher/src-tauri/tauri.conf.json")
+    file(READ "${FEFW_ROOT}/launcher/src-tauri/tauri.conf.json" _fefw_tauri)
+    string(JSON _fefw_version GET "${_fefw_tauri}" version)
+    set(NXRT_UPDATE_REPO "aidankinzett/fefw-recomp")
+    if(NOT "$ENV{FEFW_UPDATE_REPO}" STREQUAL "")
+        set(NXRT_UPDATE_REPO "$ENV{FEFW_UPDATE_REPO}")
+    endif()
+    set(NXRT_RELEASE_VERSION "${_fefw_version}")
+    set(NXRT_RELEASE_BY_TAG OFF)
+    if(NOT "$ENV{FEFW_BUILD_ID}" STREQUAL "")
+        set(NXRT_RELEASE_VERSION "$ENV{FEFW_BUILD_ID}")
+        set(NXRT_RELEASE_BY_TAG ON)
+    endif()
 endif()
 add_subdirectory("${FEFW_RUNTIME_DIR}" runtime)
 

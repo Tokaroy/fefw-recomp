@@ -187,6 +187,7 @@ fn paths(cfg: &Config) -> Result<setup::Paths, String> {
         game_dir,
         package: package_tools(),
         lang: cfg.lang.clone(),
+        skip_update_check: cfg.skip_update_check,
     })
 }
 
@@ -231,7 +232,15 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
         config.dump_dir = load_saved_config(&app).dump_dir;
     }
     // a page holding an older configuration must not undo a language switch made since it loaded
-    config.lang = load_saved_config(&app).lang;
+    let saved = load_saved_config(&app);
+    config.lang = saved.lang;
+    // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
+    // switch stays unsaved and can be made again.
+    if config.skip_update_check != saved.skip_update_check {
+        if let Some(repo) = repo_of(&config) {
+            settings::set_update_check(&game_dir_of(&config, &repo), !config.skip_update_check)?;
+        }
+    }
     store_config(&app, &config)
 }
 
@@ -267,11 +276,15 @@ fn refresh_package_locales() {
     }
 }
 
-/// The run folder's language tables and [gfx] ui_language, brought in step with the launcher (settings.rs).
+/// The run folder's language tables, [gfx] ui_language and an update check turned off, brought in step with the launcher (settings.rs).
 fn sync_run_folder(cfg: &Config) -> Result<(), String> {
     // no checkout or package found: no run folder to keep in step
     let Some(repo) = repo_of(cfg) else { return Ok(()) };
-    settings::apply_menu_language(&game_dir_of(cfg, &repo), &repo, package_tools().as_deref(), &cfg.lang)
+    let game_dir = game_dir_of(cfg, &repo);
+    // each is tried, whether or not the other fails
+    let opt_out = settings::apply_update_opt_out(&game_dir, cfg.skip_update_check);
+    let language = settings::apply_menu_language(&game_dir, &repo, package_tools().as_deref(), &cfg.lang);
+    opt_out.and(language)
 }
 
 #[tauri::command]
@@ -1073,7 +1086,7 @@ fn main() {
             // as the run folder takes its tables from there
             refresh_package_locales();
             if let Err(e) = sync_run_folder(&load_config(app.handle())) {
-                eprintln!("[locales] {e}");
+                eprintln!("[run folder] {e}");
             }
             Ok(())
         })

@@ -174,6 +174,35 @@ pub fn apply_menu_language(dir: &Path, repo: &Path, package: Option<&Path>, lang
     Ok(())
 }
 
+/// An update check turned off in the launcher holds for the game's own ([update] check) while fefw.ini says nothing about it; what it
+/// says (the switch here, or the F1 menu) stays. True when `ini` changed.
+fn sync_update_opt_out(ini: &mut Ini, skip: bool) -> bool {
+    if !skip || ini.get("update", "check").is_some() {
+        return false;
+    }
+    ini.set("update", "check", "0");
+    true
+}
+
+/// The same for a fefw.ini that is there, when the launcher opens: an opt-out made before the game had a check of its own.
+pub fn apply_update_opt_out(dir: &Path, skip: bool) -> Result<(), String> {
+    let path = dir.join(GAME_INI);
+    let Some(mut ini) = load(&path) else { return Ok(()) };
+    if sync_update_opt_out(&mut ini, skip) {
+        write_atomic(&path, &ini.to_text())?;
+    }
+    Ok(())
+}
+
+/// The launcher's "Check for updates at start (launcher and game)" was switched: [update] check follows. A fefw.ini that is not there
+/// yet stays so (Set up writes it, with an opt-out).
+pub fn set_update_check(dir: &Path, on: bool) -> Result<(), String> {
+    let path = dir.join(GAME_INI);
+    let Some(mut ini) = load(&path) else { return Ok(()) };
+    ini.set("update", "check", if on { "1" } else { "0" });
+    write_atomic(&path, &ini.to_text())
+}
+
 /// Writes fefw.ini's paths (kept: every other key, and a save folder the player chose). Used by setup and before every Play.
 /// The first time, it also picks an output size for the screen; the answer is then a line for the setup log.
 pub fn ensure_play_paths(dir: &Path, p: &Paths) -> Result<Option<String>, String> {
@@ -195,6 +224,7 @@ fn ensure_play_paths_on(dir: &Path, p: &Paths, screen: impl FnOnce() -> Option<(
     let _ = fs::create_dir_all(p.mods());
     install_locales(dir, &p.repo, p.package.as_deref());
     changed |= sync_menu_language(dir, &mut ini, &p.lang);
+    changed |= sync_update_opt_out(&mut ini, p.skip_update_check);
     for (s, k, v) in owned(p) {
         if ini.get(s, k).unwrap_or_default().replace('\\', "/") != v {
             ini.set(s, k, &v);
@@ -250,11 +280,39 @@ mod tests {
             game_dir: game.to_path_buf(),
             package: None,
             lang: String::new(),
+            skip_update_check: false,
         }
     }
 
     fn output_of(game: &Path) -> Option<String> {
         load(&game.join(GAME_INI)).unwrap().get("fefw", "output")
+    }
+
+    #[test]
+    fn update_check_follows_the_launcher() {
+        let game = tmp("update-check");
+        let p = Paths { skip_update_check: true, ..paths_with(&game, &game) };
+        let check = || load(&game.join(GAME_INI)).unwrap().get("update", "check");
+        // no ini yet: neither the sync nor the switch makes one
+        apply_update_opt_out(&game, true).unwrap();
+        set_update_check(&game, false).unwrap();
+        assert!(!game.join(GAME_INI).exists());
+        // Set up writes the opt-out into the first ini
+        ensure_play_paths_on(&game, &p, || None).unwrap();
+        assert_eq!(check().as_deref(), Some("0"));
+        // turned on again in the F1 menu: the launcher's older opt-out does not undo it
+        fs::write(game.join(GAME_INI), "[update]\ncheck = 1\n").unwrap();
+        apply_update_opt_out(&game, true).unwrap();
+        ensure_play_paths_on(&game, &p, || None).unwrap();
+        assert_eq!(check().as_deref(), Some("1"));
+        // the switch writes either way; with the check on, nothing is added to an ini without the key
+        set_update_check(&game, false).unwrap();
+        assert_eq!(check().as_deref(), Some("0"));
+        set_update_check(&game, true).unwrap();
+        assert_eq!(check().as_deref(), Some("1"));
+        fs::write(game.join(GAME_INI), "[fs]\nexefs = old\n").unwrap();
+        apply_update_opt_out(&game, false).unwrap();
+        assert_eq!(check(), None);
     }
 
     #[test]

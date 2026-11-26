@@ -52,6 +52,7 @@
 #include "nxrt/haptic.h"
 #include "nxrt/platform.h"
 #include "nxrt/render_status.h"
+#include "nxrt/update_check.h"
 #include "play_selftest.h"   // play::exit_process (Quit game)
 #include "play_types.h"
 #include "play_ui.h"
@@ -118,6 +119,7 @@ constexpr IniKey kIni[] = {
     {"play", "log_status", "0", Norm::Bool, true, "play status log"},
     {"input", "jc2_mouse", "auto", Norm::Text, false, "mouse controls"},
     {"diag", "hitch_summary_s", "10", Norm::Number, true, "frame summary log"},
+    {"update", "check", "1", Norm::Bool, false, "update check"},
 };
 
 const IniKey* ini_key(const char* sec, const char* key) {
@@ -1365,6 +1367,18 @@ void game_page(UiHost& host, Menu& m) {
         ini_combo_row(m, *ini_key("media", "movies"), "Movies", "The game's movies are decoded on the CPU (dav1d). Skip makes each one end at once, as a skip does.",
                       kNames, kVals, 2);
         end_rows();
+    }
+    if (!update::current_version().empty()) {   // a release package; a build from source never checks
+        section("Updates");
+        if (begin_rows("upd")) {
+            constexpr const char* kNames[] = {"Off", "On"};
+            constexpr const char* kVals[] = {"0", "1"};
+            ini_combo_row(m, *ini_key("update", "check"), "Check for updates",
+                          "Asks GitHub once at start whether a newer release is out, and says so. Nothing is downloaded: the launcher installs updates.",
+                          kNames, kVals, 2);
+            end_rows();
+        }
+        update::start();   // turned on just now (it runs once, and not at all while off)
     }
     section("Files");
     ImGui::TextDisabled(tr("Game settings: %s"), config_file_path().empty() ? tr("(none)") : config_file_path().c_str());
