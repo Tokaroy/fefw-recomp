@@ -324,7 +324,7 @@
         {
             "id": "upscaler",
             "label": "Upscaler",
-            "help": "TAAU needs no extra files. The others need their DLLs in the upscalers folder (see the README); if one is missing the game falls back to TAAU.",
+            "help": "TAAU needs no extra files. The others need their vendor's DLLs: download them in fefw-launcher (Settings > Graphics) or see docs/UPSCALERS.md on GitHub. If one is missing the game falls back to TAAU.",
             "group": "Picture",
             "defaults": {
                 "dlss/upscaler": "taau"
