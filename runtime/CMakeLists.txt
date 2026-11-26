@@ -31,6 +31,12 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(/W3 -Wno-unused-parameter -Wno-missing-field-initializers -Wno-cast-function-type-mismatch
                         -Wno-cast-function-type-strict -Wno-language-extension-token)
+    # CMPXCHG16B. MSVC's <atomic> gives all its functions target("cx16") under clang on x64: without the flag clang may not inline
+    # them into code that lacks it, and every std::atomic load, store or add becomes a call ("conflicting target features"). Both
+    # builds of the game code need the instruction anyway.
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64")
+        add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mcx16>)
+    endif()
 endif()
 add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0A00)
 
