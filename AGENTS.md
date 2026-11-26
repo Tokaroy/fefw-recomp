@@ -49,7 +49,9 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
 ### Runtime on Linux (clang-cl cross-build, tests under Wine)
 
 The runtime is Windows-only, but `clang-cl` and `lld-link` can build it against an MSVC sysroot (msvc-wine), so a missing `cl` does
-not mean it cannot be built. Run a test group with `WINEDEBUG=-all wine <build>/nxrt_tests.exe <group>`.
+not mean it cannot be built. Run a test group with
+`WINEDEBUG=-all WINEDLLOVERRIDES=winedbg.exe=d wine <build>/nxrt_tests.exe <group>`: without the override, a test that crashes opens
+a Wine window that someone has to dismiss.
 
 - `NXRT_DEPS_DIR` defaults to `$LOCALAPPDATA/nxrt/deps`, which becomes `/nxrt/deps` on Linux: set it.
 - Passing `-DCMAKE_CXX_FLAGS` drops CMake's default `/EHsc`: add it back, or every `try` and `throw` fails.
