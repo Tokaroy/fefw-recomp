@@ -1406,6 +1406,7 @@ constexpr PhaseRow kPhases[] = {
     {kHpGameSvc, "Game thread: system calls", 0},
     {kHpGameIpc, "service requests", 1},
     {kHpGameWait, "waits and sleeps", 1},
+    {kHpGameGuestSync, "Game thread: guest sync / spin waits", 0},
     {kHpFaults, "Write-watch faults (all threads)", 0},
     {kHpPoolImport, "Memory pool imports", 0},
 };

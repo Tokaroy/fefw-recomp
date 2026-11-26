@@ -1260,6 +1260,7 @@ uint64_t last_serial() { return g ? g->reserved.load() : g_idle_serial.load(); }
 
 void finish() {
     if (!g) return;
+    nxrt::HitchTimer ht(nxrt::kHpGameSyncWait);
     run_on_render_thread([] {
         wait_serial_blocking(g->submitted);
         retire();
