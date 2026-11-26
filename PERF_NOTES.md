@@ -20,6 +20,15 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
   - `GFX_Worker0-4`: ~42% lifted code (`f_7100a7c620`), rest is NVN command recording.
 - **Render thread (NVN → Vulkan replay):** CPU-bound on descriptor set building (`build_set`), draw/buffer binding & compute-out overlap tracking, texture preparation, and Vulkan driver calls (`vkCmd*`, `vkUpdateDescriptorSets`).
 - **Fast-travel / arrival frames:** ~290–350 ms of spread-out lifted game logic (allocation/containers, ~14% under `nn::mem::StandardAllocator::Allocate`); zstd decompression is already native.
+- **Thread balance, Dagsion hub standing still (26 Nov 2026, `v0.4.0-7-g8e5cff9d`):** Ryzen 5 5600X, RTX 4070, Proton, 3440x1440 DLSS Performance, 120 fps target, frame generation off, 3 runs, ~80 fps (~12.5 ms). CPU per frame, from per-thread usage and mean fps: `nvn-render` ~10.9 ms, `main` ~8.8 ms, the four busiest guest workers ~3.0 ms each (`Basic_Worker1-4`, by name in the occupancy run below). No thread is fully busy, and the `replay_threads` test below shows that speeding up the render thread alone moves frame time little. See the main-thread breakdown below.
+- **Where `main`'s frame goes, Dagsion hub standing still** (same setup, 1 run with `[kernel] occupancy = 5`, 79.8 fps, so no visible overhead; averages of three 5 s reports, 12.5 ms frame):
+  - On CPU: ~8.9 ms.
+  - Waits ended by `Basic_Worker1-4`: ~1.25 ms (~0.86 on addresses, ~0.39 on mutexes).
+  - GPU fence waits (`nvn.gpu: sync waits`, none behind the render thread): ~1.0 ms.
+  - Waits ended by `GFX_Worker*`: ~0.7 ms (`GFX_Worker0` ~0.56).
+  - Waits ended by `MOCull_Leader`: ~0.15 ms. While `main` waited on an address, no MOCull thread was running 92-94% of the time.
+  - In all, `main` was blocked in the kernel ~20% of the time (~2.5 ms). During those waits all four Basic workers were busy only ~11% (address) to ~17% (mutex) of the time, which by the diagnostic's own reading points to job chains, not too few workers.
+- **Thread balance, one battle map (same setup, 1 run of a locally recorded route):** at the 120 fps cap (8.33 ms) while idle and moving the cursor. CPU per frame: `nvn-render` ~4.9–6.2 ms, `main` ~3.3–4.0 ms, busiest workers ~0.8 ms; GPU ~4.5–4.8 ms. This scene has headroom on this PC, so A/B it by CPU time per thread, not fps. Attacks and enemy phases are not measured.
 
 ---
 
@@ -37,6 +46,8 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
   - `nnSdk` libc routines: `memcpy`/`memmove`, `memset`, `strlen`, `memcmp`, `strcmp` (`cxx.h` `hle_*`).
   - `ZSTD_decompressMultiFrame` (`0x71000c6a60`): native zstd 1.5.7 with `NX_ORIG` fallback (`FEFW_HLE_ZSTD=0` disables). Eliminates ~250 ms loading-frame spikes.
   - Native culling tests (`0x71019786c0` view-box, `0x7101980580` cylinder-box, ported from ObeliskChamber `ab56dd1`): currently **off by default** (`FEFW_HLE_CULL=1` enables, `FEFW_HLE_CULL=2` verifies against lifted original).
+    - Verify run (26 Nov 2026, FMA3 build, one Dagsion hub route): no mismatches in at least 16.7 million calls of each test. A hand-played run on one battle map (~100 s: idle, camera, cursor, some actions) was also clean, with at least 16.7 million calls of each test. Other battle maps, other areas and the `compat` build are not verified.
+    - A/B `0` vs `1` (same setup as the section 1 balance, 3 runs each; still / walk / camera turn): mean fps +1.4 / +1.0 / +1.2% (medians of the runs; below the harness's 3% noise guide, though the run ranges did not overlap), `main` CPU per frame about -3 to -4%, the four busiest workers about -6 to -7%. Load scene and worst frames: no clear change.
 - **Compiler & CPU targets (`game-build/release/fefw_build.py`, `recomp/cmake/NxRecomp.cmake`):**
   - Lifted code built with `-O2` (note: bundled `zig c++` maps `-O1`/`-O2`/`-O3` to clang `-cc1 -O2` with loop/SLP vectorization; MSVC source builds switched from `/O1` to `/O2` in `ffd542d` / `a19645f`), `-g0`, `-fomit-frame-pointer`, `-ffp-contract=off`.
   - Two CPU build variants (`--cpu fma` default: `x86_64+cx16+fma`; `--cpu compat`: `x86_64+cx16+sse4_2+popcnt` + musl `fefw_fma.c`).
@@ -44,10 +55,10 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 - **Per-thread ABI counters (`runtime/include/nxrt/tl_counts.h`):** Replaced shared atomic counters on `host_import`, HLE thunks, and SVCs (eliminated 8.9–23.7% main / ~50% worker cache-line bouncing during load spikes).
 
 ### Tried, Deferred, or Experimental
-- **`opt.py` `'tregs'` (`x8..x17` in locals, `NXRECOMP_OPT=flags,vstore,tregs`):**
-  - Measured ~-2.2% to -3.6% main CPU in v0.2.0 tests.
-  - Turned **off** by default in `config.py` (`2df9df5`) pending full safety verification across the game. `4a6dce9` (ObeliskChamber `b8d0038` / PR #165 / issue #154) subsequently fixed syncing `x9..x17` across branches to non-ABI fragments/hook splits and added `recomp/tests/opt_tregs_test.py`.
-  - **ObeliskChamber status:** `obelisk/master` runs with `opt = ('flags', 'vstore', 'tregs', 'loopbar')` enabled by default. Note that it pairs `tregs` with **`'loopbar'`** (`f481d3d`: a zero-instruction compiler memory barrier on loop back edges so polling loops still re-read guest memory once flags/temporaries live in locals, added after a boot hang). Check/port `'loopbar'` before enabling `'tregs'` by default here. Note also that enabling `'tregs'` changes the build stamp (triggers a full player re-lift/rebuild at Setup) and requires a fresh PGO profile.
+- **`opt.py` `'tregs'` (`x8..x17` in locals, `NXRECOMP_OPT=flags,vstore,tregs`): tested, small gain, safety not established, stays off.**
+  - Measured ~-2.2% to -3.6% main CPU in v0.2.0 tests. Turned off in `config.py` (`2df9df5`) pending safety verification. `4a6dce9` (ObeliskChamber `b8d0038` / PR #165 / issue #154) syncs `x9..x17` on branches to non-ABI pieces. `obelisk/master` runs it by default, together with opt `'loopbar'` (`f481d3d`, a compiler memory barrier on the back edge of polling loops), which is not ported here.
+  - Re-measured 26 Nov 2026 (`v0.4.0-7-g8e5cff9d`, no PGO, setup as the section 1 balance), in an unmerged experimental build with `loopbar` and some registers excluded function by function. Dagsion A/B, 3 runs each (still / walk / camera turn): `main` CPU per frame -2.0 / -2.9 / -2.5%, the four busiest workers -2.3 / -2.7 / -2.3% (per-run ranges overlapped in some scenes), mean fps +1.1 / +0.8 / -0.7%, within noise.
+  - Safety: an exploratory static check found places in the lifted game where a value may cross a call or return in these registers. The check itself had gaps, so neither the exclusions nor the short clean test runs show the build was safe.
 - **`opt.py` `'xregs'` / `'vregs'` (full guest registers in locals):** Eagerly loading all registers at entry and after every call stretched live ranges, caused host register spills, and grew code size (plus 3/30 e2e failures around jump tables/tail calls). Would require **lazy loading** (load on first use after a sync point) + dirty tracking.
 - **Clang 23 vs bundled Zig Clang 22.1.8:** Only -1.1% static instructions on hot set; not worth breaking PGO format / release reproducibility.
 - **`-mcpu=znver2`:** Only -0.1% static instructions; neutral in A/B runs.
@@ -74,7 +85,10 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
   - **Barriers & counters:** batched `ReportCounter`/`ReportValue`/`SignalEvent` writes, tracked texture copy barriers, narrowed transfer barriers (`742d778`).
 
 ### Experimental / Non-Default
-- **`[nvn] replay_threads = 2` (`nvn_cmdq.cpp`, default `1`):** Offloads `vkCmd*` and `vkUpdateDescriptorSets` to a dedicated `nvn-rec` worker thread (`replay_batch = 16`). Measured 16.8 → 13.6–14.2 ms render-thread work p50 on RTX 3080 at 4K in v0.2.0; needs a fresh A/B on v0.3.1+ (especially after `0e10804` replay optimizations) before considering an `auto` default.
+- **`[nvn] replay_threads = 2` (`nvn_cmdq.cpp`, default `1`):** Offloads `vkCmd*` and `vkUpdateDescriptorSets` to a dedicated `nvn-rec` worker thread (`replay_batch = 16`). Measured 16.8 → 13.6–14.2 ms render-thread work p50 on RTX 3080 at 4K in v0.2.0.
+  - Re-tested 26 Nov 2026 (`v0.4.0-7-g8e5cff9d`, setup as the section 1 balance, 3 runs each; still / walk / camera turn): render-thread replay -18 / -18 / -19%, but mean fps only +3.8 / +3.0 / +1.5%, median frame time -4.8 / -3.5 / -1.2%, 1% low +5.8 / +0.2 / +6.1%. Loading scene too noisy to judge.
+  - Cost: +0.6 to +0.8 of a core for the whole process. `nvn-rec` used ~72% of a core standing still while its own counter reported ~25% busy; the rest is probably its idle spin (up to ~100 µs while a scope is open, `worker_main`). `main` and the busiest workers took ~5–7% more CPU per frame.
+  - **Stays at `1`.** Not tested on handhelds, battles or Windows. A shorter spin is untried.
 
 ---
 
@@ -121,6 +135,8 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 ## 7. Benchmarking & Profiling Workflow
 
 - **Reproducible A/B runs:** Use `tools/perf/ab_run.py` + `tools/perf/perf_report.py` with recorded `.tt` routes (see [docs/PERF_ROUTES.md](docs/PERF_ROUTES.md)). Use `--save-dir` so autosaves don't drift between runs.
+- **Per-thread CPU under Wine / Proton:** the frame budget line reports `process 0`, and the one saved `sample_hz` capture checked (`v0.2.12`) showed `nvn-render` 99.9% waiting, which does not fit its replay load. Reading `utime + stime` from `/proc/<pid>/task/*/stat` on the host works, and the thread names are visible there.
+- **`[prof] trace` distorts CPU-bound frames:** one Dagsion run with it on (26 Nov 2026, `v0.4.0-7-g8e5cff9d`) ran at ~61 fps standing still against ~80 untraced, with `main` CPU per frame ~12.6 ms against ~8.8 ms. A likely cause is that `dispatch.cpp` times every HLE call while the trace is on. In that run `main` made ~9 `WaitForAddress` waits per frame of 0.1 ms or longer (median 0.25 ms, ~2.5 ms/frame in all) and almost no GPU fence waits (~0.01 ms/frame). Untraced runs log ~1.1 ms/frame of game GPU fence waits, so don't carry the traced balance over. For which threads end `main`'s waits, use `[kernel] occupancy = N` instead (section 1; no visible overhead).
 - **Built-in runtime telemetry (`runtime/docs/CONFIG.md`):**
   - `[prof] replay_stats = N`, `[prof] gpu_stats = N`, `[prof] gpu_passes = true` (per-pass GPU timestamps, profiling only), `[nvn] out_prog_ab = 1`.
   - `[prof] sample_offsets` (supports plain function names as of `ab56dd1`).
@@ -134,12 +150,12 @@ From profiling dense town scenes (Dagsion hub/street, ~2,400–2,640 draws/frame
 
 Ordered roughly by risk-adjusted payoff:
 
-1. **Fresh v0.3.1+ baseline profile:** Re-profile Dagsion hub/street and battle maps on current `master` to see the new main-thread vs render-thread vs GPU balance after all v0.2.1–v0.3.1 NVN work.
-2. **Validate & enable `FEFW_HLE_CULL`:** Native culling replacements (`0x71019786c0`, `0x7101980580`) are already implemented in [fefw_hle.cpp](game-build/fefw/src/fefw_hle.cpp) and include a verification mode (`FEFW_HLE_CULL=2`). Verify zero mismatches across gameplay and A/B measure worker/main-thread savings (especially `Basic_Worker` where `f_7101980580` was ~8–12% of samples).
-3. **Validate & enable `opt.py` `'tregs'` (+ check `'loopbar'`):** ObeliskChamber already ships `opt = ('flags', 'vstore', 'tregs', 'loopbar')` by default, and `4a6dce9` already ported their non-ABI branch-sync fix (`b8d0038` / `opt_tregs_test.py`). Check/port `'loopbar'` (`f481d3d`) to prevent polling-loop hangs, then A/B test with `NXRECOMP_OPT=flags,vstore,tregs` (~2–3.5% main CPU win; note build-stamp re-lift and fresh PGO profile impact).
-4. **Re-test `[nvn] replay_threads = 2`:** Now that render-thread replay has been heavily optimized (`c027497`, `0e10804`), A/B test `replay_threads = 2` across NVIDIA/AMD/Windows/Proton to decide whether it still yields a win worth making `auto` or whether it's redundant.
+1. **Main-thread CPU is the largest share of the Dagsion hub frame** (~8.9 of 12.5 ms, section 1), ahead of waits on Basic workers, GPU fences and GFX workers. Still missing: the same breakdown for other areas and for attacks / enemy phases, and a current main-thread function profile.
+2. **Finish validating `FEFW_HLE_CULL`, then enable it:** The hub and one battle-map verify run were clean and the hub A/B shows a small saving (section 2). Before making it the default, run `FEFW_HLE_CULL=2` through more battles and areas, and on the `compat` build.
+3. **`'tregs'`: stays off.** About -2 to -3% `main` CPU with no visible fps change on a Ryzen 5 5600X, and its safety for this game is not established (section 2).
+4. **Cheaper `[nvn] replay_threads = 2`:** The 26 Nov re-test (section 3) found a small fps gain for much more CPU. Try a shorter `nvn-rec` idle spin; re-test only if that removes most of the extra CPU use and keeps the gain.
 5. **Target remaining worker/main lifted hotspots for `inline_replace`:**
-   - `f_71019730e0` (MOCull NEON rasterizer — 80–84% of `MOCull_Worker1/2`).
+   - `f_71019730e0` (MOCull NEON rasterizer — 80–84% of `MOCull_Worker1/2`). **Low priority for frame time:** in the Dagsion hub, MOCull ends only ~0.15 ms of `main`'s waits per frame (section 1); other scenes not checked.
    - `f_71005ef6e0` / `f_7100a831a0` on `Basic_Worker1-4`.
 6. **Further `opt.py` codegen wins:**
    - Vector temporaries `v16..v31` (AAPCS64 caller-saved, never synced at calls/returns; ~1% static win).
