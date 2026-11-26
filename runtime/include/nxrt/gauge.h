@@ -86,6 +86,7 @@ enum HitchPhase : int {
     kHpGameSvc,             // the game's presenting thread: inside system calls (the rest of its time between presents is guest code)
     kHpGameIpc,             //   of it: IPC requests (service calls, file reads)
     kHpGameWait,            //   of it: waits (SleepThread, WaitSynchronization, ArbitrateLock, WaitProcessWideKeyAtomic, WaitForAddress)
+    kHpGameGuestSync,       // the game's presenting thread: user-mode guest sync / spin waits (nn::os::LockBusyMutex, WFE/YIELD)
     kHpRenderTexTake,       // render thread, of the uploads: texprep::take (finding a background result, waits for a running job included)
     kHpRenderTexPrep,       // render thread, of the uploads: prepare_texture run there (stand-ins, CPU untile, cache reads, transcodes)
     kHpRenderTexStaging,    // render thread, of the uploads: the upload buffer (allocation and the copy of the prepared data into it)

@@ -109,7 +109,7 @@ std::vector<HitchEvent> g_pending;
 // Render thread work = replay - GPU slot waits - lock waits + present - limiter - acquire; its CPU time comes from QueryThreadCycleTime (TSC
 // cycles on the core). Game work = the gap between two presents - the present's back pressure (waiting for the render thread).
 struct RFrame { float dt = 0, work = 0, gpu = 0, idle = 0, lim = 0, kcyc = 0, sub = 0, split = 0; };
-struct GFrame { float gap = 0, bp = 0, sync = 0, wait = 0, kcyc = 0; };
+struct GFrame { float gap = 0, bp = 0, sync = 0, wait = 0, ipc = 0, guest_sync = 0, kcyc = 0; };
 constexpr size_t kBRing = 8192;
 std::atomic<bool> g_budget_on{false};
 RFrame g_rf[kBRing];
@@ -261,6 +261,7 @@ std::string format_event(const HitchEvent& ev, size_t others) {
             game += b;
         }
     }
+    part(game, "guest sync waits", kHpGameGuestSync);
     if (ev.game_cpu_ms >= 0) {
         snprintf(b, sizeof b, ", presenting thread on the CPU %.1f", ev.game_cpu_ms);
         game += b;
@@ -372,11 +373,16 @@ void budget_report() {
                 [&] { std::vector<float> v = gsync; std::sort(v.begin(), v.end()); return pct(v, 0.99); }(), slow, by_game, by_render, by_gpu);
     if (!gap.empty()) {   // where the game thread's waits go and what the render thread's submissions cost (waits track): a line of its own, so the parsers of
         // the two lines above see them unchanged
-        std::vector<float> gbp;
-        for (uint64_t i = g0; i < gn; i++) gbp.push_back(g_gf[i % kBRing].bp);
-        NXLOG_I("budget", "waits per present: game thread system-call waits %s; GPU sync waits (all threads) %s; present back pressure %s | render thread per frame: "
-                "queue submits + present submit %s; split submissions %s",
-                pcts2(gwait).c_str(), pcts2(gsync).c_str(), pcts2(gbp).c_str(), pcts2(sub).c_str(), pcts2(split).c_str());
+        std::vector<float> gbp, gipc, ggsync;
+        for (uint64_t i = g0; i < gn; i++) {
+            const GFrame& f = g_gf[i % kBRing];
+            gbp.push_back(f.bp);
+            gipc.push_back(f.ipc);
+            ggsync.push_back(f.guest_sync);
+        }
+        NXLOG_I("budget", "waits per present: game thread system-call waits %s; guest sync waits %s; IPC %s; GPU sync waits (all threads) %s; present back pressure %s | "
+                "render thread per frame: queue submits + present submit %s; split submissions %s",
+                pcts2(gwait).c_str(), pcts2(ggsync).c_str(), pcts2(gipc).c_str(), pcts2(gsync).c_str(), pcts2(gbp).c_str(), pcts2(sub).c_str(), pcts2(split).c_str());
     }
 }
 
@@ -798,10 +804,11 @@ void hitch_note_game_present() {
     const uint64_t t = qpc();
     const uint64_t prev = g_game_present_last.exchange(t, std::memory_order_relaxed);
     if (g_budget_on.load(std::memory_order_relaxed)) {
-        static thread_local uint64_t p_cyc = 0, p_bp = 0, p_sync = 0, p_wait = 0;
+        static thread_local uint64_t p_cyc = 0, p_bp = 0, p_sync = 0, p_wait = 0, p_ipc = 0, p_gsync = 0;
         const uint64_t cyc = thread_cycles();
         const uint64_t bp = g_phase[kHpGameBackpressure].load(std::memory_order_relaxed), sy = g_phase[kHpGameSyncWait].load(std::memory_order_relaxed),
-                       wt = g_phase[kHpGameWait].load(std::memory_order_relaxed);
+                       wt = g_phase[kHpGameWait].load(std::memory_order_relaxed), ip = g_phase[kHpGameIpc].load(std::memory_order_relaxed),
+                       gs = g_phase[kHpGameGuestSync].load(std::memory_order_relaxed);
         if (prev && t > prev && p_cyc) {
             const double tm = 1000.0 / qpc_freq();
             GFrame f;
@@ -809,12 +816,14 @@ void hitch_note_game_present() {
             f.bp = (float)((double)(bp - p_bp) * tm);
             f.sync = (float)((double)(sy - p_sync) * tm);
             f.wait = (float)((double)(wt - p_wait) * tm);
+            f.ipc = (float)((double)(ip - p_ipc) * tm);
+            f.guest_sync = (float)((double)(gs - p_gsync) * tm);
             f.kcyc = (float)((double)(cyc - p_cyc) / 1000.0);
             const uint64_t k = g_gf_n.load(std::memory_order_relaxed);
             g_gf[k % kBRing] = f;
             g_gf_n.store(k + 1, std::memory_order_release);
         }
-        p_cyc = cyc, p_bp = bp, p_sync = sy, p_wait = wt;
+        p_cyc = cyc, p_bp = bp, p_sync = sy, p_wait = wt, p_ipc = ip, p_gsync = gs;
     }
     if (!prev || t <= prev) return;
     const uint64_t d = t - prev;
