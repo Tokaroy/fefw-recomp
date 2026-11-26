@@ -207,6 +207,7 @@ fn status(cfg: &Config) -> Value {
         _ => (None, String::new()),
     };
     let shown = |p: &Path| crate::dump::fwd(p);
+    let shortcuts = exe.as_deref().map(crate::steam::shortcut_ids).unwrap_or_default();
     json!({
         "state": "done",
         "version": crate::current_version(conf("version")),
@@ -220,6 +221,7 @@ fn status(cfg: &Config) -> Value {
         "problem": paths.err(),
         "rebuild": rebuild,
         "rebuild_reason": reason,
+        "steam_shortcuts": shortcuts,
     })
 }
 

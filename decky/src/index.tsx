@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Quick Access Menu panel: the game's folder, its version, update and rebuild. The work is in main.py; this polls it while open.
-import { ButtonItem, Field, PanelSection, PanelSectionRow, staticClasses, ToggleField } from "@decky/ui";
+import { ButtonItem, Field, Navigation, PanelSection, PanelSectionRow, staticClasses, ToggleField } from "@decky/ui";
 import { addEventListener, callable, definePlugin, FileSelectionType, openFilePicker, removeEventListener, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaDownload } from "react-icons/fa";
+import { AppStore, SteamApps, startGame } from "./play";
 import { SleepKeeper, SleepStatus, SteamSettings, Timers } from "./sleep";
 
-declare const SteamClient: { Settings?: SteamSettings } | undefined;
+declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps } | undefined;
+declare const appStore: AppStore | undefined;
 
 interface Result {
   state: "done" | "error" | "cancelled";
@@ -23,6 +25,7 @@ interface State {
     rebuild: boolean | null;
     rebuild_reason: string;
     problem: string | null;
+    steam_shortcuts?: number[]; // not told by a launcher from before it
   } | null;
   update: { newer: boolean; latest: { version: string } | null } | null;
   job: { step: "update" | "rebuild"; message: string; fraction: number | null; cancelling: boolean; elapsed: number } | null;
@@ -93,6 +96,7 @@ const Button = (props: { label: string; onClick: () => void; disabled?: boolean 
 function Content({ sleep }: { sleep: () => SleepStatus }) {
   const [state, setState] = useState<State | null>(null);
   const [checking, setChecking] = useState(false);
+  const [playFailed, setPlayFailed] = useState(false);
   const alive = useRef(true);
   const show = (s: State) => {
     if (alive.current) setState(s);
@@ -138,9 +142,26 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
   const busy = status?.busy === "game" ? "Close the game first." : status?.busy === "job" ? "The launcher is already working on this install." : null;
   const needsRebuild = status && !status.problem && (status.rebuild === true || !status.setup_complete);
 
+  // only a game that is built for the installed release, with nothing at work on it
+  const playable = status && status.setup_complete && !needsRebuild && !job && !status.busy;
+  const play = () => {
+    const started = startGame(
+      typeof SteamClient === "undefined" ? undefined : SteamClient.Apps,
+      typeof appStore === "undefined" ? undefined : appStore,
+      status?.steam_shortcuts ?? [],
+    );
+    setPlayFailed(!started);
+    if (started) Navigation.CloseSideMenus();
+  };
+
   return (
     <>
       <PanelSection title="Game">
+        {playable && !!status.steam_shortcuts?.length && <Button label="Play" onClick={play} disabled={checking} />}
+        {playable && status.steam_shortcuts?.length === 0 && (
+          <Note text="To play from here, add the game to Steam: in Desktop Mode, open the launcher and press Add to Steam." />
+        )}
+        {playFailed && <Note text="Steam did not start the game: start it from your library." />}
         <PanelSectionRow>
           <Field label="Installed version" description={state.install_dir ?? "No folder chosen"}>
             {status?.version ?? ""}
