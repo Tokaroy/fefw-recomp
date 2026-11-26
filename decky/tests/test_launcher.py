@@ -2,12 +2,14 @@
 """The plugin's backend against a stand-in launcher: python3 -m unittest discover -s tests"""
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -291,6 +293,143 @@ class Jobs(Case):
         # the job is over, and nothing was started or reported on the way out
         self.assertTrue(self.controller._task.done())
         self.assertEqual((len(self.runs()), self.done), (before, []))
+
+
+def plugin_zip(path, version="1.1.0", name="FEFW Recomp", flags=(), extra=()):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("fefw-recomp/", "")
+        z.writestr("fefw-recomp/plugin.json", json.dumps({"name": name, "flags": list(flags)}))
+        z.writestr("fefw-recomp/package.json", json.dumps({"version": version}))
+        z.writestr("fefw-recomp/dist/index.js", "// panel")
+        for member, text in extra:
+            z.writestr(member, text)
+    return path.read_bytes()
+
+
+class PluginZip(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.zip = self.root / "game" / fl.PLUGIN_ZIP
+        self.kept = self.root / "data"
+
+    def offer(self, current="1.0.0"):
+        return fl.plugin_offer(self.root / "game", current, self.kept)
+
+    def test_a_newer_plugin_is_offered_from_a_copy_of_its_own(self):
+        data = plugin_zip(self.zip)
+        offer = self.offer()
+        kept = Path(offer["artifact"][len("file://"):])
+        self.assertEqual((offer["version"], offer["hash"]), ("1.1.0", hashlib.sha256(data).hexdigest()))
+        self.assertEqual((kept.parent, kept.read_bytes()), (self.kept, data))
+        # the install's file changes, as in an update: what was offered stays, and the next offer replaces it
+        plugin_zip(self.zip, "1.2.0")
+        self.assertEqual(kept.read_bytes(), data)
+        self.assertEqual(self.offer()["version"], "1.2.0")
+        self.assertEqual(len(list(self.kept.iterdir())), 1)
+
+    def test_only_a_newer_one(self):
+        plugin_zip(self.zip, "1.10.0")
+        self.assertIsNotNone(self.offer("1.9.3"))
+        for current in ("1.10.0", "1.11.0", "2.0.0", None, "dev"):
+            self.assertIsNone(self.offer(current), current)
+
+    def test_an_install_without_one(self):
+        self.assertIsNone(self.offer())
+        self.zip.parent.mkdir(parents=True)
+        self.zip.write_bytes(b"not a zip")
+        self.assertIsNone(self.offer())
+        self.assertFalse(self.kept.exists())
+
+    def test_what_decky_must_not_unpack(self):
+        bad = {
+            "asks for root": {"flags": ["root"]},
+            "asks for root, the old way": {"flags": ["_root"]},
+            "another plugin": {"name": "Something else"},
+            "no version": {"version": "next"},
+            "a second plugin.json that lands on the first": {"extra": [("fefw-recomp/./plugin.json", '{"flags": ["root"]}')]},
+            "outside its folder": {"extra": [("other/main.py", "x")]},
+            "up and out": {"extra": [("fefw-recomp/../other/main.py", "x")]},
+            "absolute": {"extra": [("/etc/thing", "x")]},
+            "a backslash": {"extra": [("fefw-recomp\\..\\x", "x")]},
+        }
+        for what, how in bad.items():
+            with self.subTest(what):
+                plugin_zip(self.zip, **how)
+                self.assertIsNone(self.offer())
+        with self.subTest("the same name twice"), self.assertWarns(UserWarning):
+            plugin_zip(self.zip, extra=[("fefw-recomp/plugin.json", '{"name": "FEFW Recomp", "flags": ["root"]}')])
+        self.assertIsNone(self.offer())
+
+    def test_the_shipped_plugin_passes(self):
+        here = Path(__file__).resolve().parent.parent
+        about = json.loads((here / "plugin.json").read_text())
+        self.assertEqual((about["name"], about["flags"]), (fl.PLUGIN_NAME, []))
+
+
+class PluginUpdate(Case):
+    def setUp(self):
+        super().setUp()
+        self.controller.plugin_version, self.controller.data_dir = "1.0.0", self.root / "data"
+
+    async def ready(self):
+        self.controller.set_install(str(self.install))
+        await self.controller.refresh()
+
+    async def finish(self, kind):
+        self.controller.start(kind)
+        self.assertIsNone(self.controller.state()["plugin_update"])  # not offered while a job runs
+        await self.controller._task
+        return self.done[-1]
+
+    def package(self, version):
+        plugin_zip(self.install / fl.PLUGIN_ZIP, version)
+
+    async def test_the_panel_sees_it_also_after_an_update_made_elsewhere(self):
+        self.package("1.1.0")
+        self.write_plan()
+        await self.ready()
+        self.assertEqual(self.controller.state()["plugin_update"]["version"], "1.1.0")
+
+    async def test_also_when_the_launcher_cannot_be_driven(self):
+        self.package("2.0.0")
+        self.write_plan(status=[["die", "unknown"]])
+        await self.ready()
+        self.assertEqual(self.controller.state()["plugin_update"]["version"], "2.0.0")
+
+    async def test_an_update_of_the_game_brings_the_offer_with_its_result(self):
+        self.write_plan(update=[["end", {"state": "done", "updated": True, "rebuild": False}]])
+        await self.ready()
+        self.assertIsNone(self.controller.state()["plugin_update"])
+        self.package("1.1.0")  # as the update puts it there
+        result = await self.finish("update")
+        self.assertEqual(result["plugin_update"]["version"], "1.1.0")
+        self.assertEqual(self.controller.state()["plugin_update"], result["plugin_update"])
+
+    async def test_other_jobs_and_a_failed_update_do_not_ask(self):
+        self.package("1.1.0")
+        self.write_plan(update=[["end", {"state": "error", "message": "No network."}]],
+                        rebuild=[["end", {"state": "done", "message": "Built."}]])
+        await self.ready()
+        for kind in ("update", "rebuild"):
+            self.assertNotIn("plugin_update", await self.finish(kind), kind)
+            self.assertIsNotNone(self.controller.state()["plugin_update"])  # the button stays
+
+    async def test_a_cancelled_rebuild_after_the_update_does_not_ask(self):
+        self.package("1.1.0")
+        self.write_plan(update=[["end", {"state": "done", "updated": True, "rebuild": True}]],
+                        rebuild=[["end", {"state": "cancelled", "message": "Paused."}]])
+        await self.ready()
+        self.assertNotIn("plugin_update", await self.finish("update"))
+
+    async def test_another_folder_forgets_it(self):
+        self.package("1.1.0")
+        self.write_plan()
+        await self.ready()
+        self.controller.set_install(str(self.install))
+        self.assertIsNone(self.controller.state()["plugin_update"])
 
 
 class Watching(Case):

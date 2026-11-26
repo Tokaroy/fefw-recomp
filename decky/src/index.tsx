@@ -16,15 +16,19 @@ import { addEventListener, callable, definePlugin, FileSelectionType, openFilePi
 import { useEffect, useRef, useState } from "react";
 import { FaDownload } from "react-icons/fa";
 import { AppStore, SteamApps, startGame } from "./play";
+import { askToUpdate, DeckyRoutes, PluginOffer } from "./self_update";
 import { shownSettings, SettingsList } from "./settings";
 import { SleepKeeper, SleepStatus, SteamSettings, Timers } from "./sleep";
 
 declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps } | undefined;
 declare const appStore: AppStore | undefined;
 
+const decky = () => (window as unknown as { DeckyBackend?: DeckyRoutes }).DeckyBackend;
+
 interface Result {
   state: "done" | "error" | "cancelled";
   message: string;
+  plugin_update?: PluginOffer; // after an update of the game that brought a newer plugin
 }
 
 interface State {
@@ -46,6 +50,7 @@ interface State {
   error: string | null;
   keep_awake: boolean;
   held_sleep: Timers | null;
+  plugin_update: PluginOffer | null; // the installed release's plugin, when it is newer than this one
 }
 
 const getState = callable<[], State>("get_state");
@@ -114,6 +119,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
   const [checking, setChecking] = useState(false);
   const [playFailed, setPlayFailed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pluginFailed, setPluginFailed] = useState(false);
   const alive = useRef(true);
   const show = (s: State) => {
     if (alive.current) setState(s);
@@ -142,7 +148,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
   }, []);
 
   if (!state) return <PanelSection><Note text="Loading" /></PanelSection>;
-  const { status, update, job, result, error } = state;
+  const { status, update, job, result, error, plugin_update: plugin } = state;
 
   const choose = async () => {
     let picked;
@@ -192,8 +198,60 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
     }
   };
 
+  // what the panel was most likely opened for goes first: a job and how it ended, an update, or what stands in the way
+  const attention = !!(job || result || error || busy || status?.problem || plugin || pluginFailed || update?.newer || needsRebuild);
+
   return (
     <>
+      {attention && (
+        <PanelSection title="Update">
+          {job ? (
+            <>
+              <Progress
+                title={job.step === "update" ? "Updating" : job.step === "download" ? "Downloading" : "Building the game"}
+                message={job.cancelling ? "Cancelling" : job.message}
+                fraction={job.fraction}
+              />
+              <Note text={`Time elapsed: ${clock(job.elapsed)}`} />
+              <PanelSectionRow>
+                <ToggleField
+                  label="Prevent auto-sleep"
+                  description={state.keep_awake ? SLEEP_TEXT[sleep()] : "Steam's auto-sleep settings apply: the device may sleep while this runs"}
+                  checked={state.keep_awake}
+                  onChange={(on: boolean) => setKeepAwake(on).then(show)}
+                />
+              </PanelSectionRow>
+              <Note
+                text={`${job.step === "rebuild" ? "Some steps take several minutes without moving. " : ""}You can close this panel. Do not start the game until this has finished.`}
+              />
+              <Button label="Cancel" onClick={() => cancel().then(show)} disabled={job.cancelling} />
+            </>
+          ) : (
+            <>
+              {result && <Note text={result.message} />}
+              {error && <Note text={error} />}
+              {status?.problem && <Note text={`${status.problem} Open the launcher in Desktop Mode.`} />}
+              {busy && <Note text={busy} />}
+              {plugin && (
+                <>
+                  <Note text="This plugin is older than the installed release. Decky asks you to confirm, then loads the new one." />
+                  <Button label={`Update the plugin to ${plugin.version}`} onClick={() => void askToUpdate(decky(), plugin).then((asked) => setPluginFailed(!asked))} />
+                </>
+              )}
+              {pluginFailed && <Note text="Decky could not be asked: to update the plugin, run the installer in Desktop Mode." />}
+              {update?.newer && (
+                <Button label={`Update to ${update.latest?.version}`} onClick={() => start("update").then(show)} disabled={!!busy || checking} />
+              )}
+              {needsRebuild && (
+                <>
+                  <Note text={`The game needs building${status.rebuild_reason && status.rebuild ? `: ${status.rebuild_reason}` : "."}`} />
+                  <Button label="Build the game" onClick={() => start("rebuild").then(show)} disabled={!!busy || checking} />
+                </>
+              )}
+            </>
+          )}
+        </PanelSection>
+      )}
       <PanelSection title="Game">
         {playable && !!status.steam_shortcuts?.length && <Button label="Play" onClick={play} disabled={checking} />}
         {playable && status.steam_shortcuts?.length === 0 && (
@@ -229,47 +287,9 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
           <Note text="Changes apply the next time the game starts." />
         </PanelSection>
       )}
-      <PanelSection title="Update">
-        {job ? (
-          <>
-            <Progress
-              title={job.step === "update" ? "Updating" : job.step === "download" ? "Downloading" : "Building the game"}
-              message={job.cancelling ? "Cancelling" : job.message}
-              fraction={job.fraction}
-            />
-            <Note text={`Time elapsed: ${clock(job.elapsed)}`} />
-            <PanelSectionRow>
-              <ToggleField
-                label="Prevent auto-sleep"
-                description={state.keep_awake ? SLEEP_TEXT[sleep()] : "Steam's auto-sleep settings apply: the device may sleep while this runs"}
-                checked={state.keep_awake}
-                onChange={(on: boolean) => setKeepAwake(on).then(show)}
-              />
-            </PanelSectionRow>
-            <Note
-              text={`${job.step === "rebuild" ? "Some steps take several minutes without moving. " : ""}You can close this panel. Do not start the game until this has finished.`}
-            />
-            <Button label="Cancel" onClick={() => cancel().then(show)} disabled={job.cancelling} />
-          </>
-        ) : (
-          <>
-            {result && <Note text={result.message} />}
-            {error && <Note text={error} />}
-            {status?.problem && <Note text={`${status.problem} Open the launcher in Desktop Mode.`} />}
-            {busy && <Note text={busy} />}
-            {update && !update.newer && !needsRebuild && <Note text="You have the latest version." />}
-            {update?.newer && (
-              <Button label={`Update to ${update.latest?.version}`} onClick={() => start("update").then(show)} disabled={!!busy || checking} />
-            )}
-            {needsRebuild && (
-              <>
-                <Note text={`The game needs building${status.rebuild_reason && status.rebuild ? `: ${status.rebuild_reason}` : "."}`} />
-                <Button label="Build the game" onClick={() => start("rebuild").then(show)} disabled={!!busy || checking} />
-              </>
-            )}
-            <Button label={checking ? "Checking" : "Check for updates"} onClick={check} disabled={checking || !state.install_dir} />
-          </>
-        )}
+      <PanelSection>
+        {!job && update && !update.newer && !needsRebuild && <Note text="You have the latest version." />}
+        {!job && <Button label={checking ? "Checking" : "Check for updates"} onClick={check} disabled={checking || !state.install_dir} />}
       </PanelSection>
     </>
   );
@@ -280,6 +300,8 @@ export default definePlugin(() => {
   const done = addEventListener<[result: Result]>("fefw_job_done", (result) => {
     const title = result.state === "done" ? "FEFW Recomp: finished" : result.state === "cancelled" ? "FEFW Recomp: cancelled" : "FEFW Recomp: failed";
     toaster.toast({ title, body: result.message });
+    // the game was updated: Decky asks whether the plugin may follow. On a no, the panel's button stays.
+    if (result.plugin_update) void askToUpdate(decky(), result.plugin_update);
   });
   // also while the panel is closed: auto-sleep follows the job, and timers left off by an earlier run are put back
   const keeper = new SleepKeeper(
