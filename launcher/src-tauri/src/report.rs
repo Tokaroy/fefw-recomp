@@ -19,10 +19,9 @@ use crate::play::ReportFile;
 use crate::settings::GAME_INI;
 
 /// Baked-in report endpoint URL (set `FEFW_REPORT_URL` at build time, or override at runtime via env).
-/// Empty disables uploads until a Worker URL is configured.
 pub const DEFAULT_URL: &str = match option_env!("FEFW_REPORT_URL") {
     Some(u) => u,
-    None => "",
+    None => "https://fefw-reports.metrist38.workers.dev",
 };
 
 const MAX_LOG_HEAD: usize = 64 * 1024;
