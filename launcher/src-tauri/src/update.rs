@@ -166,6 +166,8 @@ pub struct Run<'a> {
     pub install: PathBuf,
     pub game_dir: PathBuf,
     pub emit: &'a dyn Fn(Status),
+    /// asked just before the files are replaced; Err stops the update there
+    pub ready: &'a dyn Fn() -> Result<(), String>,
 }
 
 impl Run<'_> {
@@ -205,6 +207,7 @@ impl Run<'_> {
         self.cancelled()?;
         let top = self.unpack(&zip, &work.join("stage"))?;
         self.cancelled()?;
+        (self.ready)()?;
         self.set("install", 0, 0, "Installing");
         install(&self.install, &top, &work.join("old"))?;
         let _ = fs::remove_file(&zip);
@@ -593,7 +596,7 @@ mod tests {
                 println!("{} {} {}/{} {}", s.state, s.phase, s.done, s.total, s.message)
             }
         };
-        let run = Run { shared: &shared, install: install.clone(), game_dir: install.clone(), emit: &emit };
+        let run = Run { shared: &shared, install: install.clone(), game_dir: install.clone(), emit: &emit, ready: &|| Ok(()) };
         let st = run.run(&rel).expect("update");
         println!("done: {} rebuild {:?} ({})", st.message, st.rebuild, st.rebuild_reason);
         assert!(install.join("fefw_rt.dll").is_file() && install.join("tools/build/fefw_build.py").is_file());
