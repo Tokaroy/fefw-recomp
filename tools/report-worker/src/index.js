@@ -19,7 +19,7 @@ function json(data, status = 200) {
 
 function cleanStr(val, maxLen = 128) {
   if (typeof val !== 'string') return '';
-  return val.replace(/[\r\n\0]/g, ' ').trim().slice(0, maxLen);
+  return val.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim().slice(0, maxLen);
 }
 
 function cleanNum(val) {
@@ -94,6 +94,19 @@ async function checkAndConsumeLimits(request, env, day, incomingBytes) {
     return json({ error: 'storage budget reached' }, 507);
   }
 
+  // Enforce per-IP daily limit first so a rate-limited caller cannot burn the shared global allowance.
+  const ipKey = await dailyIpBucket(request, env, day);
+  const ipRes = await env.REPORTS_DB.prepare(
+    `INSERT INTO rate_limits (bucket_key, day, count) VALUES (?, ?, 1)
+     ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1
+     WHERE count < ?`
+  )
+    .bind(ipKey, day, MAX_REPORTS_PER_IP_PER_DAY)
+    .run();
+  if (!ipRes.meta || ipRes.meta.changes === 0) {
+    return json({ error: 'rate limit exceeded' }, 429);
+  }
+
   // Enforce global daily limit atomically.
   const globalKey = `global:${day}`;
   const globalRes = await env.REPORTS_DB.prepare(
@@ -107,20 +120,35 @@ async function checkAndConsumeLimits(request, env, day, incomingBytes) {
     return json({ error: 'daily global limit reached' }, 429);
   }
 
-  // Enforce per-IP daily limit using a non-reversible daily salted hash.
-  const ipKey = await dailyIpBucket(request, env, day);
-  const ipRes = await env.REPORTS_DB.prepare(
-    `INSERT INTO rate_limits (bucket_key, day, count) VALUES (?, ?, 1)
-     ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1
-     WHERE count < ?`
-  )
-    .bind(ipKey, day, MAX_REPORTS_PER_IP_PER_DAY)
-    .run();
-  if (!ipRes.meta || ipRes.meta.changes === 0) {
-    return json({ error: 'rate limit exceeded' }, 429);
-  }
-
   return null;
+}
+
+async function readBoundedBody(request, maxBytes) {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }
 
 async function handleSubmit(request, env) {
@@ -139,14 +167,16 @@ async function handleSubmit(request, env) {
     return json({ error: 'invalid trigger' }, 400);
   }
 
-  const body = await request.arrayBuffer();
-  if (body.byteLength === 0 || body.byteLength > MAX_BODY_BYTES) {
-    return json({ error: 'invalid payload size' }, body.byteLength === 0 ? 400 : 413);
+  const body = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (body === null) {
+    return json({ error: 'payload too large' }, 413);
+  }
+  if (body.byteLength === 0) {
+    return json({ error: 'invalid payload size' }, 400);
   }
 
   // Zstd magic number: 28 B5 2F FD
-  const head = new Uint8Array(body, 0, Math.min(4, body.byteLength));
-  if (head.length < 4 || head[0] !== 0x28 || head[1] !== 0xb5 || head[2] !== 0x2f || head[3] !== 0xfd) {
+  if (body.byteLength < 4 || body[0] !== 0x28 || body[1] !== 0xb5 || body[2] !== 0x2f || body[3] !== 0xfd) {
     return json({ error: 'expected zstd-compressed body' }, 400);
   }
 

@@ -353,14 +353,12 @@ pub fn start(
             (None, Some(c)) => format!("fefw.exe exited with code {} (0x{:08X}).", c, c as u32),
             (None, None) => "fefw.exe was ended by the system.".to_string(),
         };
-        let report_files_copy = files.clone();
-        let report_cause = other_fatal.clone();
+        // Snapshot the finished run's log and crash files before Play becomes available again, so an immediate restart
+        // cannot truncate or rotate them before the background upload runs.
+        let prepared_report = crate::report::prepare(&report_opts, &dir, code, &files, other_fatal.as_deref());
         set_status(&app2, Status { state: "exited".into(), code, crashed, files, message });
-        if report_opts.config_dir.is_some() {
-            let report_dir = dir.clone();
-            std::thread::spawn(move || {
-                crate::report::maybe_send(&report_opts, &report_dir, code, &report_files_copy, report_cause.as_deref());
-            });
+        if let Some(prepared) = prepared_report {
+            std::thread::spawn(move || crate::report::send(prepared));
         }
         if minimize {
             if let Some(w) = app2.get_webview_window("main") {

@@ -120,24 +120,31 @@ fn is_enabled_on_disk(config_dir: &Path) -> bool {
     fs::read_to_string(config_dir.join("launcher.json")).ok().and_then(|t| serde_json::from_str::<SavedPref>(&t).ok()).is_some_and(|p| p.send_reports)
 }
 
+/// A self-contained snapshot of a finished run's report data, captured before Play is re-enabled so a fast restart
+/// cannot overwrite `fefw.log` or crash files while the background thread compresses and uploads it.
+pub struct Prepared {
+    config_dir: PathBuf,
+    base_url: String,
+    now: u64,
+    trigger: &'static str,
+    build_id: String,
+    sig: String,
+    json_bytes: Vec<u8>,
+    meta_b64: String,
+}
+
 /// Checks whether the finished run had a crash or performance issue and, if opted in and within rate limits,
-/// scrubs and uploads an anonymized report in the background. Errors are ignored so reporting never disrupts play.
-pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[ReportFile], crash_cause: Option<&str>) {
-    let Some(cfg_dir) = opts.config_dir.as_deref() else {
-        return;
-    };
+/// snapshots and scrubs all files into memory (and saves `fefw_last_report.json`) before returning a `Prepared` upload.
+pub fn prepare(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[ReportFile], crash_cause: Option<&str>) -> Option<Prepared> {
+    let cfg_dir = opts.config_dir.as_deref()?;
     if !is_enabled_on_disk(cfg_dir) {
-        return;
+        return None;
     }
-    let Some(base_url) = endpoint_url() else {
-        return;
-    };
+    let base_url = endpoint_url()?;
 
     let log_raw = read_log_bounded(&game_dir.join("fefw.log"));
     let metrics = parse_log_metrics(&log_raw);
-    let Some(trigger) = detect_trigger(code, files, &metrics) else {
-        return;
-    };
+    let trigger = detect_trigger(code, files, &metrics)?;
 
     let build_id =
         if !metrics.build_id.is_empty() { metrics.build_id.clone() } else { crate::update::BUILD_ID.unwrap_or(&opts.launcher_version).to_string() };
@@ -145,7 +152,7 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
     let now = now_unix_s();
     let sig = crash_cause.unwrap_or("").chars().take(80).collect::<String>();
     if !allow_by_rate_limit(cfg_dir, now, trigger, &build_id, &sig) {
-        return;
+        return None;
     }
 
     let ini_text = fs::read_to_string(game_dir.join(GAME_INI)).unwrap_or_default();
@@ -193,18 +200,9 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
         log: clean_log,
     };
 
-    let Ok(json_bytes) = serde_json::to_vec_pretty(&bundle) else {
-        return;
-    };
+    let json_bytes = serde_json::to_vec_pretty(&bundle).ok()?;
     // Save the exact scrubbed payload locally so the player can inspect what was sent.
     let _ = fs::write(game_dir.join("fefw_last_report.json"), &json_bytes);
-
-    let Ok(compressed) = zstd::stream::encode_all(json_bytes.as_slice(), 9) else {
-        return;
-    };
-    if compressed.is_empty() || compressed.len() > MAX_COMPRESSED_BYTES {
-        return;
-    }
 
     let meta = HeaderMeta {
         trigger,
@@ -219,16 +217,26 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
         hitch_count: metrics.hitch_count,
         crash_cause: clean_cause.as_deref(),
     };
-    let Ok(meta_json) = serde_json::to_vec(&meta) else {
-        return;
-    };
+    let meta_json = serde_json::to_vec(&meta).ok()?;
     let meta_b64 = base64_encode(&meta_json);
 
-    let tmp = std::env::temp_dir().join(format!("fefw-report-{}-{now}.zst", std::process::id()));
+    Some(Prepared { config_dir: cfg_dir.to_path_buf(), base_url, now, trigger, build_id, sig, json_bytes, meta_b64 })
+}
+
+/// Compresses and uploads a previously snapshotted report in the background. Errors are ignored so reporting never disrupts play.
+pub fn send(p: Prepared) {
+    let Ok(compressed) = zstd::stream::encode_all(p.json_bytes.as_slice(), 9) else {
+        return;
+    };
+    if compressed.is_empty() || compressed.len() > MAX_COMPRESSED_BYTES {
+        return;
+    }
+
+    let tmp = std::env::temp_dir().join(format!("fefw-report-{}-{}.zst", std::process::id(), p.now));
     if fs::write(&tmp, &compressed).is_err() {
         return;
     }
-    let url = format!("{base_url}/v1/report");
+    let url = format!("{}/v1/report", p.base_url);
     let ok = crate::update::curl()
         .args([
             "--max-time",
@@ -238,7 +246,7 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
             "--header",
             "Content-Type: application/zstd",
             "--header",
-            &format!("X-Report-Meta: {meta_b64}"),
+            &format!("X-Report-Meta: {}", p.meta_b64),
             "--data-binary",
             &format!("@{}", tmp.display()),
             &url,
@@ -252,7 +260,7 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
     let _ = fs::remove_file(&tmp);
 
     if ok {
-        record_sent(cfg_dir, now, trigger, &build_id, &sig);
+        record_sent(&p.config_dir, p.now, p.trigger, &p.build_id, &p.sig);
     }
 }
 

@@ -8,6 +8,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -127,6 +128,14 @@ def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
     return dest
 
 
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+
+
+def _safe_term(val: object, max_len: int | None = None) -> str:
+    s = _CTRL_RE.sub(" ", str(val or "")).strip()
+    return s[:max_len] if max_len is not None else s
+
+
 def _print_table(rows: list[dict]) -> None:
     if not rows:
         print("No reports found.")
@@ -135,18 +144,18 @@ def _print_table(rows: list[dict]) -> None:
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        dt = (r.get("created_at") or "")[:19].replace("T", " ")
-        trig = (r.get("trigger") or "")[:9]
-        os_name = (r.get("os") or "")[:7]
+        dt = _safe_term(r.get("created_at"), 19).replace("T", " ")
+        trig = _safe_term(r.get("trigger"), 9)
+        os_name = _safe_term(r.get("os"), 7)
         mf, lf = r.get("mean_fps"), r.get("low1_fps")
         fps = f"{mf:.1f}/{lf:.1f}" if mf is not None and lf is not None else "-"
         wm = f"{r['worst_ms']:.0f}ms" if r.get("worst_ms") is not None else "-"
-        bld = (r.get("build_id") or "")[:14]
-        gpu = (r.get("gpu") or "")[:28]
-        rid = r.get("id") or ""
+        bld = _safe_term(r.get("build_id"), 14)
+        gpu = _safe_term(r.get("gpu"), 28)
+        rid = _safe_term(r.get("id"))
         print(f"{dt:19}  {trig:9}  {os_name:7}  {fps:13}  {wm:8}  {bld:14}  {gpu:28}  {rid}")
         if r.get("crash_cause"):
-            print(f"    cause: {r['crash_cause']}")
+            print(f"    cause: {_safe_term(r['crash_cause'])}")
 
 
 def _build_list_url(base: str, args: argparse.Namespace) -> str:
