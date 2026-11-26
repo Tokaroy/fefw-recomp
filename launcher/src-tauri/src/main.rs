@@ -5,6 +5,7 @@
 
 mod art;
 mod cpu;
+mod decky;
 mod dump;
 mod fetch;
 mod gpu;
@@ -54,6 +55,8 @@ struct Config {
     send_reports: bool,
     /// whether the one-time opt-in prompt for issue reports has already been answered
     reports_prompted: bool,
+    /// Linux: the offer of the Decky plugin on the Play page was declined
+    decky_declined: bool,
     /// Linux: the command that starts fefw.exe (Wine or Proton, e.g. `umu-run` or `wine`). Empty: Steam's own Proton if it is
     /// installed, else umu-run, else wine. Unused on Windows.
     runner: String,
@@ -244,6 +247,7 @@ fn save_config(app: AppHandle, mut config: Config) -> Result<(), String> {
     let saved = load_saved_config(&app);
     config.lang = saved.lang;
     config.reports_prompted = saved.reports_prompted || config.reports_prompted || config.send_reports != saved.send_reports;
+    config.decky_declined = saved.decky_declined || config.decky_declined;
     // the game makes the same check when it is started: a switch here covers it too. fefw.ini first: when it cannot be written, the
     // switch stays unsaved and can be made again.
     if config.skip_update_check != saved.skip_update_check {
@@ -260,6 +264,37 @@ fn set_send_reports(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut cfg = load_saved_config(&app);
     cfg.send_reports = enabled;
     cfg.reports_prompted = true;
+    store_config(&app, &cfg)
+}
+
+/// What the Play page's offer of the Decky plugin shows. None: nothing to offer.
+#[derive(Serialize)]
+struct DeckyOffer {
+    /// the install's folder, for the installer's question, when it would not find it by itself
+    folder: Option<String>,
+}
+
+#[tauri::command]
+fn decky_offer(app: AppHandle) -> Option<DeckyOffer> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    // the installer takes a release package's folder: a checkout's launcher offers nothing
+    let offered = cfg!(target_os = "linux") && package_tools().is_some() && !load_saved_config(&app).decky_declined;
+    if !offered || !decky::wanted(&home, Path::new(decky::SESSIONS)) {
+        return None;
+    }
+    let install = exe_dir();
+    Some(DeckyOffer { folder: (install != home.join("Games").join("fefw-recomp")).then(|| dump::fwd(&install)) })
+}
+
+#[tauri::command]
+fn open_decky_installer() -> Result<(), String> {
+    play::open_with_shell(Path::new(&decky::installer_url()))
+}
+
+#[tauri::command]
+fn decline_decky(app: AppHandle) -> Result<(), String> {
+    let mut cfg = load_saved_config(&app);
+    cfg.decky_declined = true;
     store_config(&app, &cfg)
 }
 
@@ -1165,6 +1200,9 @@ fn main() {
             get_config,
             save_config,
             set_send_reports,
+            decky_offer,
+            open_decky_installer,
+            decline_decky,
             ui_language,
             set_language,
             get_overview,
