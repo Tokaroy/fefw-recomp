@@ -43,7 +43,7 @@ const releaseSleep = callable<[], void>("release_sleep");
 const note = callable<[text: string], void>("note");
 
 const SLEEP_TEXT: Record<SleepStatus, string> = {
-  off: "The device will not sleep by itself while this runs. The power button still works",
+  off: "Auto-sleep will be turned off until this has finished. The power button still works",
   held: "Auto-sleep is off until this has finished. The power button still works",
   already: "Auto-sleep is already off in Steam's settings",
   waiting: "Reading Steam's sleep settings",
@@ -160,7 +160,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
             <PanelSectionRow>
               <ToggleField
                 label="Prevent auto-sleep"
-                description={SLEEP_TEXT[state.keep_awake ? sleep() : "off"]}
+                description={state.keep_awake ? SLEEP_TEXT[sleep()] : "Steam's auto-sleep settings apply: the device may sleep while this runs"}
                 checked={state.keep_awake}
                 onChange={(on: boolean) => setKeepAwake(on).then(show)}
               />

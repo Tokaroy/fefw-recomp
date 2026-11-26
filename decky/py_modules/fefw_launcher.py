@@ -168,17 +168,27 @@ class Command:
                 pass
 
     async def stop(self, grace=3.0):
-        """Cancel, and end the launcher if it does not stop."""
+        """Cancel, and end the launcher if it does not stop. An update is never ended: it takes no cancel while it moves the new
+        files into place, and stopping it there would leave a mix of two releases."""
         self.cancel()
         if not self.process or self.process.returncode is not None:
             return
         try:
             await asyncio.wait_for(self.process.wait(), grace)
         except asyncio.TimeoutError:
+            if self.argument == "--update":
+                self._leave()
+                return
             try:
                 os.killpg(self.process.pid, 9)
             except OSError:
                 pass
+
+    def _leave(self):
+        """Lets the launcher run on: asyncio ends a program that is still running when its transport is closed or collected."""
+        transport = getattr(self.process, "_transport", None)
+        if transport is not None:
+            transport.close = lambda: None  # also what collecting it calls
 
 
 def _timers(value):
@@ -208,9 +218,11 @@ class Controller:
         self.result = None
         self.error = None
         self.prepare_timeout = PREPARE_TIMEOUT
-        self._command = None
+        self._command = None  # the job's
+        self._running = set()  # every command under way, the panel's questions too
         self._task = None
         self._cancel = False
+        self._closing = False
         self._started = 0.0
 
     def _load(self):
@@ -238,12 +250,19 @@ class Controller:
             timers = _timers({"battery": battery, "ac": ac})
             if timers is None:
                 raise LauncherError("Those are not sleep timers.")
-            self.held_sleep = timers
-            self._save()
+            self._record(timers)
 
     def release_sleep(self):
-        self.held_sleep = None
-        self._save()
+        self._record(None)
+
+    def _record(self, timers):
+        """Saved, or unchanged: the panel turns the timers off only for a record that would outlast a restart."""
+        before, self.held_sleep = self.held_sleep, timers
+        try:
+            self._save()
+        except OSError:
+            self.held_sleep = before
+            raise
 
     def state(self):
         # counted here, so that it is right when the panel is opened again
@@ -262,6 +281,8 @@ class Controller:
         self.status = self.update = self.result = self.error = None
 
     def _new(self, argument, display=None):
+        if self._closing:
+            raise LauncherError("The plugin is closing.")
         if not self.install_dir or not is_install(self.install_dir):
             raise LauncherError("Choose the game's folder first.")
         env = environment(self.base_env, self.home, display)
@@ -272,34 +293,58 @@ class Controller:
         if not self.job:
             await self._look()
 
+    async def _run(self, command, *args, **kwargs):
+        """command.run, known to close() while it lasts."""
+        self._running.add(command)
+        try:
+            return await command.run(*args, **kwargs)
+        finally:
+            self._running.discard(command)
+
     async def _look(self):
+        if await self._read_status():
+            await self._check_update()
+
+    async def _read_status(self):
+        """Reads the install's status, which stays on this device. False when it cannot be read, with the reason in `error`."""
+        if self._closing:
+            return False
         self.error = None
         folder = self.install_dir
         try:
             # with no display: a launcher too old for these commands then cannot open its window, and ends instead
             try:
-                status = await self._new("--status", NO_DISPLAY).run(timeout=QUERY_TIMEOUT)
+                status = await self._run(self._new("--status", NO_DISPLAY), timeout=QUERY_TIMEOUT)
             except LauncherError as e:
-                self._forget(folder)
                 raise LauncherError(f"{TOO_OLD} ({e})") from e
             if status.get("state") != "done":
-                self._forget(folder)
                 raise LauncherError(status.get("message") or "The status could not be read.")
-            if folder != self.install_dir:
-                return
-            self.status = status
-            try:
-                check = await self._new("--check-update", NO_DISPLAY).run(timeout=QUERY_TIMEOUT)
-                if check.get("state") != "done":
-                    raise LauncherError(check.get("message") or "The update check failed.")
-            except LauncherError:
-                if folder == self.install_dir:
-                    self.update = None  # what an earlier check said may no longer hold
-                raise
-            if folder == self.install_dir:
-                self.update = check
         except LauncherError as e:
+            self._forget(folder)
             self.error = str(e)
+            return False
+        if folder != self.install_dir:
+            return False
+        self.status = status
+        return True
+
+    async def _check_update(self):
+        """Asks for a newer release, over the network."""
+        if self._closing:
+            return
+        folder = self.install_dir
+        try:
+            check = await self._run(self._new("--check-update", NO_DISPLAY), timeout=QUERY_TIMEOUT)
+            if check.get("state") != "done":
+                raise LauncherError(check.get("message") or "The update check failed.")
+        except LauncherError as e:
+            if folder == self.install_dir:
+                self.update = None  # what an earlier check said may no longer hold
+                if not self.job:
+                    self.error = str(e)
+            return
+        if folder == self.install_dir:
+            self.update = check
 
     def _forget(self, folder):
         """What was read before is not shown for an install that can no longer be read: it may have changed."""
@@ -328,13 +373,16 @@ class Controller:
         except Exception as e:  # the panel must not be left with a job that never ends
             result = {"state": "error", "message": f"The plugin failed: {e!r}"}
         self._command = None
-        await self._look()  # still the job's: another cannot start before this one's result is there
+        read = await self._read_status()  # still the job's: another cannot start on what was true before this one
+        self.update = None  # nor is an update from before it offered again
         if result["message"].endswith(NEW_TOO_OLD):
             self.error = None  # the result says it, without advising the update that was just made
         self.result = result
         self.job = None
-        if self.on_done:
+        if self.on_done and not self._closing:
             await self.on_done(result)
+        if read:
+            await self._check_update()  # after the result: without a network it takes long to fail
 
     async def _steps(self, kind):
         if kind == "update":
@@ -353,7 +401,7 @@ class Controller:
         """Whether the install's launcher answers --status, asked with no display."""
         try:
             self._command = self._new("--status", NO_DISPLAY)
-            return (await self._command.run(timeout=QUERY_TIMEOUT)).get("state") == "done"
+            return (await self._run(self._command, timeout=QUERY_TIMEOUT)).get("state") == "done"
         except LauncherError:
             return False
 
@@ -370,7 +418,7 @@ class Controller:
                 fraction = min(done / total, 1.0)
             self.job.update(phase=line.get("phase"), message=line.get("message") or "", fraction=fraction)
 
-        end = await command.run(progress, prepare_timeout=self.prepare_timeout)
+        end = await self._run(command, progress, prepare_timeout=self.prepare_timeout)
         if command.timed_out and end["state"] == "cancelled" and not self._cancel:
             # the game is built; only the preparation, which saves compile time while playing, was stopped
             return {"state": "done", "message": "Ready to play. Preparing the shaders took too long and was stopped."}
@@ -390,9 +438,10 @@ class Controller:
             self._command.cancel()
 
     async def close(self):
-        """The plugin is being unloaded: nothing the launcher started may be left behind. The loader allows five seconds."""
-        self._cancel = True
-        if self._command:
-            await self._command.stop()
+        """The plugin is being unloaded: nothing new is started and what runs is stopped, apart from an update that does not stop
+        in time (Command.stop). The loader allows five seconds."""
+        self._closing = self._cancel = True
+        await asyncio.gather(*(command.stop() for command in list(self._running)))
         if self._task:
-            self._task.cancel()
+            # it ends by itself, as nothing more is started; cancelling it while it starts a program can hang before Python 3.12
+            await asyncio.wait([self._task], timeout=1)

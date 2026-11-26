@@ -193,6 +193,18 @@ class Jobs(Case):
         self.assertEqual(await self.finish(), {"state": "error", "message": "No space."})
         self.assertEqual(self.jobs_run(), ["--update"])
 
+    async def test_the_result_does_not_wait_for_the_update_check(self):
+        await self.ready(rebuild=[["end", {"state": "done", "message": "Ready to play."}]])
+        self.write_plan(rebuild=[["end", {"state": "done", "message": "Ready to play."}]],
+                        check_update=[["sleep", 1.5], ["end", CHECK]])
+        self.controller.start("rebuild")
+        await self.until(lambda: self.done)
+        state = self.controller.state()
+        self.assertEqual((state["job"], state["result"]["message"], state["update"]), (None, "Ready to play.", None))
+        self.assertFalse(self.controller._task.done())
+        await self.finish()
+        self.assertEqual(self.controller.update["latest"]["version"], "1.1.0")
+
     async def test_progress_is_shown_and_cancel_reaches_the_launcher(self):
         await self.ready(update=[["progress", {"phase": "download", "done": 1, "total": 4, "message": "Downloading"}],
                                  ["await-cancel", None]])
@@ -238,8 +250,42 @@ class Jobs(Case):
         self.controller.start("rebuild")
         await self.until(lambda: self.controller.job["message"] == "Compiling")
         pid = self.runs()[-1]["pid"]
+        before = len(self.runs())
         await asyncio.wait_for(self.controller.close(), 5)
         await self.until(lambda: not Path(f"/proc/{pid}").exists())
+        # the job is over, and nothing was started or reported on the way out
+        self.assertTrue(self.controller._task.done())
+        self.assertEqual((len(self.runs()), self.done), (before, []))
+
+
+class Closing(Case):
+    async def test_a_question_under_way_is_stopped_and_nothing_new_starts(self):
+        self.write_plan(status=[["await-cancel", None]])
+        self.controller.set_install(str(self.install))
+        asked = asyncio.ensure_future(self.controller.refresh())
+        await self.until(lambda: (self.install / "runs.jsonl").exists() and self.runs())
+        pid = self.runs()[0]["pid"]
+        await asyncio.wait_for(self.controller.close(), 5)
+        await asyncio.wait_for(asked, 5)
+        await self.until(lambda: not Path(f"/proc/{pid}").exists())
+        await self.controller.refresh()
+        self.assertEqual(len(self.runs()), 1)
+
+    async def test_an_update_that_does_not_stop_is_left_to_finish(self):
+        await self.ready(update=[["progress", {"phase": "install", "done": 0, "total": 0, "message": "Installing"}], ["sleep", 6]])
+        self.controller.start("update")
+        await self.until(lambda: self.controller.job["message"] == "Installing")
+        command = self.controller._command
+        pid = self.runs()[-1]["pid"]
+        started = time.monotonic()
+        await asyncio.wait_for(self.controller.close(), 8)
+        self.assertLess(time.monotonic() - started, 5)  # what the loader allows
+        # as when the loader's process ends: closing asyncio's side must not end the launcher
+        command.process._transport.close()
+        await asyncio.sleep(0.3)
+        self.assertIn(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0], ("R", "S"))  # running, not ended
+        self.controller._task.cancel()
+        os.kill(pid, 9)
 
 
 class Awake(Case):
@@ -260,6 +306,22 @@ class Awake(Case):
         self.assertEqual(again.state()["held_sleep"], again.held_sleep)
         again.release_sleep()
         self.assertIsNone(self.reload().held_sleep)
+
+    async def test_a_record_that_cannot_be_saved_is_not_kept_or_dropped(self):
+        def full():
+            raise OSError(28, "No space left on device")
+
+        self.controller.set_install(str(self.install))
+        save, self.controller._save = self.controller._save, full
+        with self.assertRaises(OSError):
+            self.controller.hold_sleep(300, 900)
+        self.assertIsNone(self.controller.state()["held_sleep"])
+        self.controller._save = save
+        self.controller.hold_sleep(300, 900)
+        self.controller._save = full
+        with self.assertRaises(OSError):
+            self.controller.release_sleep()
+        self.assertEqual(self.controller.held_sleep, {"battery": 300, "ac": 900})
 
     async def test_only_timers_are_recorded(self):
         for bad in ((-1, 0), (None, 3), (1.5, 2), (True, 2)):
