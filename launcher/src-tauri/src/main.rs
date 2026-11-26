@@ -701,7 +701,6 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         extra_env = lsfg::env(Path::new(&st.dll), cfg.lsfg_multiplier, &cfg.lsfg_flow_scale, cfg.lsfg_performance);
     }
     let report_opts = report::Options {
-        enabled: cfg.send_reports,
         config_dir: app.path().app_config_dir().ok(),
         dump_dir: cfg.dump_dir.clone(),
         launcher_dir: exe_dir(),

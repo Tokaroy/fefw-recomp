@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Opt-in, anonymized crash and performance report uploader.
 //!
-//! Runs after `fefw.exe` exits when the player has opted in (`Config::send_reports`). Only fires when an issue is detected
-//! (fresh crash/freeze/fatal file, non-zero exit code, heavy hitches, or sustained low FPS), scrubs local paths, usernames,
-//! hostnames and Steam IDs, saves the exact scrubbed JSON to `fefw_last_report.json` in the run folder so the player can
-//! inspect it, compresses it with zstd, and POSTs it to the configured Cloudflare Worker.
+//! Runs after `fefw.exe` exits when the player has opted in (`Config::send_reports`). Re-reads the saved preference on exit so
+//! opting out while the game runs stops that run's upload. Only fires when an issue is detected (fresh crash/freeze/fatal file,
+//! non-zero exit code, heavy hitches, or sustained low FPS), scrubs local paths (including configured `fefw.ini` paths such as
+//! `fs.save_dir`), usernames, hostnames and Steam IDs, saves the exact scrubbed JSON to `fefw_last_report.json` in the run
+//! folder so the player can inspect it, compresses it with zstd, and POSTs it to the configured Cloudflare Worker.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -33,11 +34,16 @@ const DAY_SECS: u64 = 24 * 60 * 60;
 /// Options passed from `main.rs` into `play::start` for post-exit reporting.
 #[derive(Clone, Default)]
 pub struct Options {
-    pub enabled: bool,
     pub config_dir: Option<PathBuf>,
     pub dump_dir: String,
     pub launcher_dir: PathBuf,
     pub launcher_version: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SavedPref {
+    send_reports: bool,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -109,10 +115,18 @@ fn endpoint_url() -> Option<String> {
     }
 }
 
+/// Re-reads the saved `launcher.json` so opting out while the game runs prevents that run from uploading.
+fn is_enabled_on_disk(config_dir: &Path) -> bool {
+    fs::read_to_string(config_dir.join("launcher.json")).ok().and_then(|t| serde_json::from_str::<SavedPref>(&t).ok()).is_some_and(|p| p.send_reports)
+}
+
 /// Checks whether the finished run had a crash or performance issue and, if opted in and within rate limits,
 /// scrubs and uploads an anonymized report in the background. Errors are ignored so reporting never disrupts play.
 pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[ReportFile], crash_cause: Option<&str>) {
-    if !opts.enabled {
+    let Some(cfg_dir) = opts.config_dir.as_deref() else {
+        return;
+    };
+    if !is_enabled_on_disk(cfg_dir) {
         return;
     }
     let Some(base_url) = endpoint_url() else {
@@ -130,13 +144,14 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
 
     let now = now_unix_s();
     let sig = crash_cause.unwrap_or("").chars().take(80).collect::<String>();
-    if let Some(cfg_dir) = opts.config_dir.as_deref() {
-        if !allow_by_rate_limit(cfg_dir, now, trigger, &build_id, &sig) {
-            return;
-        }
+    if !allow_by_rate_limit(cfg_dir, now, trigger, &build_id, &sig) {
+        return;
     }
 
-    let scrubber = Scrubber::from_env(game_dir, &opts.dump_dir, &opts.launcher_dir);
+    let ini_text = fs::read_to_string(game_dir.join(GAME_INI)).unwrap_or_default();
+    let ini = Ini::parse(&ini_text);
+
+    let scrubber = Scrubber::from_env(game_dir, &opts.dump_dir, &opts.launcher_dir, &ini);
     let gpu = {
         let g = scrubber.scrub(&metrics.gpu);
         if g.trim().is_empty() {
@@ -158,7 +173,7 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
         }
     }
 
-    let settings = safe_ini_settings(game_dir);
+    let settings = safe_ini_settings(&ini);
     let bundle = ReportBundle {
         schema: 1,
         trigger,
@@ -237,9 +252,7 @@ pub fn maybe_send(opts: &Options, game_dir: &Path, code: Option<i32>, files: &[R
     let _ = fs::remove_file(&tmp);
 
     if ok {
-        if let Some(cfg_dir) = opts.config_dir.as_deref() {
-            record_sent(cfg_dir, now, trigger, &build_id, &sig);
-        }
+        record_sent(cfg_dir, now, trigger, &build_id, &sig);
     }
 }
 
@@ -344,25 +357,15 @@ fn parse_log_metrics(log: &str) -> LogMetrics {
             m.low1_fps = Some(m.low1_fps.map_or(low1, |prev| prev.min(low1)));
             m.worst_ms = Some(m.worst_ms.map_or(worst, |prev| prev.max(worst)));
         }
-        // Session stamp from runtime: `runtime: session: ...`
-        if m.gpu.is_empty() {
-            if let Some(rest) = line.split_once("GPU:").or_else(|| line.split_once("Vulkan device:")).map(|(_, r)| r) {
+        // Runtime session stamp (runtime/src/core/build_info.cpp):
+        // `runtime: session: <app_build>, ABI <N>; gpu <name>; ...`
+        if let Some((_, rest)) = line.split_once("runtime: session:") {
+            parse_session_stamp(rest, &mut m);
+        } else if m.gpu.is_empty() {
+            if let Some((_, rest)) = line.split_once("Vulkan device:") {
                 let g = rest.split([',', ';', '|']).next().unwrap_or("").trim();
                 if !g.is_empty() {
                     m.gpu = g.chars().take(128).collect();
-                }
-            } else if let Some((_, rest)) = line.split_once("session:") {
-                for part in rest.split([',', ';', '|']) {
-                    let p = part.trim();
-                    if let Some(v) = p.strip_prefix("gpu=").or_else(|| p.strip_prefix("GPU=")) {
-                        if !v.trim().is_empty() {
-                            m.gpu = v.trim().chars().take(128).collect();
-                        }
-                    } else if let Some(v) = p.strip_prefix("build=").or_else(|| p.strip_prefix("rev=")) {
-                        if m.build_id.is_empty() && !v.trim().is_empty() {
-                            m.build_id = v.trim().chars().take(64).collect();
-                        }
-                    }
                 }
             }
         }
@@ -372,6 +375,25 @@ fn parse_log_metrics(log: &str) -> LogMetrics {
         m.mean_fps = Some((weighted_fps / weight_s * 10.0).round() / 10.0);
     }
     m
+}
+
+fn parse_session_stamp(rest: &str, m: &mut LogMetrics) {
+    let mut parts = rest.split(';');
+    if let Some(first) = parts.next() {
+        let head = first.split(", ABI").next().unwrap_or(first).trim();
+        if m.build_id.is_empty() && !head.is_empty() && !head.starts_with("nxrt (no build") {
+            m.build_id = head.chars().take(64).collect();
+        }
+    }
+    for part in parts {
+        let p = part.trim();
+        if let Some(v) = p.strip_prefix("gpu ").or_else(|| p.strip_prefix("GPU ")) {
+            let v = v.trim();
+            if !v.is_empty() {
+                m.gpu = v.chars().take(128).collect();
+            }
+        }
+    }
 }
 
 fn parse_hitch_summary(line: &str) -> Option<(f64, f64, f64, f64)> {
@@ -391,30 +413,31 @@ fn parse_hitch_summary(line: &str) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
-/// Allowlisted non-path keys from `fefw.ini` useful for diagnosing performance or crash issues.
-fn safe_ini_settings(game_dir: &Path) -> BTreeMap<String, String> {
+/// Allowlisted non-path keys from `fefw.ini` matching the actual sections/keys written by the launcher.
+fn safe_ini_settings(ini: &Ini) -> BTreeMap<String, String> {
     const ALLOW: &[(&str, &str)] = &[
-        ("fefw", "fps_60"),
-        ("fefw", "fps_120"),
+        ("fefw", "output"),
+        ("fefw", "ultrawide"),
+        ("fefw", "fps60"),
+        ("fefw", "fps120"),
+        ("fefw", "smooth_step"),
         ("fefw", "render"),
-        ("fefw", "render_width"),
-        ("fefw", "render_height"),
-        ("fefw", "aspect"),
-        ("gfx", "width"),
-        ("gfx", "height"),
-        ("gfx", "fullscreen"),
-        ("gfx", "vsync"),
-        ("gfx", "present_mode"),
-        ("gfx", "upscaler"),
-        ("gfx", "upscaler_quality"),
-        ("gfx", "frame_gen"),
-        ("gfx", "max_fps"),
-        ("nvn", "async_compile"),
-        ("nvn", "bc7"),
+        ("fefw", "render_ratio"),
+        ("fefw", "quality"),
+        ("fefw", "shadow_size"),
+        ("fefw", "reflections"),
+        ("fefw", "ambient_occlusion"),
+        ("fefw", "crowd_detail"),
+        ("fefw", "scenery_detail"),
+        ("display", "window_mode"),
+        ("display", "width"),
+        ("display", "height"),
+        ("dlss", "upscaler"),
+        ("dlss", "frame_gen"),
+        ("gfx", "texture_detail"),
+        ("gfx", "astc_bc"),
         ("log", "level"),
     ];
-    let text = fs::read_to_string(game_dir.join(GAME_INI)).unwrap_or_default();
-    let ini = Ini::parse(&text);
     let mut out = BTreeMap::new();
     for &(sec, key) in ALLOW {
         if let Some(val) = ini.get(sec, key) {
@@ -465,13 +488,30 @@ struct Scrubber {
 }
 
 impl Scrubber {
-    fn from_env(game_dir: &Path, dump_dir: &str, launcher_dir: &Path) -> Self {
+    fn from_env(game_dir: &Path, dump_dir: &str, launcher_dir: &Path, ini: &Ini) -> Self {
         let mut s = Self { literals: Vec::new() };
         s.add_path(&game_dir.to_string_lossy(), "<GAME_DIR>");
         if !dump_dir.trim().is_empty() {
             s.add_path(dump_dir.trim(), "<DUMP_DIR>");
         }
         s.add_path(&launcher_dir.to_string_lossy(), "<LAUNCHER_DIR>");
+        // Include all configured paths from fefw.ini (e.g. custom save_dir, mods, dump, caches, upscaler DLLs).
+        for (sec, key, token) in [
+            ("fs", "save_dir", "<SAVE_DIR>"),
+            ("fs", "romfs", "<ROMFS_DIR>"),
+            ("fs", "exefs", "<EXEFS_DIR>"),
+            ("fs", "mods", "<MODS_DIR>"),
+            ("aoc", "dir", "<AOC_DIR>"),
+            ("nvn", "shader_cache", "<SHADER_CACHE>"),
+            ("nvn", "bc7_cache", "<BC7_CACHE>"),
+            ("upscale", "fsr_dll", "<UPSCALER_PATH>"),
+            ("upscale", "dlss_dll", "<UPSCALER_PATH>"),
+            ("upscale", "xess_dll", "<UPSCALER_PATH>"),
+        ] {
+            if let Some(val) = ini.get(sec, key) {
+                s.add_path(&val, token);
+            }
+        }
         for var in ["HOME", "USERPROFILE"] {
             if let Ok(v) = std::env::var(var) {
                 s.add_path(&v, "<HOME>");
@@ -491,7 +531,7 @@ impl Scrubber {
     }
 
     fn add_path(&mut self, raw: &str, token: &'static str) {
-        let trimmed = raw.trim().trim_end_matches(['/', '\\']);
+        let trimmed = raw.trim().trim_matches('"').trim_end_matches(['/', '\\']);
         if trimmed.len() < 4 {
             return;
         }
@@ -501,7 +541,11 @@ impl Scrubber {
         if bwd != fwd {
             self.literals.push((bwd, token));
         }
-        if fwd.starts_with('/') {
+        if let Some(stripped) = fwd.strip_prefix("Z:").or_else(|| fwd.strip_prefix("z:")) {
+            if stripped.starts_with('/') && stripped.len() >= 4 {
+                self.literals.push((stripped.to_string(), token));
+            }
+        } else if fwd.starts_with('/') {
             self.literals.push((format!("Z:{fwd}"), token));
             self.literals.push((format!("z:{fwd}"), token));
             self.literals.push((format!("Z:{}", fwd.replace('/', "\\")), token));
@@ -591,18 +635,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scrubs_paths_usernames_and_steam_ids() {
-        let mut s = Scrubber { literals: vec![] };
-        s.add_path("/home/alice/Games/fefw", "<GAME_DIR>");
+    fn scrubs_paths_save_dir_usernames_and_steam_ids() {
+        let ini = Ini::parse("[fs]\nsave_dir = D:/Alice Backups/FEFW\nmods = Z:/mnt/alice_mods/fefw\n");
+        let mut s = Scrubber::from_env(Path::new("/home/alice/Games/fefw"), "", Path::new("/opt/launcher"), &ini);
         s.literals.push(("ALICE-PC".into(), "<HOST>"));
-        let sample =
-            "Loaded Z:\\home\\alice\\Games\\fefw\\fefw.ini on ALICE-PC from C:\\Users\\bob\\dump and /home/charlie/test steam=76561198012345678";
+        s.literals.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+        let sample = "save=D:/Alice Backups/FEFW/slot0 mods=/mnt/alice_mods/fefw Loaded Z:\\home\\alice\\Games\\fefw\\fefw.ini on ALICE-PC from C:\\Users\\bob\\dump and /home/charlie/test steam=76561198012345678";
         let clean = s.scrub(sample);
+        assert!(!clean.contains("Alice Backups"));
+        assert!(!clean.contains("alice_mods"));
         assert!(!clean.contains("alice"));
         assert!(!clean.contains("bob"));
         assert!(!clean.contains("charlie"));
         assert!(!clean.contains("ALICE-PC"));
         assert!(!clean.contains("76561198012345678"));
+        assert!(clean.contains("<SAVE_DIR>"));
+        assert!(clean.contains("<MODS_DIR>"));
         assert!(clean.contains("<GAME_DIR>"));
         assert!(clean.contains("<USER>"));
         assert!(clean.contains("<HOST>"));
@@ -610,13 +658,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_gauge_summaries_and_triggers() {
+    fn parses_real_session_stamp_and_ignores_bc_gpu_line() {
         let log = "\
-[  1.000 I t1 runtime] session: build=abc1234, gpu=AMD Radeon RX 7800 XT\n\
+[  0.100 I t1 gfx] texture compression on this GPU: BC yes, ASTC no\n\
+[  1.000 I t1 runtime] runtime: session: fefw 0.3.1 (abc1234), ABI 4; gpu AMD Radeon RX 7800 XT; wine 9.0\n\
 [ 60.000 I t2 hitch] 1500 frames in 60.0 s: mean 25.0 fps, 1% low 16.5 fps, worst 80.0 ms, 4 over 2x the median (40.0 ms)\n\
 [120.000 I t2 hitch] 1560 frames in 60.0 s: mean 26.0 fps, 1% low 17.0 fps, worst 90.0 ms, 2 over 2x the median (38.5 ms)\n";
         let m = parse_log_metrics(log);
-        assert_eq!(m.build_id, "abc1234");
+        assert_eq!(m.build_id, "fefw 0.3.1 (abc1234)");
         assert_eq!(m.gpu, "AMD Radeon RX 7800 XT");
         assert_eq!(m.mean_fps, Some(25.5));
         assert_eq!(m.low1_fps, Some(16.5));
@@ -630,6 +679,30 @@ mod tests {
         let hitchy =
             LogMetrics { measured_s: 30.0, mean_fps: Some(58.0), low1_fps: Some(40.0), worst_ms: Some(310.0), hitch_count: 2, ..Default::default() };
         assert_eq!(detect_trigger(Some(0), &[], &hitchy), Some("hitch"));
+    }
+
+    #[test]
+    fn extracts_actual_launcher_ini_keys_and_skips_paths() {
+        let ini = Ini::parse("[fefw]\nfps60 = 1\nfps120 = 0\noutput = 1080p\n[dlss]\nupscaler = fsr\nframe_gen = 1\n[fs]\nsave_dir = D:/Secret\n");
+        let s = safe_ini_settings(&ini);
+        assert_eq!(s.get("fefw.fps60").map(String::as_str), Some("1"));
+        assert_eq!(s.get("fefw.fps120").map(String::as_str), Some("0"));
+        assert_eq!(s.get("dlss.upscaler").map(String::as_str), Some("fsr"));
+        assert_eq!(s.get("dlss.frame_gen").map(String::as_str), Some("1"));
+        assert!(!s.contains_key("fs.save_dir"));
+    }
+
+    #[test]
+    fn rechecks_saved_opt_out_on_disk() {
+        let dir = std::env::temp_dir().join(format!("fefw-report-pref-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!is_enabled_on_disk(&dir));
+        fs::write(dir.join("launcher.json"), r#"{"send_reports": true}"#).unwrap();
+        assert!(is_enabled_on_disk(&dir));
+        fs::write(dir.join("launcher.json"), r#"{"send_reports": false}"#).unwrap();
+        assert!(!is_enabled_on_disk(&dir));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

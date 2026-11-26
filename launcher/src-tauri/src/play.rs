@@ -356,7 +356,7 @@ pub fn start(
         let report_files_copy = files.clone();
         let report_cause = other_fatal.clone();
         set_status(&app2, Status { state: "exited".into(), code, crashed, files, message });
-        if report_opts.enabled {
+        if report_opts.config_dir.is_some() {
             let report_dir = dir.clone();
             std::thread::spawn(move || {
                 crate::report::maybe_send(&report_opts, &report_dir, code, &report_files_copy, report_cause.as_deref());

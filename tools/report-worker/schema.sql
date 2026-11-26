@@ -19,3 +19,11 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_trigger ON reports (trigger, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_build_id ON reports (build_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket_key TEXT PRIMARY KEY,
+  day TEXT NOT NULL,
+  count INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_limits_day ON rate_limits (day);

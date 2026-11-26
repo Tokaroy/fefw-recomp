@@ -5,15 +5,20 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Hard cap on expanded JSON size to protect against maliciously crafted zstd bombs.
+MAX_EXPANDED_BYTES = 8 * 1024 * 1024  # 8 MiB
 
 
 def _env_or_die(val: str | None, env_name: str) -> str:
@@ -38,48 +43,87 @@ def _request(url: str, token: str, method: str = "GET") -> bytes:
             return resp.read()
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace").strip()
-        print(f"HTTP {e.code} from {url}: {body}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"HTTP {e.code} from {url}: {body}") from e
     except urllib.error.URLError as e:
-        print(f"network error for {url}: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"network error for {url}: {e}") from e
 
 
-def _decompress_zstd(data: bytes) -> bytes:
+def _read_bounded(stream: io.BufferedIOBase, limit: int) -> bytes:
+    out = bytearray()
+    while True:
+        chunk = stream.read(min(65536, limit + 1 - len(out)))
+        if not chunk:
+            break
+        out.extend(chunk)
+        if len(out) > limit:
+            raise ValueError(f"decompressed report exceeds {limit} bytes")
+    return bytes(out)
+
+
+def _decompress_zstd(data: bytes, max_bytes: int = MAX_EXPANDED_BYTES) -> bytes:
     try:
         import zstandard  # type: ignore
 
-        return zstandard.ZstdDecompressor().decompress(data)
+        dctx = zstandard.ZstdDecompressor()
+        with dctx.stream_reader(io.BytesIO(data)) as reader:
+            return _read_bounded(reader, max_bytes)
     except ImportError:
         pass
     zstd_bin = shutil.which("zstd")
     if zstd_bin:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [zstd_bin, "-d", "-c"],
-            input=data,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
         )
-        if proc.returncode == 0:
-            return proc.stdout
-        print(f"zstd failed: {proc.stderr.decode('utf-8', errors='replace')}", file=sys.stderr)
-        sys.exit(1)
-    print("error: install python 'zstandard' or the 'zstd' CLI to decompress reports", file=sys.stderr)
-    sys.exit(1)
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+
+        def _feed() -> None:
+            try:
+                proc.stdin.write(data)
+            except BrokenPipeError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        feeder = threading.Thread(target=_feed, daemon=True)
+        feeder.start()
+        try:
+            out = _read_bounded(proc.stdout, max_bytes)
+        except ValueError:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+            feeder.join(timeout=5)
+        stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
+        proc.stderr.close()
+        if proc.wait() != 0:
+            raise RuntimeError(f"zstd failed: {stderr}")
+        return out
+    raise RuntimeError("install python 'zstandard' or the 'zstd' CLI to decompress reports")
 
 
 def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
     bundle = json.loads(_decompress_zstd(raw_zst).decode("utf-8", errors="replace"))
+    if not isinstance(bundle, dict):
+        raise ValueError("report payload is not a JSON object")
     dest = out_dir / report_id
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "report.json").write_text(json.dumps(bundle, indent=2), encoding="utf-8")
-    if bundle.get("log"):
+    if isinstance(bundle.get("log"), str) and bundle["log"]:
         (dest / "fefw.log").write_text(bundle["log"], encoding="utf-8")
-    for name, text in (bundle.get("crash_files") or {}).items():
-        safe = Path(name).name
-        if safe and text:
-            (dest / safe).write_text(text, encoding="utf-8")
+    crash_files = bundle.get("crash_files")
+    if isinstance(crash_files, dict):
+        for name, text in crash_files.items():
+            safe = Path(str(name)).name
+            if safe and isinstance(text, str) and text:
+                (dest / safe).write_text(text, encoding="utf-8")
     return dest
 
 
@@ -143,29 +187,41 @@ def main() -> None:
     base = _env_or_die(args.url, "FEFW_REPORT_URL").rstrip("/")
     token = _env_or_die(args.token, "FEFW_REPORT_ADMIN_TOKEN")
 
-    if args.cmd == "list":
-        data = json.loads(_request(_build_list_url(base, args), token))
-        _print_table(data.get("reports") or [])
-    elif args.cmd == "get":
-        raw = _request(f"{base}/v1/reports/{args.id}", token)
-        dest = _save_bundle(args.id, raw, Path(args.out))
-        print(f"Saved report to {dest}")
-    elif args.cmd == "sync":
-        out_dir = Path(args.out)
-        data = json.loads(_request(_build_list_url(base, args), token))
-        rows = data.get("reports") or []
-        downloaded = 0
-        for r in rows:
-            rid = r["id"]
-            if (out_dir / rid / "report.json").is_file():
-                continue
-            raw = _request(f"{base}/v1/reports/{rid}", token)
-            _save_bundle(rid, raw, out_dir)
-            downloaded += 1
-        print(f"Synced {downloaded} new report(s) into {out_dir} ({len(rows)} matched).")
-    elif args.cmd == "delete":
-        _request(f"{base}/v1/reports/{args.id}", token, method="DELETE")
-        print(f"Deleted report {args.id}")
+    try:
+        if args.cmd == "list":
+            data = json.loads(_request(_build_list_url(base, args), token))
+            _print_table(data.get("reports") or [])
+        elif args.cmd == "get":
+            raw = _request(f"{base}/v1/reports/{args.id}", token)
+            dest = _save_bundle(args.id, raw, Path(args.out))
+            print(f"Saved report to {dest}")
+        elif args.cmd == "sync":
+            out_dir = Path(args.out)
+            data = json.loads(_request(_build_list_url(base, args), token))
+            rows = data.get("reports") or []
+            downloaded = 0
+            failed = 0
+            for r in rows:
+                rid = r.get("id")
+                if not rid or (out_dir / rid / "report.json").is_file():
+                    continue
+                try:
+                    raw = _request(f"{base}/v1/reports/{rid}", token)
+                    _save_bundle(rid, raw, out_dir)
+                    downloaded += 1
+                except Exception as e:
+                    failed += 1
+                    print(f"warning: skipping report {rid}: {e}", file=sys.stderr)
+            msg = f"Synced {downloaded} new report(s) into {out_dir} ({len(rows)} matched"
+            if failed:
+                msg += f", {failed} failed"
+            print(msg + ").")
+        elif args.cmd == "delete":
+            _request(f"{base}/v1/reports/{args.id}", token, method="DELETE")
+            print(f"Deleted report {args.id}")
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Cloudflare Worker for anonymized fefw-recomp crash & performance reports.
 // Stores zstd-compressed report bundles in R2 and queryable metadata in D1.
-// Client IP addresses are never logged or stored.
+// Raw client IP addresses are never logged or stored (only a daily salted SHA-256 hash is used for rate limiting).
 
 const MAX_BODY_BYTES = 1_572_864; // 1.5 MiB compressed
+const MAX_REPORTS_PER_IP_PER_DAY = 10;
+const MAX_REPORTS_GLOBAL_PER_DAY = 500;
+const MAX_TOTAL_REPORTS = 20_000;
+const MAX_TOTAL_STORAGE_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB cap (stays under 10 GiB R2 free tier)
 const ALLOWED_TRIGGERS = new Set(['crash', 'freeze', 'fatal', 'exit_code', 'hitch', 'low_fps']);
 
 function json(data, status = 200) {
@@ -64,6 +68,61 @@ function isAdmin(request, env) {
   return timingSafeEqual(auth.slice(7), secret);
 }
 
+async function dailyIpBucket(request, env, day) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const salt = typeof env.ADMIN_TOKEN === 'string' && env.ADMIN_TOKEN ? env.ADMIN_TOKEN : 'fefw-default-salt';
+  const data = new TextEncoder().encode(`${day}:${salt}:${ip}`);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const hex = Array.from(new Uint8Array(digest).slice(0, 12))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `ip:${day}:${hex}`;
+}
+
+async function checkAndConsumeLimits(request, env, day, incomingBytes) {
+  // Prune previous days' rate-limit counters opportunistically.
+  await env.REPORTS_DB.prepare('DELETE FROM rate_limits WHERE day < ?').bind(day).run();
+
+  // Enforce total storage and row budget before accepting a new upload.
+  const totals = await env.REPORTS_DB.prepare(
+    'SELECT COUNT(*) AS cnt, COALESCE(SUM(size_bytes), 0) AS bytes FROM reports'
+  ).first();
+  if (
+    totals &&
+    (Number(totals.cnt) >= MAX_TOTAL_REPORTS || Number(totals.bytes) + incomingBytes > MAX_TOTAL_STORAGE_BYTES)
+  ) {
+    return json({ error: 'storage budget reached' }, 507);
+  }
+
+  // Enforce global daily limit atomically.
+  const globalKey = `global:${day}`;
+  const globalRes = await env.REPORTS_DB.prepare(
+    `INSERT INTO rate_limits (bucket_key, day, count) VALUES (?, ?, 1)
+     ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1
+     WHERE count < ?`
+  )
+    .bind(globalKey, day, MAX_REPORTS_GLOBAL_PER_DAY)
+    .run();
+  if (!globalRes.meta || globalRes.meta.changes === 0) {
+    return json({ error: 'daily global limit reached' }, 429);
+  }
+
+  // Enforce per-IP daily limit using a non-reversible daily salted hash.
+  const ipKey = await dailyIpBucket(request, env, day);
+  const ipRes = await env.REPORTS_DB.prepare(
+    `INSERT INTO rate_limits (bucket_key, day, count) VALUES (?, ?, 1)
+     ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1
+     WHERE count < ?`
+  )
+    .bind(ipKey, day, MAX_REPORTS_PER_IP_PER_DAY)
+    .run();
+  if (!ipRes.meta || ipRes.meta.changes === 0) {
+    return json({ error: 'rate limit exceeded' }, 429);
+  }
+
+  return null;
+}
+
 async function handleSubmit(request, env) {
   const contentLen = Number(request.headers.get('content-length') || '0');
   if (contentLen > MAX_BODY_BYTES) {
@@ -91,9 +150,13 @@ async function handleSubmit(request, env) {
     return json({ error: 'expected zstd-compressed body' }, 400);
   }
 
-  const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const datePrefix = createdAt.slice(0, 10);
+
+  const limitErr = await checkAndConsumeLimits(request, env, datePrefix, body.byteLength);
+  if (limitErr) return limitErr;
+
+  const id = crypto.randomUUID();
   const buildId = cleanStr(meta.build_id, 64) || 'unknown';
   const launcherVersion = cleanStr(meta.launcher_version, 32) || 'unknown';
   const os = cleanStr(meta.os, 32) || 'unknown';
@@ -112,31 +175,37 @@ async function handleSubmit(request, env) {
     customMetadata: { id, trigger, build_id: buildId, os },
   });
 
-  await env.REPORTS_DB.prepare(
-    `INSERT INTO reports (
-       id, created_at, trigger, build_id, launcher_version, os, gpu,
-       exit_code, mean_fps, low1_fps, worst_ms, hitch_count, crash_cause,
-       r2_key, size_bytes
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      id,
-      createdAt,
-      trigger,
-      buildId,
-      launcherVersion,
-      os,
-      gpu,
-      exitCode,
-      meanFps,
-      low1Fps,
-      worstMs,
-      hitchCount,
-      crashCause,
-      r2Key,
-      body.byteLength
+  try {
+    await env.REPORTS_DB.prepare(
+      `INSERT INTO reports (
+         id, created_at, trigger, build_id, launcher_version, os, gpu,
+         exit_code, mean_fps, low1_fps, worst_ms, hitch_count, crash_cause,
+         r2_key, size_bytes
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run();
+      .bind(
+        id,
+        createdAt,
+        trigger,
+        buildId,
+        launcherVersion,
+        os,
+        gpu,
+        exitCode,
+        meanFps,
+        low1Fps,
+        worstMs,
+        hitchCount,
+        crashCause,
+        r2Key,
+        body.byteLength
+      )
+      .run();
+  } catch {
+    // Avoid leaving an unlisted R2 object if the D1 insert fails.
+    await env.REPORTS_BUCKET.delete(r2Key).catch(() => {});
+    return json({ error: 'failed to index report' }, 500);
+  }
 
   return json({ ok: true, id }, 202);
 }
