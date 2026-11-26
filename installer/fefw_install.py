@@ -572,6 +572,8 @@ class Installer:
         self.admin = Admin(ui, run, user)
         self.decky = self.home / "homebrew"
         self.plugin_settings = self.decky / "settings" / PLUGIN_FOLDER / "settings.json"
+        # there while Decky may not have loaded what is in its plugin folder: the files alone do not show that
+        self.restart_pending = self.home / ".cache" / "fefw-recomp-install" / "restart-pending"
         self.summary = []
         self._release = None
 
@@ -762,13 +764,16 @@ class Installer:
             new = unpack_plugin(archive, stage)
             current = same_files(new, installed)
             moved = read_json(self.plugin_settings).get("install_dir") != str(folder)
-            if current and not moved:
+            pending = self.restart_pending.is_file()
+            if current and not moved and not pending:
                 self.say("\nThe Decky plugin is up to date.")
                 return
             version = read_json(new / "package.json").get("version", "?")
             old = read_json(installed / "package.json").get("version")
-            if current:
+            if current and moved:
                 question = f"Point the Decky plugin at {folder}?"
+            elif current:
+                question = "An earlier run did not get Decky to restart. Restart it now, to load the plugin?"
             elif old:
                 question = f"Replace the Decky plugin ({old}) with the release's ({version})?"
             else:
@@ -782,6 +787,9 @@ class Installer:
                 argv = ["systemctl", "restart", "plugin_loader"]
             else:
                 argv = ["sh", "-c", INSTALL_PLUGIN, "sh", str(new), str(installed.parent)]
+            with contextlib.suppress(OSError):
+                self.restart_pending.parent.mkdir(parents=True, exist_ok=True)
+                self.restart_pending.touch()
             done = False
             try:
                 done = self.admin.command(argv, "Installing the Decky plugin")
@@ -789,8 +797,10 @@ class Installer:
                 if saved and not done:  # as it was, so that the next run sees there is still something to do
                     self._restore(self.plugin_settings, before)
             if not done:
-                self.say("The plugin was not installed. Run this installer again to try once more.")
+                self.say("The plugin could not be installed and loaded. Run this installer again to try once more.")
                 return
+            with contextlib.suppress(OSError):
+                self.restart_pending.unlink()
         self.summary.append("The Decky plugin is installed: open it from the quick access menu in Game Mode.")
         if not saved:
             self.summary.append(f"In the plugin, choose the game's folder: {folder}")

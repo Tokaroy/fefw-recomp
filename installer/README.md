@@ -17,7 +17,8 @@ Every step that changes something asks first:
 4. The Steam shortcut, with its library art (the launcher's `--add-to-steam`; Steam closes and starts again).
 5. The launcher, to choose the game files and build the game.
 
-Running it again finishes or repairs an earlier run.
+Running it again finishes or repairs an earlier run, including a restart of Decky that did not happen. The download file runs one
+installer at a time.
 
 ## Administrator rights
 

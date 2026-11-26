@@ -3,12 +3,14 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import signal
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -423,7 +425,24 @@ class WholeRun(Temp):
             talk = self.install("y", "y", "n", "n")
         self.assertEqual(json.loads((self.installed / "package.json").read_text())["version"], "9.9.9")
         self.assertEqual(self.settings.read_bytes(), before)
-        self.assertIn("The plugin was not installed.", talk.text())
+        self.assertIn("The plugin could not be installed and loaded.", talk.text())
+
+    def test_a_restart_that_failed_is_tried_again(self):
+        self.install("", "y", "y", "n", "n")
+        plugin(self.packages, "10.0.0").replace(self.packages / "fefw-recomp-9.9.9-decky.zip")
+        systemctl = self.root / "bin" / "systemctl"
+        working = systemctl.read_text()
+        script(systemctl, "#!/bin/sh\nexit 1\n")  # the files go in, Decky does not come back
+        talk = self.install("y", "y", "n", "n")
+        self.assertIn("could not be installed and loaded", talk.text())
+        self.assertEqual(json.loads((self.installed / "package.json").read_text())["version"], "10.0.0")
+        script(systemctl, working)
+        (self.root / "systemctl").unlink()
+        talk = self.install("y", "y", "n", "n")
+        self.assertIn("Restart it now", "".join(talk.asked))
+        self.assertEqual(self.restarts(), ["restart plugin_loader"])
+        talk = self.install("y", "n", "n")  # and then there is nothing left to do
+        self.assertIn("The Decky plugin is up to date.", talk.text())
 
     def test_folder_questions(self):
         used = self.root / "used"
@@ -686,6 +705,38 @@ class DialogRights(unittest.TestCase):
 
 
 class Shipped(unittest.TestCase):
+    def test_a_second_launch_leaves_the_first_alone(self):
+        text = (HERE / "fefw-recomp-install.desktop").read_text()
+        line = next(line for line in text.splitlines() if line.startswith("Exec="))
+        shell, option, command = shlex.split(line[len("Exec="):])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # stands in for the installer: runs until told to stop
+            (root / "release.py").write_text(
+                "import pathlib, time\n"
+                f"root = pathlib.Path({str(root)!r})\n"
+                "with open(root / 'runs', 'a') as runs: runs.write('run\\n')\n"
+                "while not (root / 'stop').exists(): time.sleep(0.05)\n")
+            script(root / "bin" / "zenity", f'#!/bin/sh\necho "$@" >> "{root}/dialogs"\n')
+            released = f"https://github.com/{fi.REPO}/releases/latest/download/fefw-recomp-install.py"
+            argv = [shell, option, command.replace(released, (root / "release.py").as_uri())]
+            env = {"HOME": temp, "PATH": f"{root}/bin:/usr/bin:/bin"}
+            first = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL)
+            try:
+                for _ in range(200):
+                    if (root / "runs").is_file():
+                        break
+                    time.sleep(0.05)
+                second = subprocess.run(argv, env=env, capture_output=True, timeout=20)
+                self.assertEqual(second.returncode, 1)
+                self.assertIn("already running", (root / "dialogs").read_text())
+            finally:
+                (root / "stop").touch()
+                first.wait(timeout=20)
+            self.assertEqual((root / "runs").read_text(), "run\n")
+            self.assertEqual(subprocess.run(argv, env=env, capture_output=True, timeout=20).returncode, 0)  # free again
+
+
     def test_desktop_file_runs_the_released_script(self):
         text = (HERE / "fefw-recomp-install.desktop").read_text()
         command = next(line for line in text.splitlines() if line.startswith("Exec="))
