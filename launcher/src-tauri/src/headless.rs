@@ -321,13 +321,14 @@ fn upscaler_choice(value: &str, files: &crate::UpscalerFiles, nvidia: bool) -> (
     }
 }
 
-/// Whether a caller may offer this value of [dlss] frame_gen, by the Settings page's rules: the game's own FSR 3 frame generation
-/// does not work under Proton, so it is not offered on Linux, and DLSS frame generation needs an NVIDIA GPU and Streamline's files.
-fn frame_gen_choice(value: &str, dlss_framegen_found: bool, nvidia: bool, windows: bool) -> bool {
+/// Whether a caller may offer this value of [dlss] frame_gen, by the Settings page's rules, and the files to download for it:
+/// FSR 3 frame generation runs on any GPU, on Linux too (Proton), with AMD's amd_fidelityfx_vk.dll; DLSS frame generation needs an
+/// NVIDIA GPU and Streamline's files.
+fn frame_gen_choice(value: &str, fsr_framegen_found: bool, dlss_framegen_found: bool, nvidia: bool) -> (bool, Option<&'static str>) {
     match value {
-        "fsr3" => windows,
-        "dlss" => nvidia && dlss_framegen_found,
-        _ => true,
+        "fsr3" => (true, (!fsr_framegen_found).then_some("fsr")),
+        "dlss" => (nvidia && dlss_framegen_found, None),
+        _ => (true, None),
     }
 }
 
@@ -368,9 +369,11 @@ fn list_settings(cfg: &Config) -> Result<Value, String> {
                 .choices
                 .iter()
                 .map(|c| {
-                    let (mut available, download) = c.set.get("dlss/upscaler").map_or((true, None), |v| upscaler_choice(v, &files, nvidia));
+                    let (mut available, mut download) = c.set.get("dlss/upscaler").map_or((true, None), |v| upscaler_choice(v, &files, nvidia));
                     if let Some(v) = c.set.get("dlss/frame_gen") {
-                        available &= frame_gen_choice(v, files.dlss_framegen.found, nvidia, cfg!(windows));
+                        let (ok, fg_download) = frame_gen_choice(v, files.fsr_framegen.found, files.dlss_framegen.found, nvidia);
+                        available &= ok;
+                        download = download.or(fg_download);
                     }
                     json!({ "label": c.label, "available": available, "download": download })
                 })
@@ -568,14 +571,14 @@ mod tests {
 
     #[test]
     fn frame_generation_is_offered_as_on_the_settings_page() {
-        // the game's FSR 3 frame generation does not work under Proton
-        assert!(frame_gen_choice("fsr3", true, true, true));
-        assert!(!frame_gen_choice("fsr3", true, true, false));
-        // DLSS frame generation needs an NVIDIA GPU and its files, on either system
-        assert!(frame_gen_choice("dlss", true, true, false));
-        assert!(!frame_gen_choice("dlss", true, false, false));
-        assert!(!frame_gen_choice("dlss", false, true, true));
-        assert!(frame_gen_choice("0", false, false, false));
+        // FSR 3 frame generation on any GPU and system, with AMD's file to download when it is missing
+        assert_eq!(frame_gen_choice("fsr3", true, false, false), (true, None));
+        assert_eq!(frame_gen_choice("fsr3", false, false, false), (true, Some("fsr")));
+        // DLSS frame generation needs an NVIDIA GPU and its files
+        assert_eq!(frame_gen_choice("dlss", false, true, true), (true, None));
+        assert_eq!(frame_gen_choice("dlss", false, true, false), (false, None));
+        assert_eq!(frame_gen_choice("dlss", false, false, true), (false, None));
+        assert_eq!(frame_gen_choice("0", false, false, false), (true, None));
     }
 
     #[test]

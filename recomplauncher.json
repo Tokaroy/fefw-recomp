@@ -677,7 +677,7 @@
         {
             "id": "frame_gen",
             "label": "Frame generation",
-            "help": "One generated frame between real ones. Best with VSync off on a 120 Hz or faster display.",
+            "help": "One generated frame between real ones. Best with VSync off on a 120 Hz or faster display. FSR 3 suits desktop GPUs: on a handheld it can cost more frame rate than it gives.",
             "group": "Frame rate",
             "advanced": true,
             "defaults": {
@@ -697,7 +697,7 @@
                     }
                 },
                 {
-                    "label": "AMD FSR 3 (Windows only; needs AMD's file)",
+                    "label": "AMD FSR 3 (any GPU; needs AMD's file)",
                     "set": {
                         "dlss/frame_gen": "fsr3"
                     }
