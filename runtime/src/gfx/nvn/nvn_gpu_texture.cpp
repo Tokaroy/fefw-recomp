@@ -131,7 +131,13 @@ struct TexGpu {
     std::atomic<uint32_t> seen_ms{0};
     uint32_t demoted_ms = 0;
     uint32_t promoted_ms = 0;       // resid_ms when tex_promote restored it (cooldown against demote/promote thrash)
+    uint64_t image_id = 0;          // monotonic id of img.image, bumped whenever img is created or replaced in place
 };
+
+uint64_t next_image_id() {
+    static std::atomic<uint64_t> seq{1};
+    return seq.fetch_add(1, std::memory_order_relaxed);
+}
 
 // A virtual-pool texture too big to back fully (Mario Kart World's terrain virtual texture caches: 8192x8192 arrays of 68 layers, 1.4 to
 // 5.8 GB, of which a few hundred MB of tiles are mapped) is a Vulkan sparse-residency image. Host sparse blocks get device memory when a
@@ -779,6 +785,7 @@ TexGpu* create_texture_gpu(Texture* t, float want_scale) {
     g->seen_ms.store(resid_ms(), std::memory_order_relaxed);   // [gfx] residency: a new image counts as used
     // every image made (first use, retry, residency restore) tells the background jobs its format (nvn_texprep.h)
     auto made = [&]() -> TexGpu* {
+        g->image_id = next_image_id();
         t->image_format.store(static_cast<uint32_t>(g->format), std::memory_order_release);
         return g;
     };
@@ -1898,6 +1905,7 @@ bool tex_rescale(Texture* t, Frame& f, float to, const char* why) {
         device().destroy_image(old);
     });
     g->img = ni;
+    g->image_id = next_image_id();
     g->base = s.base;
     g->layout = nl;
     g->scale = to;
@@ -1978,6 +1986,7 @@ bool tex_f16_promote(Texture* t, Frame& f) {
         device().destroy_image(old);
     });
     g->img = ni;
+    g->image_id = next_image_id();
     g->layout = nl;
     g->format = hf;
     g->promoted = true;
@@ -2156,6 +2165,7 @@ uint64_t tex_demote(Texture* t, TexGpu* g, Frame& f) {
         device().destroy_image(old);
     });
     g->img = ni;
+    g->image_id = next_image_id();
     g->base = ns.base;
     g->levels = ns.levels;
     g->drop += k;
@@ -2191,6 +2201,7 @@ bool tex_promote(Texture* t, Frame& f) {
 }  // namespace
 
 bool tex_promote_for_test(Texture* t, Frame& f) { return tex_promote(t, f); }
+bool tex_demote_for_test(Texture* t, Frame& f) { return t && t->gpu && !t->gpu->failed && tex_demote(t, t->gpu, f) > 0; }
 
 void tex_mark_seen(Texture* t) {
     if (t && t->gpu && !t->gpu->failed) t->gpu->seen_ms.store(resid_ms(), std::memory_order_relaxed);
@@ -2656,6 +2667,7 @@ bool tex_remake_from_bc5(Texture* t, TexGpu* g) {
         device().destroy_image(old);
     });
     g->img = ni;
+    g->image_id = next_image_id();
     g->format = chosen;
     g->usage = usage;
     g->mutable_fmt = srgb_partner(chosen) != VK_FORMAT_UNDEFINED || bit_alias_class(chosen);
@@ -2995,12 +3007,23 @@ void tex_ensure_current(Texture* t, Frame& f) {
 
 bool tex_copy_buffer_regions(Texture* t, Frame& f, VkBuffer buf, const std::vector<VkBufferImageCopy>& regions) {
     TexGpu* g = t && t->gpu && !t->gpu->failed ? t->gpu : nullptr;
-    if (!g || !(g->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || regions.empty()) return false;
+    if (!g || !g->img.image || !(g->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || regions.empty()) return false;
+    for (const VkBufferImageCopy& r : regions) {
+        if (r.imageSubresource.mipLevel >= g->levels ||
+            r.imageSubresource.baseArrayLayer + r.imageSubresource.layerCount > g->layers)
+            return false;
+        const VkExtent3D e = level_extent(g->base, r.imageSubresource.mipLevel);
+        if (r.imageOffset.x < 0 || r.imageOffset.y < 0 || r.imageOffset.z < 0 ||
+            static_cast<uint32_t>(r.imageOffset.x) + r.imageExtent.width > e.width ||
+            static_cast<uint32_t>(r.imageOffset.y) + r.imageExtent.height > e.height ||
+            static_cast<uint32_t>(r.imageOffset.z) + r.imageExtent.depth > std::max(1u, e.depth))
+            return false;
+    }
     copy_regions_to_image(f, *g, buf, regions);
     return true;
 }
 
-const void* tex_gpu_identity(Texture* t) { return t && t->gpu && !t->gpu->failed ? t->gpu : nullptr; }
+uint64_t tex_gpu_identity(Texture* t) { return t && t->gpu && !t->gpu->failed && t->gpu->img.image ? t->gpu->image_id : 0; }
 
 void tex_transition(Texture* t, Frame& f, VkImageLayout layout) {
     TexGpu* g = tex_or_null(t);

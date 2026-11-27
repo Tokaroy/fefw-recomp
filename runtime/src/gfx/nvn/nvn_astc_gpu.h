@@ -125,8 +125,9 @@ void astc_gpu_shutdown();          // device idle: frees the pipelines and buffe
 
 // nvn_gpu_texture.cpp: copies buffer regions into the image of t (as an upload does) and leaves it sampled. False: t has no usable image.
 bool tex_copy_buffer_regions(Texture* t, Frame& f, VkBuffer buf, const std::vector<VkBufferImageCopy>& regions);
-// nvn_gpu_texture.cpp: identity of t's image (null: none), to tell whether a queued transcode still belongs to it.
-const void* tex_gpu_identity(Texture* t);
+// nvn_gpu_texture.cpp: monotonic identity of t's current VkImage (0: none), bumped on every in-place image remake (demote, rescale,
+// format change) so a queued transcode detects that its regions no longer match the image.
+uint64_t tex_gpu_identity(Texture* t);
 
 }  // namespace gpu
 }  // namespace nxrt::nvn::be

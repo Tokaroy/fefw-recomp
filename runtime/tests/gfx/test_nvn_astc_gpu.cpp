@@ -581,3 +581,43 @@ NXTEST(encoded_blocks_reach_the_cache) {
     }
     teardown(r);
 }
+
+// ---- 5: residency demotion while queued: tex_demote replaces g->img in place (same TexGpu*), so astc_gpu_pump must drop the stale job ----
+NXTEST(queued_texture_demoted_before_pump_is_dropped) {
+    if (!astctest::transcoder_or_skip()) return;
+    Rig r;
+    if (!bring_up(r, false, "0.5", "400")) {
+        CHECK(false);
+        return;
+    }
+    if (gpu_path(r)) {
+        Tex x;
+        std::vector<std::vector<uint8_t>> expect;
+        if (make_tex(x, NVN_TEXTURE_TARGET_2D, 512, 512, 1, 10, NVN_FORMAT_RGBA_ASTC_8x8) && fill_and_decode(x, valid_blocks(8, 8, false, 91, false), expect)) {
+            Texture* t = x.t.get();
+            gpu::run_frame_sync([&](Frame& f) { gpu::tex_ensure_current(t, f); });
+            CHECK(gpu::astc_gpu_work());
+            const uint64_t id_before = gpu::tex_gpu_identity(t);
+            const uint32_t drop_before = gpu::tex_level_drop(t);
+            CHECK(id_before != 0);
+            bool demoted = false;
+            gpu::run_frame_sync([&](Frame& f) { demoted = gpu::tex_demote_for_test(t, f); });
+            CHECK(demoted);
+            CHECK(gpu::tex_level_drop(t) > drop_before);
+            CHECK(gpu::tex_gpu_identity(t) != id_before);
+            CHECK(!t->cpu_dirty.load());
+            // Pumping must drop the stale job via the !live identity check (leaving cpu_dirty false) rather than running it and hitting
+            // Pass::Failed (which would set cpu_dirty true) or issuing out-of-bounds vkCmdCopyBufferToImage on the smaller image.
+            gpu::counters().presents.fetch_add(1);
+            gpu::run_frame_sync([&](Frame& f) { gpu::astc_gpu_pump(f); });
+            CHECK(!t->cpu_dirty.load());
+            // A subsequent pump also sees nothing left in the queue (only the idle scratch buffer until kScratchIdlePresents).
+            gpu::counters().presents.fetch_add(1);
+            gpu::run_frame_sync([&](Frame& f) { gpu::astc_gpu_pump(f); });
+            CHECK(!t->cpu_dirty.load());
+        } else {
+            CHECK(false);
+        }
+    }
+    teardown(r);
+}

@@ -338,6 +338,7 @@ void tex_sparse_before_copy(Texture* t, uint32_t layer, uint32_t level);   // a 
 VkImage tex_image(Texture* t);
 VkFormat tex_vk_format(Texture* t);
 bool tex_promote_for_test(Texture* t, Frame& f);   // the residency restore's new image (tex_promote), without a demotion before it
+bool tex_demote_for_test(Texture* t, Frame& f);    // shrinks a texture in place (tex_demote), for residency/ASTC-pump tests
 bool tex_hdr_promoted(Texture* t);   // an 8-bit sRGB render target kept as RGBA16F for the HDR scene (hdr_promote_target)
 VkImageAspectFlags tex_aspect(Texture* t);
 VkExtent3D tex_extent(Texture* t, uint32_t level = 0);
