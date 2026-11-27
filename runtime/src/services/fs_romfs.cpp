@@ -27,6 +27,7 @@
 
 #include "nxrt/diag.h"
 #include "nxrt/log.h"
+#include "nxrt/memory.h"
 #include "nxrt/nup.h"
 #include "nxrt/write_watch.h"
 
@@ -1015,6 +1016,7 @@ struct RomfsImage::Impl {
             invalidate_cache_if_loaded();
             return false;
         }
+        if (!mem::heap_touch(reinterpret_cast<uint64_t>(out), n)) return false;   // [memory] heap_lazy_commit: ReadFile fails on uncommitted pages
         const mem::ww::OsWriteScope ws(out, n);   // ReadFile fails on a page the write tracker made read-only
         while (n > 0) {
             const DWORD chunk = static_cast<DWORD>(std::min<uint64_t>(n, 1ull << 30));

@@ -410,6 +410,7 @@ LONG CALLBACK on_fault(EXCEPTION_POINTERS* ep) {
     const ULONG_PTR kind = rec->ExceptionInformation[0];     // 0 read, 1 write, 8 execute
     if (kind != 0 && kind != 1) return EXCEPTION_CONTINUE_SEARCH;
     const uint64_t addr = static_cast<uint64_t>(rec->ExceptionInformation[1]);
+    if (heap_lazy_fault(addr)) return EXCEPTION_CONTINUE_EXECUTION;   // [memory] heap_lazy_commit: the first use of a heap page
     // A write into a range an import has frozen (ImportFreeze): wait for the import, then let the write run again (the page is
     // read-write again, or armed and handled below on the next fault).
     if (kind == 1 && freeze_overlaps(addr, addr + 1)) {

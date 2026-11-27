@@ -342,6 +342,8 @@ int64_t api_read_file(const char* path, void* buf, uint64_t cap) {
     const uint64_t n = std::min<uint64_t>(static_cast<uint64_t>(size), buf ? cap : 0);
     if (n) {
         f.seekg(0);
+        // a large read goes from the C runtime straight into the buffer, which may be guest memory ([memory] heap_lazy_commit)
+        if (!nxrt::mem::heap_touch(reinterpret_cast<uint64_t>(buf), n)) return -1;
         f.read(static_cast<char*>(buf), static_cast<std::streamsize>(n));
         if (static_cast<uint64_t>(f.gcount()) != n) return -1;
     }
@@ -350,6 +352,7 @@ int64_t api_read_file(const char* path, void* buf, uint64_t cap) {
 
 int api_write_file(const char* path, const void* data, uint64_t size) {
     if (!path || !*path || (size && !data)) return 0;
+    if (!nxrt::mem::heap_touch(reinterpret_cast<uint64_t>(data), size)) return 0;   // as in api_read_file
     const std::filesystem::path p = std::filesystem::u8path(path);
     std::filesystem::path tmp = p;
     tmp += L".tmp";

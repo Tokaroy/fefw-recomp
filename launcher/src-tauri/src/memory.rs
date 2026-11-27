@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Running out of memory: a warning on the Play page when Windows has little left to give, and the cause of a run that ended for it.
 //!
-//! What counts is the commit limit (RAM plus page file), not free RAM. The game commits an 11 GB heap at boot, and more for itself
+//! What counts is the commit limit (RAM plus page file), not free RAM. The game commits a 9 GB heap at boot, and more for itself
 //! and the graphics driver afterwards.
 
 use serde::Serialize;
@@ -111,8 +111,9 @@ pub fn ran_out(log: &str) -> bool {
     let end = log.lines().filter_map(line_time).fold(0.0, f64::max);
     let mut last_figure: Option<(f64, f64)> = None; // (time, free commit) of the periodic memory line
     for line in log.lines() {
-        // ERROR_COMMITMENT_LIMIT, ERROR_NOT_ENOUGH_MEMORY, ERROR_COMMITMENT_MINIMUM (after the runtime's retries)
-        if line.contains("heap_commit [")
+        // ERROR_COMMITMENT_LIMIT, ERROR_NOT_ENOUGH_MEMORY, ERROR_COMMITMENT_MINIMUM (after the runtime's retries), at SetHeapSize or at a
+        // heap page's first use ([memory] heap_lazy_commit)
+        if (line.contains("heap_commit [") || line.contains("mem: lazy commit ["))
             && ["1455", "8", "635"].iter().any(|e| line.trim_end().ends_with(&format!("VirtualAlloc failed, error {e}")))
         {
             return true;
@@ -169,6 +170,8 @@ mod tests {
         assert!(!ran_out(&line(87)), "another error");
         assert!(!ran_out(&line(1455000)));
         assert!(!ran_out("[ 1.0 E t3 main] mem: commit 7100000000 (+1000): VirtualAlloc failed, error 1455\n"));
+        assert!(ran_out("[ 900.0 E t3 guest-87] mem: lazy commit [1200000, +200000): VirtualAlloc failed, error 1455\n"));
+        assert!(!ran_out("[ 900.0 E t3 guest-87] mem: lazy commit [1200000, +200000): VirtualAlloc failed, error 87\n"));
     }
 
     #[test]
