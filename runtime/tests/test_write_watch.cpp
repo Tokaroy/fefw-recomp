@@ -527,6 +527,7 @@ NXTEST(import_freeze_rapid_cycles_with_concurrent_writers) {
     ww::Region* r = setup();
     REQUIRE(r != nullptr);
     std::atomic<bool> stop{false};
+    std::atomic<int> ready{0};
     std::atomic<uint64_t> writes{0};
     std::vector<std::thread> writers;
     for (int t = 0; t < 2; ++t) {
@@ -536,10 +537,12 @@ NXTEST(import_freeze_rapid_cycles_with_concurrent_writers) {
                 const uint64_t pg = 4 + ((n + static_cast<uint64_t>(t)) & 3u);
                 *reinterpret_cast<volatile uint32_t*>(mem::kHeapBase + pg * kPg + static_cast<uint64_t>(t) * 64) = static_cast<uint32_t>(n);
                 ++n;
+                if (n == 1) ready.fetch_add(1, std::memory_order_release);
             }
             writes.fetch_add(n, std::memory_order_relaxed);
         });
     }
+    while (ready.load(std::memory_order_acquire) < 2) std::this_thread::yield();
     for (int i = 0; i < 60; ++i) {
         const ww::ImportFreeze fz(reinterpret_cast<void*>(mem::kHeapBase + 4 * kPg), 4 * kPg);
         if ((i & 3) == 0) std::this_thread::yield();
