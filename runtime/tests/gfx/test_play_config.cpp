@@ -1683,6 +1683,21 @@ NXTEST(pad_stick_keys_round_trip) {
     CHECK_EQ(format_settings(r), text);
 }
 
+NXTEST(pad_hd_haptics_off_by_default_and_round_trips) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings s = default_settings();
+    CHECK(!s.pad.hd_haptics);
+    CHECK(format_settings(s).find("\nhd_haptics = 0\n") != std::string::npos);
+    s.pad.hd_haptics = true;
+    const std::string text = format_settings(s);
+    Settings r;
+    std::string err;
+    REQUIRE_MSG(parse_settings(text, &r, &err), err);
+    CHECK(r.pad.hd_haptics);
+    CHECK_EQ(format_settings(r), text);
+    CHECK(!parse_settings("[pad]\nhd_haptics = maybe\n", &r, &err));
+}
+
 NXTEST(pad_stick_keys_written_in_order) {
     const nxrt::play::test::PlayTestGame play_game;
     const std::string text = format_settings(default_settings());

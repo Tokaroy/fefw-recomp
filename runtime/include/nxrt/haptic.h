@@ -9,6 +9,8 @@
 //   Rumble     always the standard SDL two-motor rumble, whatever the pad is.
 //   DualSense  haptics when a DualSense is connected; falls back to the mode above it would have picked, and says why.
 //
+// [pad] hd_haptics adds a DualSense's speaker and adaptive triggers to whichever mode drives it with haptics.
+//
 // The haptic backends come from renhdrum.dll (MIT OR Apache-2.0, https://github.com/trzz1214/RenHDrum), loaded next to the
 // executable when it is there: the library is optional, and without it Auto and DualSense behave as Rumble.
 //
@@ -72,15 +74,16 @@ struct Status {
     uint64_t packets = 0;      // haptic packets/audio frames sent since then
 };
 
-// Applies [pad] haptic, [pad] haptic_strength, [pad] rumble_scale and [pad] rumble.
+// Applies [pad] haptic, [pad] haptic_strength, [pad] rumble_scale, [pad] rumble and [pad] hd_haptics.
 //   strength_percent >= 0 : the haptic amplitude scale, 0..100 percent.
 //   strength_percent <  0 : inherit the player's own [pad] rumble_scale, which is the multiplier the standard rumble uses
 //                           (1.0 = unchanged, up to 2.0), so an untouched controls.ini keeps exactly one strength knob.
 //   rumble_on             : the [pad] rumble master switch. False silences every output path, the standard rumble included
 //                           (legacy_rumble() returns false too), and clears what the backends are still playing.
-// Only a different mode or master switch re-attaches: the strength applies to the next value, so moving its slider never
+//   hd_haptics            : a DualSense also gets its speaker and adaptive triggers.
+// Only a different mode, master switch or hd_haptics re-attaches: the strength applies to the next value, so moving its slider never
 // reopens the DualSense audio stream.
-void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on);
+void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics);
 
 // Pads, from the platform layer's hot-plug events (main thread).
 void pad_added(uint32_t instance_id);
@@ -97,6 +100,10 @@ void push(uint32_t npad_slot, int hand, float amp_low, float freq_low, float amp
 // fight over it and a dead backend never leaves the pad silent; any other pad always keeps the standard rumble. Also false for
 // every pad whenever [pad] rumble is off or the mode is Off, because then nothing is to vibrate at all.
 bool legacy_rumble(uint32_t pad_id);
+
+// Before the process ends without shutdown(): a DualSense keeps its trigger effects and speaker route until told otherwise,
+// so with HD haptics driving one this releases them. Does nothing otherwise.
+void release_for_exit();
 
 // Stops everything and drops the pads (play mode is ending).
 void shutdown();

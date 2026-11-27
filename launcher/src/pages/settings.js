@@ -212,6 +212,9 @@ const TABS = [
           // [pad] haptic_strength: 0..100 percent for the haptic backends, or -1 to keep using the rumble strength above.
           { id: 'haptic_strength', type: 'number', label: 'settings.hapticStrength.label', sec: 'pad', key: 'haptic_strength',
             def: '-1', min: -1, max: 100, hint: 'settings.hapticStrength.hint' },
+          // [pad] hd_haptics: a DualSense also gets its speaker and adaptive triggers.
+          { id: 'hd_haptics', type: 'toggle', label: 'settings.hdHaptics.label', sec: 'pad', key: 'hd_haptics', def: '0',
+            hint: 'settings.hdHaptics.hint', restart: true },
         ],
       },
       {

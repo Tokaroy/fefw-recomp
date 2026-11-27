@@ -387,6 +387,9 @@ export const zh = {
   'settings.hapticStrength.label': '震动强度',
   'settings.hapticStrength.short': '0–100%，-1 则沿用游戏内的震动强度。',
   'settings.hapticStrength.hint': '0 到 100 的百分比，只作用于触觉后端。-1 表示沿用游戏内菜单里的震动强度，也就是没改过的 controls.ini 的状态。',
+  'settings.hdHaptics.label': 'DualSense 高清触觉',
+  'settings.hdHaptics.short': '手柄扬声器与自适应扳机（实验功能）。',
+  'settings.hdHaptics.hint': 'DualSense 还会用自带扬声器播放敲击声，按住 L2 / R2 时扳机会随重击回弹。需要 DualSense 触觉反馈（有线 USB 或蓝牙）。实验功能。',
 
     // 输入、存档与日志
     'settings.jc2Mouse.label': '用 PC 鼠标模拟 Joy-Con 2 鼠标',

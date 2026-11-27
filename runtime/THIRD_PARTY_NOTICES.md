@@ -292,8 +292,8 @@ Its core library is dual-licensed MIT OR Apache-2.0, so unlike the Streamline an
 release package: the haptics work without the player installing anything. Delete the file and the game keeps the standard
 two-motor rumble.
 
-The file is used unmodified through its C ABI (`renhdrum_engine_*`, `renhdrum_dualsense_dsp_*`, `renhdrum_xbox_rumble_*`,
-`renhdrum_set_nx2_mode`); no RenHDrum source is compiled into this project and nothing is linked. Its GPL-3.0 `integrations/brontide/` patches are not used.
+The file is used unmodified through its C ABI (`renhdrum_engine_*`, `renhdrum_dualsense_dsp_*`, `renhdrum_tri_trigger_*`,
+`renhdrum_hd_haptics_*`, `renhdrum_xbox_rumble_*`, `renhdrum_set_nx2_mode`); no RenHDrum source is compiled into this project and nothing is linked. Its GPL-3.0 `integrations/brontide/` patches are not used.
 
 Copyright (c) 2026 Three-Dola. Licence texts: `third_party/renhdrum/LICENSE-MIT` and `third_party/renhdrum/LICENSE-APACHE`;
 the upstream NOTICE, including its MIT-licensed Ryujinx/Ryuhdr heritage and the dekuNukem and Switchbrew documentation
@@ -303,7 +303,7 @@ both hashes are in `third_party/renhdrum/SHA256SUMS`.
 ### libopus 1.5.2 (BSD-3-Clause), inside renhdrum.dll
 
 `renhdrum.dll` has libopus (https://github.com/xiph/opus, v1.5.2) statically linked for the DualSense speaker over
-Bluetooth, which this project does not use. Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin,
+Bluetooth (`[pad] hd_haptics`). Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin,
 Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon. Licence text:
 `third_party/renhdrum/LICENSE-opus`, shipped as `licenses/LICENSE.libopus.txt`.
 

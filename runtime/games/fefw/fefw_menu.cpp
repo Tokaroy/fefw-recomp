@@ -1244,6 +1244,9 @@ void haptic_group(UiHost& host, Menu& m) {
             p.haptic_strength = static_cast<int>(std::lround(strength));
             apply(host, m);
         }
+        row(m, "DualSense HD haptics", When::Live,
+            "A DualSense also plays taps on its own speaker, and L2 / R2 kick back to hard hits while you hold them. Needs DualSense haptics (cable or Bluetooth). Experimental.");
+        if (check(m, "##hdhap", &p.hd_haptics)) apply(host, m);
         row(m, "Test", When::Info, nullptr);
         const bool can_test = st.running && st.requested != haptic::Mode::Off;
         ImGui::BeginDisabled(!can_test);
