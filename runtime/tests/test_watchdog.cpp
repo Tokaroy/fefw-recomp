@@ -375,7 +375,7 @@ NXTEST(long_op_extends_threshold_and_rearms_on_exit) {
     const uint32_t base = nxrt::watchdog_fire_count();
     FireCapture cap;
     nxrt::WatchdogOptions opt;
-    opt.seconds = 0.08;
+    opt.seconds = 0.25;
     opt.poll_ms = 20;
     opt.report_path = "";
     opt.on_fire = capture_fire;
@@ -383,12 +383,16 @@ NXTEST(long_op_extends_threshold_and_rearms_on_exit) {
     nxrt::watchdog_start(opt);
     {
         nxrt::WatchdogLongOp op;
-        // Sleep well past opt.seconds (80 ms); boot_threshold_s (default 60 s) must keep the watchdog quiet.
-        std::this_thread::sleep_for(std::chrono::milliseconds(220));
+        // Sleep well past opt.seconds (250 ms); boot_threshold_s (default 60 s) must keep the watchdog quiet.
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
         CHECK_EQ(nxrt::watchdog_fire_count() - base, 0u);
         CHECK_EQ(cap.calls.load(), 0);
     }
-    // After WatchdogLongOp exits, the normal 80 ms threshold resumes and fires once idle.
+    // Exiting WatchdogLongOp must restart the normal 250 ms timer rather than firing immediately on the accumulated 350 ms.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK_EQ(nxrt::watchdog_fire_count() - base, 0u);
+    CHECK_EQ(cap.calls.load(), 0);
+    // After the fresh 250 ms timeout elapses, the watchdog fires once.
     CHECK_MSG(wait_for([&] { return cap.calls.load() >= 1; }, 2000), "watchdog did not fire after WatchdogLongOp exited");
     CHECK_EQ(nxrt::watchdog_fire_count() - base, 1u);
     nxrt::watchdog_stop();
