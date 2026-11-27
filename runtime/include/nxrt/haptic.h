@@ -21,6 +21,7 @@
 // SDL's audio thread. The state the other threads read is atomic; the engines are behind one mutex; no lock is ever held while
 // waiting for a worker.
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -58,6 +59,10 @@ enum class Backend : uint8_t {
     Xbox,            // renhdrum four-motor converter: grips and trigger motors
 };
 const char* backend_name(Backend b);
+
+// Whether a DualSense's HID report descriptor is the one it presents over Bluetooth (it declares output report 0x31; on a
+// cable the only output report is 0x02). False for a truncated or empty descriptor.
+bool dualsense_descriptor_is_bluetooth(const uint8_t* desc, size_t size);
 
 struct Status {
     bool dll = false;          // renhdrum.dll was found and loaded
