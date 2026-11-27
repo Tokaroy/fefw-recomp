@@ -117,21 +117,29 @@ let snapshot: StoreSnapshot = {
   tabsPatchActive: false,
 };
 
-// Remember the last known shortcut ids so game-page tabs stay mounted when `status` is temporarily null
-// (e.g., while choosing a new install folder or after a failed status read).
-let lastKnownShortcuts: number[] = [];
+// The shortcut ids of the chosen install, kept while its status is unread (a failed read, a look still running) so that the
+// game page keeps its tabs. Another folder starts empty: its ids are not the old game's. A read status is believed, even empty.
+let shortcuts: { install: string | null; ids: number[] } = { install: null, ids: [] };
+
+function rememberShortcuts(state: State) {
+  if (state.install_dir !== shortcuts.install) shortcuts = { install: state.install_dir, ids: [] };
+  if (state.status) shortcuts.ids = state.status.steam_shortcuts ?? [];
+}
 
 const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlightCheck: Promise<void> | null = null;
 let lastPageRereadAt = 0;
+let lastPlayingWatchAt = 0;
 let qamViews = 0;
 let pageViews = 0;
 let stopped = false;
 
 // switching between the game page's tabs remounts them: read again at most this often
 const PAGE_REREAD_COOLDOWN_MS = 10_000;
+// how often the status of a running game is read again while only its game page is open
+const PLAYING_WATCH_MS = 60_000;
 const BOOT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 
 function emit() {
@@ -139,9 +147,7 @@ function emit() {
 }
 
 function updateSnapshot(patch: Partial<StoreSnapshot>) {
-  if (patch.state?.status?.steam_shortcuts?.length) {
-    lastKnownShortcuts = patch.state.status.steam_shortcuts;
-  }
+  if (patch.state) rememberShortcuts(patch.state);
   snapshot = { ...snapshot, ...patch };
   emit();
 }
@@ -272,8 +278,12 @@ function syncPollingTimer() {
   const needPoll = qamViews > 0 || pageViews > 0;
   if (needPoll && pollTimer === null) {
     pollTimer = setInterval(() => {
-      // Avoid spawning `--status` every 5s in the background while the game is playing with only the library page mounted.
-      if (qamViews === 0 && !snapshot.state?.job && isGameRunning()) return;
+      // While the game runs with only its library page behind it, watch() (which reads the status again of a busy install)
+      // is asked rarely, not every 5 s: Steam's game-exit notice reads it at once, and this catches an exit that notice missed.
+      if (qamViews === 0 && !snapshot.state?.job && isGameRunning()) {
+        if (Date.now() - lastPlayingWatchAt < PLAYING_WATCH_MS) return;
+        lastPlayingWatchAt = Date.now();
+      }
       void watch().then((s) => updateSnapshot({ state: s }));
     }, 1000);
   } else if (!needPoll && pollTimer !== null) {
@@ -323,9 +333,7 @@ export function useIsFefwShortcut(appid: number): boolean {
   return useSyncExternalStore(
     subscribe,
     () => {
-      const shortcuts = snapshot.state?.status?.steam_shortcuts;
-      const effective = shortcuts?.length ? shortcuts : lastKnownShortcuts;
-      return isShortcutAppId(appid, effective);
+      return isShortcutAppId(appid, shortcuts.ids);
     },
     () => false,
   );
