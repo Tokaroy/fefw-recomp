@@ -19,6 +19,14 @@ software and draws with Vulkan. It is not an emulator. It also runs on Linux and
 >
 > Not affiliated with or endorsed by Nintendo or Intelligent Systems.
 
+## The launcher
+
+<p>
+<img src="docs/screenshots/launcher-play.png" alt="The launcher's Play page, with the game ready to start" width="32%">
+<img src="docs/screenshots/launcher-setup.png" alt="The Setup page while the game is being built" width="32%">
+<img src="docs/screenshots/launcher-settings.png" alt="The graphics settings: preset, upscaling and frame generation" width="32%">
+</p>
+
 ## Install
 
 ### Windows
