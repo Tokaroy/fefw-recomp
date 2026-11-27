@@ -17,7 +17,8 @@ from pathlib import Path
 APPIMAGE = "fefw-launcher.AppImage"
 API = 1
 TOO_OLD = ("This install's launcher cannot be driven by the plugin. In Desktop Mode, open the launcher and update to a newer release.")
-NEW_TOO_OLD = "The new release's launcher cannot be driven by the plugin: build the game in the launcher, in Desktop Mode."
+PLUGIN_FIRST = "Update the plugin first, then build the game."
+NEW_TOO_OLD ="The new release's launcher cannot be driven by the plugin: build the game in the launcher, in Desktop Mode."
 # Variables of the plugin loader's own Python that would break the programs the launcher starts.
 LOADER_VARIABLES = ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH", "XDG_CONFIG_HOME")
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "GAMESCOPE_WAYLAND_DISPLAY")
@@ -528,7 +529,8 @@ class Controller:
         self.start("download", (kind, setting, choice))
 
     def start(self, kind, download=None):
-        """Starts "update" (which goes on to rebuild when the new release needs it), "rebuild", or download()'s job."""
+        """Starts "update" (which goes on to rebuild when the new release needs it, unless it brings a newer plugin, which is
+        installed first), "rebuild", or download()'s job."""
         if kind not in ("update", "rebuild", "download") or (kind == "download") != bool(download):
             raise LauncherError(f"Unknown job: {kind}")
         if self.job:
@@ -590,6 +592,12 @@ class Controller:
                 return self._outcome(end)
             if end.get("rebuild") is False:
                 return {"state": "done", "message": end.get("message") or "Updated."}
+            # the new release's plugin goes first: Decky replaces it by unloading this one, which would cut a build short. The
+            # player builds afterwards (Set up), with the plugin that matches the release.
+            if self._updated:
+                self._look_for_plugin()
+                if self.plugin_update:
+                    return {"state": "done", "message": f"{end.get('message') or 'Updated.'} {PLUGIN_FIRST}"}
             # a launcher without the commands would ignore --rebuild and, with a display, open its window
             if not self._cancel and not await self._driveable():
                 return {"state": "error", "message": f"{end.get('message') or 'Updated.'} {NEW_TOO_OLD}"}
