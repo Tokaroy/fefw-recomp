@@ -158,7 +158,7 @@ struct PadSettings {
     // haptic_strength is 0..100 percent, or -1 to keep using rumble_scale above.
     int haptic = 0;
     int haptic_strength = -1;
-    bool hd_haptics = true;        // a DualSense also gets its speaker and deeper heavy hits
+    bool hd_haptics = true;        // a DualSense also gets taps on its speaker
     double alt_orbit = 2.0;       // rad/s at full right-stick deflection, 0 = off (0..6). The alternate body's camera only (mpr: morph ball).
 };
 struct TimingSettings {

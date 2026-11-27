@@ -8,7 +8,7 @@
 //   Off        nothing is sent (the game's vibration values are dropped).
 //   Rumble     always the standard SDL two-motor rumble, whatever the pad is.
 //
-// [pad] hd_haptics, on by default, adds a DualSense's speaker and deeper heavy hits to its haptics.
+// [pad] hd_haptics, on by default, adds taps on a DualSense's speaker to its haptics.
 //
 // The haptic backends come from renhdrum.dll (MIT OR Apache-2.0, https://github.com/trzz1214/RenHDrum), loaded next to the
 // executable when it is there: the library is optional, and without it Auto and DualSense behave as Rumble.
@@ -83,7 +83,7 @@ struct Status {
 //                           (1.0 = unchanged, up to 2.0), so an untouched controls.ini keeps exactly one strength knob.
 //   rumble_on             : the [pad] rumble master switch. False silences every output path, the standard rumble included
 //                           (legacy_rumble() returns false too), and clears what the backends are still playing.
-//   hd_haptics            : a DualSense also gets its speaker and deeper heavy hits.
+//   hd_haptics            : a DualSense also gets taps on its speaker.
 // Only a different mode, master switch or hd_haptics re-attaches: the strength applies to the next value, so moving its slider never
 // reopens the DualSense audio stream.
 void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics);

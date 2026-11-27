@@ -14,8 +14,9 @@
 //   Xbox One / Series     -> the four motors (two grips, two triggers) from the library's converter, through SDL's rumble calls
 //   anything else         -> the standard rumble, which play.cpp keeps sending itself (legacy_rumble() stays true)
 //
-// With [pad] hd_haptics on (the default), a DualSense also gets the library's HD Haptics: taps on the controller speaker and
-// deeper heavy hits. On a cable the speaker is audio channel 1, routed there by an effects report sent through SDL;
+// With [pad] hd_haptics on (the default), a DualSense also gets the library's HD Haptics: taps on the controller speaker.
+// (The library also deepens heavy hits, but only for low-band rumble from 0.30 up; the battles measured so far peaked at
+// 0.25.) On a cable the speaker is audio channel 1, routed there by an effects report sent through SDL;
 // wireless, it travels in the 398-byte report 0x36, which then replaces 0x32. The adaptive triggers are left alone: this
 // game uses L2 / R2 for menus, where a kick would never be felt.
 //
@@ -79,7 +80,7 @@ constexpr uint64_t kDsBtIdleNs = 2000000000ull;      // stop writing this long a
 constexpr int kDsBtFailuresMax = 50;                 // consecutive failed writes (about half a second) -> standard rumble
 constexpr size_t kDsBt36ReportSize = 398;            // RENHDRUM_DS5_BT36_REPORT_SIZE
 constexpr size_t kDsEffectsSize = 47;                // RENHDRUM_DS5_EFFECTS_SIZE: SDL's DualSense effects block
-constexpr int32_t kDsSpeakerPercent = 60;            // RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT
+constexpr int32_t kDsSpeakerPercent = 100;           // the library suggests 60: too quiet with this game's gentle rumble
 constexpr uint32_t kXboxGripMs = 2000;               // the grips: longer than a tick, the converter re-sends well before
 constexpr uint32_t kXboxTriggerMs = 200;             // the triggers: short, so a lost stop cannot leave them buzzing
 constexpr int64_t kXboxRetryUs = 100000;             // a refused Xbox send is retried at most this often

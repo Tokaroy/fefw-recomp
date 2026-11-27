@@ -418,9 +418,9 @@ export const en = {
   'settings.hapticStrength.label': 'Vibration strength',
   'settings.hapticStrength.short': '0 to 100%, or -1 for the in-game rumble strength.',
   'settings.hapticStrength.hint': '0 to 100 percent for the haptic backends. -1 keeps using the rumble strength in the in-game menu, which is what an untouched controls.ini uses.',
-  'settings.hdHaptics.label': 'DualSense HD haptics',
-  'settings.hdHaptics.short': 'Controller speaker and deeper heavy hits.',
-  'settings.hdHaptics.hint': 'A DualSense also plays taps on its own speaker, and heavy hits feel deeper. Works over a USB cable and Bluetooth.',
+  'settings.hdHaptics.label': 'DualSense speaker taps',
+  'settings.hdHaptics.short': 'Taps on the controller speaker.',
+  'settings.hdHaptics.hint': 'A DualSense also plays taps on its own speaker, in time with the vibration. Works over a USB cable and Bluetooth.',
 
     // input, saves and log
     'settings.jc2Mouse.label': "Mouse controls (the game's Joy-Con 2 mouse)",

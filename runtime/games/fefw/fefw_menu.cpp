@@ -1245,8 +1245,8 @@ void haptic_group(UiHost& host, Menu& m) {
             apply(host, m);
         }
         if (st.backend == haptic::Backend::DualSenseUsb || st.backend == haptic::Backend::DualSenseBt) {
-            row(m, "DualSense HD haptics", When::Live,
-                "A DualSense also plays taps on its own speaker, and heavy hits feel deeper. Works over a cable and Bluetooth.");
+            row(m, "DualSense speaker taps", When::Live,
+                "A DualSense also plays taps on its own speaker, in time with the vibration. Works over a cable and Bluetooth.");
             if (check(m, "##hdhap", &p.hd_haptics)) apply(host, m);
         }
         row(m, "Test", When::Info, nullptr);
