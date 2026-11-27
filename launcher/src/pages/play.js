@@ -127,7 +127,7 @@ export async function render(el, ctx) {
             <dt>${esc(t('play.runFolder'))}</dt>
             <dd><span class="faint">${esc(t('play.runFolderContents'))}</span><div class="path">${esc(ov.game_dir)}</div></dd>
             <dt>${esc(t('play.mods'))}</dt>
-            <dd><span class="faint">${esc(t('play.modsHint'))}</span></dd>
+            <dd><ul class="faint bullets">${['modsRomfs', 'modsExefs', 'modsOff', 'modsOrder', 'modsRebuild'].map((k) => `<li>${esc(t(`play.${k}`))}</li>`).join('')}</ul></dd>
           </dl>
           <div class="row" style="margin-top: var(--space-4)">
             <button class="btn" id="open-dir" ${ov.repo_ok ? '' : 'disabled'}>${icon('folder-open')}${esc(t('play.openRunFolder'))}</button>
