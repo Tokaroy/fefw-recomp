@@ -256,6 +256,20 @@ class Jobs(Case):
         self.assertEqual((await self.finish())["state"], "cancelled")
         self.assertEqual(self.jobs_run(), ["--update"])
 
+    async def test_a_part_that_cannot_count_is_told_apart(self):
+        await self.ready(rebuild=[
+            ["progress", {"phase": "build", "part": "compile", "done": 9, "total": 10, "fraction": 0.27, "message": "Compiling"}],
+            ["sleep", 0.3],
+            ["progress", {"phase": "build", "part": "link", "done": 0, "total": 1, "fraction": 0.3, "message": "Linking fefw.exe"}],
+            ["await-cancel", None]])
+        self.controller.start("rebuild")
+        await self.until(lambda: self.controller.job["message"] == "Compiling")
+        self.assertTrue(self.controller.job["counting"])
+        await self.until(lambda: self.controller.job["message"] == "Linking fefw.exe")
+        self.assertEqual((self.controller.job["counting"], self.controller.job["fraction"]), (False, 0.3))
+        self.controller.cancel()
+        await self.finish()
+
     async def test_a_cancel_too_late_for_the_update_still_stops_before_the_rebuild(self):
         await self.ready(update=[["progress", {"phase": "install", "done": 0, "total": 0, "message": "Installing"}], ["sleep", 0.5],
                                  ["end", {"state": "done", "rebuild": True, "message": "Installed."}]])
@@ -504,6 +518,31 @@ class Watching(Case):
         await asyncio.wait_for(refresh, 10)
         self.assertEqual(self.asked(), 2)
         self.assertEqual((self.controller.status["busy"], self.controller.update["newer"]), (None, True))
+
+
+class Reread(Case):
+    def arguments(self):
+        return [r["argument"] for r in self.runs()]
+
+    async def test_status_and_settings_are_read_again_without_the_network(self):
+        self.write_plan()
+        self.controller.set_install(str(self.install))
+        await self.controller.reread()
+        self.assertEqual(self.arguments(), ["--status", "--settings"])
+        self.assertIsNotNone(self.controller.status)
+        self.assertIsNotNone(self.controller.settings)
+        self.assertIsNone(self.controller.update)
+
+    async def test_a_failed_read_keeps_what_was_read_and_shows_no_error(self):
+        await self.ready()
+        before = self.controller.status
+        self.write_plan(status=[["die", "unmounted"]])
+        await self.controller.reread()
+        self.assertEqual((self.controller.status, self.controller.error), (before, None))
+
+    async def test_nothing_is_read_without_a_folder(self):
+        await self.controller.reread()
+        self.assertFalse((self.install / "runs.jsonl").exists())
 
 
 class Settings(Case):

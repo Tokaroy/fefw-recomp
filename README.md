@@ -52,8 +52,14 @@ The quickest way on a handheld with Steam's Game Mode, such as a Steam Deck or o
    [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) if it is missing, installs this project's Decky plugin and adds
    the game to your Steam library with artwork, asking before each step.
 3. In the launcher it opens, choose your dump and press **Set up**. You still need your own dump, and about 30 GB of free space.
-4. Switch back to Game Mode and start the game from your library. The **FEFW Recomp** plugin in the Quick Access Menu plays and
-   updates the game, builds it again when an update needs that, and changes the graphics preset, frame rate, resolution and upscaler.
+4. Switch back to Game Mode and open the game in your library. On the game's Steam page, the **FEFW Recomp** Decky plugin replaces
+   Steam's default tabs with **Setup**, **Settings** and **About**, and turns the Play button into **Set up** (or **Cancel** with
+   progress) when the game needs building or is updating. The same controls are also in the Quick Access Menu.
+
+<p>
+<img src="docs/screenshots/decky-setup.png" alt="The game's SteamOS page while building, showing Cancel, progress, and the Setup, Settings and About tabs" width="48%">
+<img src="docs/screenshots/decky-settings.png" alt="The Settings tab on the game's SteamOS page, grouped by Preset, Resolution and Frame rate" width="48%">
+</p>
 
 Installing the plugin needs administrator rights. If your account has no password, the installer can use a temporary one and remove
 it right afterwards. Run the installer again to finish a step you skipped, or to update the plugin.

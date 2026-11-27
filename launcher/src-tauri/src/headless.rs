@@ -321,6 +321,16 @@ fn upscaler_choice(value: &str, files: &crate::UpscalerFiles, nvidia: bool) -> (
     }
 }
 
+/// Whether a caller may offer this value of [dlss] frame_gen, by the Settings page's rules: the game's own FSR 3 frame generation
+/// does not work under Proton, so it is not offered on Linux, and DLSS frame generation needs an NVIDIA GPU and Streamline's files.
+fn frame_gen_choice(value: &str, dlss_framegen_found: bool, nvidia: bool, windows: bool) -> bool {
+    match value {
+        "fsr3" => windows,
+        "dlss" => nvidia && dlss_framegen_found,
+        _ => true,
+    }
+}
+
 /// A folder (or file) named in fefw.ini, as a path of this system. The game reads it under Windows or Wine: either slash, on Linux
 /// drive Z: for the file system's root, and a relative path from the run folder. Another drive is one only the game sees. "" stays.
 fn host_path(setting: &str, game_dir: &Path, windows: bool) -> Result<String, String> {
@@ -358,11 +368,14 @@ fn list_settings(cfg: &Config) -> Result<Value, String> {
                 .choices
                 .iter()
                 .map(|c| {
-                    let (available, download) = c.set.get("dlss/upscaler").map_or((true, None), |v| upscaler_choice(v, &files, nvidia));
+                    let (mut available, download) = c.set.get("dlss/upscaler").map_or((true, None), |v| upscaler_choice(v, &files, nvidia));
+                    if let Some(v) = c.set.get("dlss/frame_gen") {
+                        available &= frame_gen_choice(v, files.dlss_framegen.found, nvidia, cfg!(windows));
+                    }
                     json!({ "label": c.label, "available": available, "download": download })
                 })
                 .collect();
-            json!({ "id": s.id, "label": s.label, "help": s.help, "current": manifest::current(s, &ini).map(|c| &c.label), "choices": choices })
+            json!({ "id": s.id, "label": s.label, "help": s.help, "group": s.group, "current": manifest::current(s, &ini).map(|c| &c.label), "choices": choices })
         })
         .collect();
     let consent: serde_json::Map<String, Value> = ["fsr", "xess"].iter().filter_map(|k| Some((k.to_string(), fetch::consent(k)?.into()))).collect();
@@ -437,6 +450,10 @@ fn add_to_steam(cfg: &Config, before_setup: bool, close_steam: bool) -> Result<V
     Ok(json!({ "state": "done", "message": message, "steam_shortcuts": steam::shortcut_ids(&exe) }))
 }
 
+/// The parts fefw_build.py runs, in order, each counting from 0 again: the build step's share is split between them, so that a part
+/// that cannot count (linking says 0 of 1 until it ends) starts where the one before ended instead of at the step's start.
+const BUILD_PARTS: [&str; 5] = ["verify", "lift", "compile", "link", "finish"];
+
 /// How far a whole setup is, from the progress of the step that runs.
 pub struct Overall {
     base: f64,
@@ -455,14 +472,19 @@ impl Overall {
         Overall { base, steps: steps as f64, seen: Mutex::new((String::new(), 0)) }
     }
 
-    /// 0..1. It goes back when a step starts its next part, which counts from the start again.
+    /// 0..1. It goes back when a step starts its next part, which counts from the start again, unless that part is a build part.
     pub fn at(&self, pr: &setup::Progress) -> f64 {
         let mut g = self.seen.lock().unwrap();
         if g.0 != pr.step {
             g.0 = pr.step.clone();
             g.1 += 1;
         }
-        let within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
+        let mut within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
+        if pr.step == "build" {
+            if let Some(i) = BUILD_PARTS.iter().position(|p| *p == pr.part) {
+                within = (i as f64 + within) / BUILD_PARTS.len() as f64;
+            }
+        }
         (self.base + (1.0 - self.base) * (g.1.saturating_sub(1) as f64 + within) / self.steps).clamp(0.0, 1.0)
     }
 }
@@ -501,7 +523,10 @@ fn rebuild(cfg: &Config) -> Result<Value, String> {
     let overall = Overall::new(&p, 0.0);
     let progress = |pr: setup::Progress| {
         let fraction = overall.at(&pr);
-        emit("progress", json!({ "phase": pr.step, "done": pr.done, "total": pr.total, "fraction": fraction, "message": pr.message }));
+        emit(
+            "progress",
+            json!({ "phase": pr.step, "part": pr.part, "done": pr.done, "total": pr.total, "fraction": fraction, "message": pr.message }),
+        );
     };
     let end = setup::run(&shared, &p, crate::jobs_of(cfg), &cfg.runner, &progress, &|_| {});
     if end.state == "cancelled" {
@@ -542,6 +567,18 @@ mod tests {
     }
 
     #[test]
+    fn frame_generation_is_offered_as_on_the_settings_page() {
+        // the game's FSR 3 frame generation does not work under Proton
+        assert!(frame_gen_choice("fsr3", true, true, true));
+        assert!(!frame_gen_choice("fsr3", true, true, false));
+        // DLSS frame generation needs an NVIDIA GPU and its files, on either system
+        assert!(frame_gen_choice("dlss", true, true, false));
+        assert!(!frame_gen_choice("dlss", true, false, false));
+        assert!(!frame_gen_choice("dlss", false, true, true));
+        assert!(frame_gen_choice("0", false, false, false));
+    }
+
+    #[test]
     fn commands() {
         assert_eq!(command(&args(&["--status"])), Some(Command::Status));
         assert_eq!(command(&args(&["--check-update"])), Some(Command::CheckUpdate));
@@ -573,6 +610,17 @@ mod tests {
         assert_eq!(at("build", 100, 100), 0.5);
         assert_eq!(at("prepare", 0, 0), 0.5);
         assert_eq!(at("prepare", 10, 10), 1.0);
+    }
+
+    #[test]
+    fn the_build_steps_parts_share_it_in_order() {
+        let o = Overall::of(2, 0.0);
+        let at = |part: &str, done, total| o.at(&setup::Progress { step: "build".into(), part: part.into(), done, total, ..Default::default() });
+        assert_eq!(at("verify", 1, 1), 0.1);
+        assert_eq!(at("compile", 50, 100), 0.25);
+        // linking cannot count: it starts where compiling ended, not at 0
+        assert_eq!(at("link", 0, 1), 0.3);
+        assert_eq!(at("finish", 1, 1), 0.5);
     }
 
     #[test]

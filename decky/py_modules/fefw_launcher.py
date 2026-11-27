@@ -390,6 +390,19 @@ class Controller:
             self._look_for_plugin()
             await self._look()
 
+    async def reread(self):
+        """Reads the status and settings again, which stay on this device: no update check over the network. A look nobody
+        asked for (the plugin starting, the game page opened, a game closed), so a failure leaves what was read before. Not
+        during a job."""
+        if self.job or not self.install_dir or self._looking:
+            return
+        self._looking += 1
+        try:
+            if await self._read_status(quietly=True):
+                await self._read_settings()
+        finally:
+            self._looking -= 1
+
     def _look_for_plugin(self):
         """Needs no answer from the launcher: a newer release's may be one only its newer plugin understands."""
         ready = self.data_dir and self.install_dir and is_install(self.install_dir)
@@ -531,7 +544,8 @@ class Controller:
         self._download = download
         self._updated, self.plugin_update = False, None
         self._started = time.monotonic()
-        self.job = {"kind": kind, "step": kind, "phase": None, "message": "Starting", "fraction": None, "cancelling": False}
+        self.job = {"kind": kind, "step": kind, "phase": None, "message": "Starting", "fraction": None, "counting": False,
+                    "cancelling": False}
         self._task = asyncio.ensure_future(self._job(kind))
 
     async def _job(self, kind):
@@ -594,14 +608,16 @@ class Controller:
         if self._cancel:
             return {"state": "cancelled"}
         self._command = command = self._new(argument, display, extra)
-        self.job.update(step=step, phase=None, message="Starting", fraction=None)
+        self.job.update(step=step, phase=None, message="Starting", fraction=None, counting=False)
 
         def progress(line):
             done, total = line.get("done") or 0, line.get("total") or 0
             fraction = line.get("fraction")
             if fraction is None and total:
                 fraction = min(done / total, 1.0)
-            self.job.update(phase=line.get("phase"), message=line.get("message") or "", fraction=fraction)
+            # counting: the part that runs says how far it is. Linking says "0 of 1" until it ends, a step starting says nothing
+            counting = total > 1 or 0 < total <= done
+            self.job.update(phase=line.get("phase"), message=line.get("message") or "", fraction=fraction, counting=counting)
 
         end = await self._run(command, progress, prepare_timeout=self.prepare_timeout)
         if command.timed_out and end["state"] == "cancelled" and not self._cancel:

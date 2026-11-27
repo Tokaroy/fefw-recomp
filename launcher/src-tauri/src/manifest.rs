@@ -14,6 +14,8 @@ pub struct Setting {
     pub id: String,
     pub label: String,
     pub help: String,
+    /// the launcher's Settings heading it comes under ("Picture", "Frame rate", ...)
+    pub group: String,
     pub choices: Vec<Choice>,
     /// "section/key" -> the value in force when fefw.ini does not name it
     defaults: BTreeMap<String, String>,
@@ -50,6 +52,7 @@ pub fn parse(text: &str) -> Result<Vec<Setting>, String> {
                 id: name(s, "id"),
                 label: name(s, "label"),
                 help: name(s, "help"),
+                group: name(s, "group"),
                 choices,
                 defaults: pairs(&s["defaults"]),
             })
