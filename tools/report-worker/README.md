@@ -46,12 +46,41 @@ For local testing, setting `FEFW_REPORT_URL` in the environment when running the
 
 ## Fetching reports locally
 
-```bash
-export FEFW_REPORT_URL="https://fefw-reports.<your-subdomain>.workers.dev"
-export FEFW_REPORT_ADMIN_TOKEN="<your ADMIN_TOKEN>"
+Save the URL and admin token once. `login` prompts for both, checks them against the Worker and writes them to
+`~/.config/fefw-recomp/reports.json` (`%APPDATA%\fefw-recomp\reports.json` on Windows):
 
+```bash
+python3 tools/fetch_reports.py login
+```
+
+The token is stored as plain text, readable by your user account, and it can also delete reports. Remove the file to
+forget it. `FEFW_REPORT_URL` and `FEFW_REPORT_ADMIN_TOKEN` (or `--url` and `--token`) still work and take priority. The
+saved token is only sent to the saved URL.
+
+```bash
+python3 tools/fetch_reports.py sync                  # every report not yet in work/reports
+python3 tools/fetch_reports.py sync --limit 30       # only look at the newest 30
 python3 tools/fetch_reports.py list
 python3 tools/fetch_reports.py list --trigger crash --limit 20
-python3 tools/fetch_reports.py get <report-id> --out work/reports
-python3 tools/fetch_reports.py sync --limit 30 --out work/reports
+python3 tools/fetch_reports.py get <report-id>
 ```
+
+`sync` pages through the whole index and downloads only the reports that have no `report.json` under `--out`
+(default `work/reports`, relative to the current directory). Local copies stay after the Worker's 90-day retention
+drops them. It also writes each report's index row (upload time) to `server.json` beside it.
+
+## Analysing reports
+
+`tools/analyze_reports.py` works offline on the downloaded folder; report contents are untrusted data.
+
+```bash
+python3 -I tools/analyze_reports.py summary --since 2026-11-27 --by dlss.upscaler
+python3 -I tools/analyze_reports.py fps --by setting,dlss.frame_gen --list
+python3 -I tools/analyze_reports.py search "device lost" --trigger crash
+python3 -I tools/analyze_reports.py show <report-id> --symbols <unpacked symbols of its version>
+```
+
+`fps` judges a session only on 10-second windows of play (after the first 90 s, outside loading screens) where the game's
+target was the player's setting (30, 60 or 120), so menus and cutscenes at another rate don't count. `reached` is the
+average share of the setting reached (capped at 100 %), `at target` the share of windows at 95 % of it or more. It counts
+rendered frames: frames added by frame generation are not included.
