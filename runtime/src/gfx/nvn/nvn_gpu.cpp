@@ -44,6 +44,7 @@
 #include "nvn_impl.h"
 #include "nvn_pipeline.h"
 #include "nvn_present_pass.h"
+#include "nvn_texup.h"
 #include "extras/output_pass.h"
 
 namespace nxrt::nvn::be::gpu {
@@ -1637,6 +1638,7 @@ bool bring_up(gfx::Device& dev, gfx::Renderer* rend, FrameLimiter* limiter, bool
             dev.features().external_memory_host ? "available" : "NOT available");
     set_session_note("gpu", dev.properties().deviceName);   // repeated in the periodic "session:" line (nxrt/runtime.h)
     probe_wine_section();   // under Wine, check whether the GPU can import section alias views before heap_create() runs
+    texup::set_integrated_gpu(dev.properties().deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);
     astc_gpu_start();   // [gfx] astc_gpu: its pipelines and self-test start now, on a thread of their own, so the first texture does not wait for them
     return true;
 }

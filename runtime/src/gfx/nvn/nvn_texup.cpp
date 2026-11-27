@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Background upgrade pool of the BC7 disk cache. See nvn_texup.h.
-// Settings: [gfx] astc_upgrade_threads (default max(1, min(2, cpus / 8)); 0 turns the upgrade off), [gfx] astc_upgrade_mb (memory of waiting and running
-// jobs, default 192), [gfx] texture_eco (efficiency mode for texture transcodes, default true).
+// Settings: [gfx] astc_upgrade_threads (default 1 on integrated GPUs, else max(1, min(2, cpus / 8)); 0 turns the upgrade off),
+// [gfx] astc_upgrade_mb (memory of waiting and running jobs, default 192), [gfx] texture_eco (efficiency mode for texture transcodes, default true).
 #include "nvn_texup.h"
 
 #ifdef _WIN32
@@ -42,6 +42,7 @@ struct State {
     std::atomic<bool> stop{false};
     uint64_t held_bytes = 0, budget = 0;
     int want_threads = -1;   // -1: not read yet
+    bool integrated = false;
     Stats st;
     std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     bool warned_budget = false;
@@ -103,14 +104,22 @@ namespace {
 void read_settings_locked(State& s) {
     if (s.want_threads >= 0) return;
     const int cpus = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    // Polish nothing waits for: one thread up to 15 hardware threads, two from 16 (it was up to four, which with the first pass kept a laptop's
-    // cores busy for minutes after each new area, #122)
-    s.want_threads = static_cast<int>(std::clamp<int64_t>(config_get_int("gfx", "astc_upgrade_threads", std::max(1, std::min(2, cpus / 8))), 0, 16));
+    // Polish nothing waits for: one thread on integrated GPUs (shared CPU/iGPU power budget) or up to 15 hardware threads, two from 16 on
+    // discrete GPUs (it was up to four, which with the first pass kept a laptop's cores busy for minutes after each new area, #122)
+    s.want_threads = static_cast<int>(std::clamp<int64_t>(config_get_int("gfx", "astc_upgrade_threads", default_threads(cpus, s.integrated)), 0, 16));
     s.budget = static_cast<uint64_t>(std::max<int64_t>(8, config_get_int("gfx", "astc_upgrade_mb", nxrt::mem::limit_by_ram(192, 128, 64)))) << 20;
     if (s.want_threads > 0)
-        NXLOG_I(kTag, "texture cache upgrade: %d low-priority thread(s), up to %llu MB of waiting work", s.want_threads, static_cast<unsigned long long>(s.budget >> 20));
+        NXLOG_I(kTag, "texture cache upgrade: %d low-priority thread(s)%s, up to %llu MB of waiting work", s.want_threads,
+                s.integrated ? " (integrated GPU)" : "", static_cast<unsigned long long>(s.budget >> 20));
 }
 }  // namespace
+
+void set_integrated_gpu(bool integrated) {
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    s.integrated = integrated;
+    if (s.threads.empty()) s.want_threads = -1;
+}
 
 void first_pass_begin() { g_first_pass.fetch_add(1, std::memory_order_relaxed); }
 void first_pass_end() { g_first_pass.fetch_sub(1, std::memory_order_relaxed); }
@@ -177,6 +186,7 @@ void shutdown() {
     std::lock_guard<std::mutex> lk(s.mu);
     log_totals_locked(s, "texture cache upgrade stopped");
     s.stop.store(false);   // a later submit starts the pool again (tests)
+    s.want_threads = -1;
     s.seen.clear();
     s.st = Stats();
     s.warned_budget = false;

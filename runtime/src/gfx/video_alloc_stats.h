@@ -31,13 +31,13 @@ struct VideoAllocStats {
     }
 };
 
-// VMA's preferred block size, chosen by the size of the largest device-local heap (#114, #148): on 4-6 GiB cards/APUs, VMA's 256 MiB
-// default blocks are 4-8% of the entire budget, so a single surviving allocation pins a huge block of VRAM. VMA has one setting for all
+// VMA's preferred block size, chosen by the size of the largest device-local heap (#114, #148): on 4-8 GiB cards/APUs, VMA's 256 MiB
+// default blocks are 3-8% of the entire budget, so a single surviving allocation pins a huge block of VRAM. VMA has one setting for all
 // heaps over 1 GiB, so system-memory heaps get the smaller blocks too. 0 keeps VMA's default (256 MiB).
 inline uint64_t vma_preferred_block_size(uint64_t video_heap_bytes) {
     if (video_heap_bytes == 0) return 0;
     if (video_heap_bytes <= (4608ull << 20)) return 32ull << 20;   // <= 4.5 GiB (4 GB cards)
-    if (video_heap_bytes <= (7168ull << 20)) return 64ull << 20;   // <= 7 GiB (6 GB cards / Steam Deck)
+    if (video_heap_bytes <= (8704ull << 20)) return 64ull << 20;   // <= 8.5 GiB (6-8 GB cards / Steam Deck)
     return 0;
 }
 
