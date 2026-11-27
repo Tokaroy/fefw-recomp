@@ -100,7 +100,7 @@ VkDeviceSize region_bc(const Region& r, Kind k) { return k == Kind::Rgba ? 0 : d
 struct Work {
     Ref<Texture> t;
     uint32_t gen = 0;                 // Texture::prep_gen the blocks were read at
-    const void* image = nullptr;      // tex_gpu_identity at the time
+    uint64_t image = 0;               // tex_gpu_identity at the time
     PreparedTexture prep;             // the gpu_astc result (its data is empty when a job staged it)
     gfx::Buffer staged;               // the job's upload buffer with the blocks, or null
     Job j;                            // kind, footprint and every region (Region::src: offsets in the blocks)
