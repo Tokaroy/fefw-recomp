@@ -70,6 +70,21 @@ struct Ffx {
     uint64_t armed_at = 0;
     int dumps = 0;
     std::chrono::steady_clock::time_point installed = std::chrono::steady_clock::now();
+    // GPU time of FFX's work, from timestamps around its dispatches: the prepare (game queue, render thread) and the interpolation (the
+    // command list FFX's present thread hands the callback). kSlots frames in flight each; the log line every kLogEvery interpolations.
+    static constexpr uint32_t kSlots = 16, kLogEvery = 120;
+    VkQueryPool qpool = VK_NULL_HANDLE;   // 2 queries a slot: prepare slots first, then interpolation slots
+    bool time_prepare = false, time_interp = false;
+    double ts_ns = 1.0;                   // nanoseconds a tick
+    uint64_t ts_mask[2] = {~0ull, ~0ull};
+    bool written[2 * kSlots] = {};
+    uint32_t next_slot[2] = {};
+    struct Stat {
+        double sum = 0, max = 0;
+        uint32_t n = 0;
+    };
+    Stat stat[2];
+    std::mutex stat_mu;
 };
 Ffx& g() {
     static Ffx f;
@@ -149,8 +164,21 @@ void destroy_contexts() {
 // `amd` keeps AMD's defaults. The v1.1.4 Vulkan swapchain takes only these two values (not hybrid spin) and its configure function
 // returns an error code even when it has applied them (its `return FFX_OK` is unreachable), so that code is not an error here.
 void tune_pacing(Ffx& f) {
-    static const std::string mode = config_get_str("dlss", "frame_gen_pacing", "game");
-    if (mode == "amd") return;
+    // Under Wine (Proton, RADV) the tuning made it worse: on a Ryzen Z1 Extreme, generated frames were dropped (1.75x the game's presents)
+    // where AMD's defaults kept every one (2x).
+    static const bool wine = [] {
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        return nt && GetProcAddress(nt, "wine_get_version");
+    }();
+    static const std::string mode = config_get_str("dlss", "frame_gen_pacing", wine ? "amd" : "game");
+    if (mode == "amd") {
+        static bool told_amd = false;
+        if (!told_amd) {
+            told_amd = true;
+            NXLOG_I(kTag, "FSR 3 frame pacing: AMD's defaults (%s)", wine ? "the default under Wine" : "[dlss] frame_gen_pacing = amd");
+        }
+        return;
+    }
     FfxApiSwapchainFramePacingTuning t = {};
     t.safetyMarginInMs = 0.01f;
     t.varianceFactor = 0.3f;
@@ -409,11 +437,90 @@ void dump_tick(Ffx& f, VkExtent2D bb, VkFormat fmt) {
     }
 }
 
+// kind 0: prepare, 1: interpolation. A slot's last result is read (if the GPU has it) just before the slot is used again.
+void harvest(Ffx& f, int kind, uint32_t slot) {
+    const uint32_t q = (kind * Ffx::kSlots + slot) * 2;
+    if (!f.written[q / 2]) return;
+    uint64_t r[4] = {};   // begin, its availability, end, its availability
+    if (vkGetQueryPoolResults(f.dev->device(), f.qpool, q, 2, sizeof r, r, 2 * sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) !=
+            VK_SUCCESS ||
+        !r[1] || !r[3])
+        return;
+    const uint64_t m = f.ts_mask[kind];
+    const double ms = static_cast<double>(((r[2] & m) - (r[0] & m)) & m) * f.ts_ns / 1e6;
+    std::lock_guard<std::mutex> lk(f.stat_mu);
+    Ffx::Stat& st = f.stat[kind];
+    st.sum += ms;
+    st.max = std::max(st.max, ms);
+    ++st.n;
+    if (kind == 1 && st.n >= Ffx::kLogEvery) {
+        const Ffx::Stat& pr = f.stat[0];
+        char prep[48] = "not timed";
+        if (pr.n) std::snprintf(prep, sizeof prep, "%.2f ms (max %.2f)", pr.sum / pr.n, pr.max);
+        NXLOG_I(kTag, "FSR 3 GPU time over %u frames: interpolation %.2f ms (max %.2f), prepare %s", st.n, st.sum / st.n, st.max, prep);
+        f.stat[0] = {};
+        f.stat[1] = {};
+    }
+}
+
+uint32_t stamp_begin(Ffx& f, int kind, VkCommandBuffer cb) {
+    const uint32_t slot = f.next_slot[kind]++ % Ffx::kSlots;
+    harvest(f, kind, slot);
+    const uint32_t q = (kind * Ffx::kSlots + slot) * 2;
+    vkCmdResetQueryPool(cb, f.qpool, q, 2);
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, f.qpool, q);
+    return slot;
+}
+
+void stamp_end(Ffx& f, int kind, VkCommandBuffer cb, uint32_t slot) {
+    const uint32_t q = (kind * Ffx::kSlots + slot) * 2;
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, f.qpool, q + 1);
+    f.written[q / 2] = true;
+}
+
+// At the install: a query pool when the queues FFX's work may run on keep timestamps ([dlss] frame_gen_gpu_time = 0: none).
+void timer_init(Ffx& f, const fgq::Plan& qp) {
+    if (!config_get_bool("dlss", "frame_gen_gpu_time", true)) return;
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(f.dev->physical(), &nq, nullptr);
+    std::vector<VkQueueFamilyProperties> qf(nq);
+    vkGetPhysicalDeviceQueueFamilyProperties(f.dev->physical(), &nq, qf.data());
+    auto bits = [&](uint32_t fam) { return fam < nq ? qf[fam].timestampValidBits : 0u; };
+    auto mask = [](uint32_t b) { return b >= 64 ? ~0ull : (1ull << b) - 1; };
+    const uint32_t game = f.dev->queue_family();
+    // the interpolation goes to the present or the async compute queue (FFX decides): both must keep timestamps, with one width
+    const uint32_t ib = bits(qp.present.family);
+    f.time_prepare = bits(game) != 0;
+    f.time_interp = ib != 0 && bits(qp.compute.family) == ib;
+    if (!f.time_prepare && !f.time_interp) {
+        NXLOG_I(kTag, "FSR 3 GPU time: the queues keep no timestamps, not timed");
+        return;
+    }
+    VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qi.queryCount = 4 * Ffx::kSlots;
+    if (vkCreateQueryPool(f.dev->device(), &qi, nullptr, &f.qpool) != VK_SUCCESS) {
+        f.qpool = VK_NULL_HANDLE;
+        f.time_prepare = f.time_interp = false;
+        return;
+    }
+    f.ts_ns = f.dev->properties().limits.timestampPeriod;
+    f.ts_mask[0] = mask(bits(game));
+    f.ts_mask[1] = mask(ib);
+    NXLOG_I(kTag, "FSR 3 GPU time: timing the prepare %s, the interpolation %s (a line every %u frames)", f.time_prepare ? "on" : "off",
+            f.time_interp ? "on" : "off", Ffx::kLogEvery);
+}
+
 ffxReturnCode_t fg_dispatch(ffxDispatchDescFrameGeneration* params, void* ctx) {
     step("first interpolation dispatch (present thread)");
     // the game's camera cut (its DLSS reset): the frame between the old view and the new one is not interpolated from the old one
     if (g().reset_pending.exchange(false)) params->reset = true;
-    const ffxReturnCode_t r = g().dispatch(static_cast<ffxContext*>(ctx), &params->header);
+    Ffx& f = g();
+    auto cb = static_cast<VkCommandBuffer>(params->commandList);
+    const bool timed = f.time_interp && cb;
+    const uint32_t slot = timed ? stamp_begin(f, 1, cb) : 0;
+    const ffxReturnCode_t r = f.dispatch(static_cast<ffxContext*>(ctx), &params->header);
+    if (timed) stamp_end(f, 1, cb, slot);
     step("first interpolation dispatch done");
     return r;
 }
@@ -536,6 +643,7 @@ void ffx_fg_install(gfx::Device& dev, const fgq::Plan& qp) {
     f.present = get(qp.present);
     f.acquire = get(qp.acquire);
     f.compute = get(qp.compute);
+    timer_init(f, qp);
     f.orig_create = vkCreateSwapchainKHR;
     f.orig_destroy = vkDestroySwapchainKHR;
     f.orig_images = vkGetSwapchainImagesKHR;
@@ -605,7 +713,9 @@ bool ffx_fg_frame(VkCommandBuffer cb, const FfxFgFrame& fr) {
         p.depth = res(fr.depth, FFX_API_SURFACE_FORMAT_R32_FLOAT, fr.render, FFX_API_RESOURCE_USAGE_READ_ONLY | FFX_API_RESOURCE_USAGE_UAV);
         p.motionVectors = res(fr.motion, FFX_API_SURFACE_FORMAT_R16G16_FLOAT, fr.render, FFX_API_RESOURCE_USAGE_READ_ONLY | FFX_API_RESOURCE_USAGE_UAV);
         step("prepare dispatch");
+        const uint32_t slot = f.time_prepare ? stamp_begin(f, 0, cb) : 0;
         r = f.dispatch(&f.fg_ctx, &p.header);
+        if (f.time_prepare) stamp_end(f, 0, cb, slot);
         step("prepare dispatch done");
         if (r != FFX_API_RETURN_OK && !f.logged) {
             f.logged = true;
