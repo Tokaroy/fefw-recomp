@@ -1698,6 +1698,20 @@ NXTEST(pad_hd_haptics_on_by_default_and_round_trips) {
     CHECK(!parse_settings("[pad]\nhd_haptics = maybe\n", &r, &err));
 }
 
+NXTEST(pad_dualsense_full_volume_on_by_default_and_round_trips) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings s = default_settings();
+    CHECK(s.pad.dualsense_full_volume);
+    CHECK(format_settings(s).find("\ndualsense_full_volume = 1\n") != std::string::npos);
+    s.pad.dualsense_full_volume = false;
+    const std::string text = format_settings(s);
+    Settings r;
+    std::string err;
+    REQUIRE_MSG(parse_settings(text, &r, &err), err);
+    CHECK(!r.pad.dualsense_full_volume);
+    CHECK_EQ(format_settings(r), text);
+}
+
 // "dualsense" was a haptic mode that did what auto does; a settings file that names it still loads.
 NXTEST(pad_haptic_dualsense_reads_as_auto) {
     const nxrt::play::test::PlayTestGame play_game;

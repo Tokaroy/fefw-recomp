@@ -262,7 +262,8 @@ pub fn exe_command(exe: &Path, game_dir: &Path, runner: &[String], extra_env: &[
 }
 
 /// `launcher_dir`: the folder the package's upscalers/ is in (the AppImage's folder, not its mount). `lock`: the install's, held
-/// until the game's process has been started.
+/// until the game's process has been started. `pad_volume`: Linux, raise a DualSense's volume while the game runs, keeping what
+/// to put back in this file.
 #[allow(clippy::too_many_arguments)]
 pub fn start(
     app: &AppHandle,
@@ -274,6 +275,7 @@ pub fn start(
     extra_env: Vec<(String, String)>,
     lock: crate::lock::Lock,
     report_opts: crate::report::Options,
+    pad_volume: Option<PathBuf>,
 ) -> Result<(), String> {
     if app.state::<PlayState>().0.lock().unwrap().state == "running" {
         return Err("The game is already running.".into());
@@ -321,10 +323,14 @@ pub fn start(
                 let _ = w.minimize();
             }
         }
+        let volume = pad_volume.map(crate::pad_volume::Session::start);
         let (code, wait_err) = match child.wait() {
             Ok(s) => (s.code(), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        if let Some(v) = volume {
+            v.finish();
+        }
         let files = report_files(&dir, started);
         let crash_file = files.iter().any(|f| f.fresh && f.name != "fefw.log");
         let crashed = crash_file || (code != Some(0));

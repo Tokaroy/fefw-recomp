@@ -421,6 +421,9 @@ export const en = {
   'settings.hdHaptics.label': 'DualSense speaker taps',
   'settings.hdHaptics.short': 'Taps on the controller speaker.',
   'settings.hdHaptics.hint': 'A DualSense also plays taps on its own speaker, in time with the vibration. Works over a USB cable and Bluetooth.',
+  'settings.padVolume.label': 'DualSense full volume over USB',
+  'settings.padVolume.short': 'Raises the controller volume while you play, then puts it back.',
+  'settings.padVolume.hint': 'Over a USB cable, vibration and speaker strength follow the controller volume. This raises it to 100% while you play and puts it back afterwards. On Linux it works when you start the game with Play in this launcher. If vibration is still weak over USB, raise the controller volume in your system sound settings.',
 
     // input, saves and log
     'settings.jc2Mouse.label': "Mouse controls (the game's Joy-Con 2 mouse)",

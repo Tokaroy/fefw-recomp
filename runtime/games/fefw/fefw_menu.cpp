@@ -1249,6 +1249,11 @@ void haptic_group(UiHost& host, Menu& m) {
                 "A DualSense also plays taps on its own speaker, in time with the vibration. Works over a cable and Bluetooth.");
             if (check(m, "##hdhap", &p.hd_haptics)) apply(host, m);
         }
+        if (st.backend == haptic::Backend::DualSenseUsb) {
+            row(m, "DualSense full volume over USB", When::Live,
+                "Over a cable, vibration and speaker strength follow the controller's volume. This raises it to 100% while you play and puts it back afterwards. On Linux the launcher does it, from the next start with Play.");
+            if (check(m, "##dsvol", &p.dualsense_full_volume)) apply(host, m);
+        }
         row(m, "Test", When::Info, nullptr);
         const bool can_test = st.running && st.requested != haptic::Mode::Off;
         ImGui::BeginDisabled(!can_test);
@@ -1256,6 +1261,8 @@ void haptic_group(UiHost& host, Menu& m) {
         ImGui::EndDisabled();
         end_rows();
     }
+    if (st.backend == haptic::Backend::DualSenseUsb)
+        ImGui::TextWrapped("%s", tr("Weak vibration over USB? Raise the controller's volume in your system sound settings."));
     if (!st.dll) ImGui::TextDisabled("%s", tr("renhdrum.dll is not next to the game: the standard rumble only."));
     if (st.device[0] == 0) {
         ImGui::TextDisabled("%s", tr("No pad for the haptics yet."));
