@@ -68,7 +68,7 @@ export const zh = {
     'play.runFolder': '运行目录',
     'play.runFolderContents': 'fefw.ini、controls.ini、fefw.log 与 save/',
     'play.mods': '模组',
-    'play.modsHint': '把 RomFS 模组放在 mods/<名称>/romfs，与模拟器使用的目录结构一致。以 - 或 _ 开头的名称会关闭该模组；两个模组改动同一文件时，名称排序靠后的生效。ExeFS（代码）补丁不适用。',
+    'play.modsHint': '模组放在 mods/<名称>/，目录结构与模拟器一致：替换游戏文件的放进 romfs/，代码模组（exefs 补丁，或专为本移植版制作的 DLL）放进 exefs/。以 - 或 _ 开头的名称会关闭该模组；两个模组改动同一文件时，名称排序靠后的生效。增删或修改 exefs 补丁或模组的 .sites 文件后，请在「构建」页重新构建。',
     'play.openRunFolder': '打开运行目录',
     'play.openModsFolder': '打开模组目录',
     'play.addToSteam': '添加到 Steam',

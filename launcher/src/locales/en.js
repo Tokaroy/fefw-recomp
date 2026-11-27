@@ -69,7 +69,7 @@ export const en = {
     'play.runFolder': 'Run folder',
     'play.runFolderContents': 'fefw.ini, controls.ini, fefw.log and save/',
     'play.mods': 'Mods',
-    'play.modsHint': 'RomFS mods in mods/<name>/romfs, the layout emulators use. A name starting with - or _ turns a mod off; when two mods change the same file, the name sorted last wins. ExeFS (code) patches do not apply.',
+    'play.modsHint': 'In mods/<name>/, the layout emulators use: replacement game files in romfs/, code mods (exefs patches, or DLLs made for this port) in exefs/. A name starting with - or _ turns a mod off; when two mods change the same file, the name sorted last wins. Run Setup again after adding, changing or removing an exefs patch or a mod\'s .sites file.',
     'play.openRunFolder': 'Open run folder',
     'play.openModsFolder': 'Open mods folder',
     'play.addToSteam': 'Add to Steam',
