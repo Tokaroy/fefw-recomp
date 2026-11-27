@@ -5,7 +5,11 @@ Updates and rebuilds the game from the Steam Deck's Quick Access Menu (Game Mode
 
 The panel: choose the game's folder (the one with `fefw-launcher.AppImage`), see its version, **Play** (starts the game's Steam
 shortcut, which the launcher's **Add to Steam** makes), change the graphics preset, frame rate, resolution and upscaler, **Update** (then builds the game when
-the new release needs it), **Build the game**, **Cancel**. First-time setup stays in Desktop Mode, in the launcher: the plugin uses
+the new release needs it), **Build the game**, **Cancel**. On the game's own Steam library page (matched by `steam_shortcuts`), the
+plugin also replaces Steam's default tabs with **Setup**, **Settings** (all choice-based settings from `--settings`, grouped like the
+launcher), and **About**, and replaces Steam's **Play** button with **Set up** when the game needs building or a live progress state
+while a job is running.
+First-time setup stays in Desktop Mode, in the launcher: the plugin uses
 the settings it saved there.
 
 A job, an update, or anything in the way is shown at the top of the panel; **Check for updates** stays at the bottom.
