@@ -19,7 +19,7 @@ nxrt is the game-independent OS and HLE runtime that the recompiled game runs on
 | `src/media` | The SDK's `movie::` library on Windows Media Foundation (S9, `movie_mf.cpp`, see docs/S9.md): the 41 imports of the game are answered on the host, so the movies play |
 | `src/services` | Service library (S3c, see docs/S3c_commands.md): one file per service group (`acc.cpp`, `am.cpp`, `audio_out.cpp`, `fs.cpp`, `fs_romfs.cpp`, `fs_volume.cpp`, `hid.cpp`, `logfault.cpp`, `misc.cpp`, `network.cpp`, `pl.cpp`, `power.cpp`, `settings.cpp`, `time.cpp`, `timezone.cpp`, `vi_nv.cpp`), audio sinks (`audio_sink.cpp`, `audio_xaudio2.cpp`, `audio_paced.cpp`, `audio_wav.cpp`), shared helpers (`common.cpp`, `services_internal.h`) |
 | `apps` | `gfx_demo.cpp`: the test scene as an executable (`nxrt_gfx_demo`) |
-| `cmake` | `gfx.cmake`, `gfx_deps.cmake`: the graphics library, the demo, the gfx tests and the pinned third-party sources |
+| `cmake` | `gfx.cmake`, `gfx_deps.cmake`, `zstd_deps.cmake`: the graphics library, the demo, the gfx tests and the pinned third-party sources |
 | `tests` | 21 unit-test groups (`test_*.cpp`), `test_framework.h`, `test_main.cpp`; `tests/gfx` holds the graphics groups (`nxrt_gfx_tests`: the shell, 30 NVN groups, 8 of them scene oracles that play a small game through `nvnBootstrapLoader`; see docs/S4d.md), `tests/data/gfx` the reference image |
 | `tests/lift` | Integration tests: test programs lifted by the recompiler and run on this runtime (`driver.cpp`, `CMakeLists.txt`), the S3b exception programs (`progs`), their miniature libc++abi (`guest/rt2.h`) and its host stand-in (`native`) |
 | `tests/data` | Loader fixtures, HIPC test vectors (generated, see Build and test) |
@@ -154,7 +154,7 @@ Every source or header file that names an upstream project in its comments is li
 | `src/services/timezone.cpp` | ryubing (Ryujinx fork) `src/Ryujinx.HLE/HOS/Services/Time/TimeZone/TimeZone.cs` and `TimeZoneRule.cs` (rule layout, goback/goahead extension, time-type checks; adapted); tzcode `localtime.c` (localsub and time2 behaviour followed) | MIT; public domain (tzcode) |
 | `src/services/vi_nv.cpp` | ScarletNX `src/nx/hle/services/vi.swipc`, `vi.c`, `nvdrv.swipc` and `nvdrv.c` (command table, layouts; adapted); Eden and yuzu (parcel and buffer-queue layouts that `vi.c` takes from them); Ryujinx `src/Ryujinx.HLE/HOS/Services/{Vi,Nv,SurfaceFlinger}` (MIT) | GPL-3.0-or-later; GPL-2.0-or-later (Eden, yuzu); MIT |
 
-Third-party code fetched at configure time (graphics shell). Each archive is downloaded by URL and checked against a SHA256 in `cmake/gfx_deps.cmake`; notices are in THIRD_PARTY_NOTICES.md.
+Third-party code fetched at configure time (graphics shell). Each archive is downloaded by URL and checked against a SHA256 in `cmake/gfx_deps.cmake` (zstd: `cmake/zstd_deps.cmake`, built with or without the graphics shell); notices are in THIRD_PARTY_NOTICES.md.
 
 | Component | Pin | URL / SHA256 | Licence |
 |---|---|---|---|
