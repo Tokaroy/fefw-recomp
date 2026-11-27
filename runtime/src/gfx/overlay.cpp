@@ -344,8 +344,8 @@ struct Overlay::Impl {
     double note_since_s = -1.0, note_empty_s = -1.0;
     int note_peak = 0;
     bool note_visible(double now_s);
-    // code mods' note (services::modapi::notice(): a mod whose hook sites this build lacks), shown for kModsNoteSeconds from the
-    // first frame it is seen, re-read once a second
+    // code mods' note (services::modapi::notice(): a mod whose hook sites this build lacks, or that uses unknown site kinds),
+    // shown for kModsNoteSeconds from the first frame it is seen, re-read once a second
     std::string mods_text;
     double mods_since_s = -1.0, mods_read_s = -1e9;
     bool mods_note_visible(double now_s);

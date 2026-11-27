@@ -162,6 +162,14 @@ if(NXRT_BUILD_TESTS)
     target_include_directories(nxrt_tests PRIVATE tests)
     # nxrt calls into the graphics shell (switch2.cpp: HDR metadata, tt_core.cpp: screenshot writes), so the tests link it when it is built
     target_link_libraries(nxrt_tests PRIVATE nxrt $<TARGET_NAME_IF_EXISTS:nxrt_gfx>)
+    # A code mod built against the public header, loaded by tests/test_mod_api.cpp: the mod side of the ABI.
+    add_library(nxrt_test_mod SHARED tests/mods/test_mod.cpp)
+    target_include_directories(nxrt_test_mod PRIVATE include)
+    if(EXISTS "${NXRT_RECOMP_INCLUDE}")
+        target_include_directories(nxrt_test_mod PRIVATE "${NXRT_RECOMP_INCLUDE}")
+    endif()
+    add_dependencies(nxrt_tests nxrt_test_mod)
+    target_compile_definitions(nxrt_tests PRIVATE NXRT_TEST_MOD_PATH="$<TARGET_FILE:nxrt_test_mod>")
     target_compile_definitions(nxrt_tests PRIVATE NXRT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     # A linker map next to the exe: the crash handler and the watchdog name host code from it. Keep host allocations low
     # (HIGHENTROPYVA:NO) so the guest ranges at 0x71_0000_0000 and up are free; a 64 MiB main stack.

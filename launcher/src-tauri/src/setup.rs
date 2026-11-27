@@ -236,9 +236,10 @@ fn find_mod_dirs(root: &Path) -> Vec<(String, PathBuf)> {
 }
 
 /// The installed mods' sites for this game build, checked as game-build/release/fefw_build.py collect_mod_sites and write_sites
-/// check them, with the same messages: a kind a mod cannot add, a line that is not `<kind> <hex address>`, a file without
-/// @nsobid, an address that is not an instruction in main's code. The first problem is the error. A mod's exefs/ folder counts
-/// whether or not its mod.ini switches exefs off (fefw_build.py keeps those sites too, so switching a mod needs no Set up).
+/// check them, with the same messages: a line that is not `<kind> <hex address>`, a file without @nsobid, an address that is not
+/// an instruction in main's code. Unknown site kinds are skipped (issue #165). The first problem is the error. A mod's exefs/
+/// folder counts whether or not its mod.ini switches exefs off (fefw_build.py keeps those sites too, so switching a mod needs no
+/// Set up).
 fn mod_sites(p: &Paths) -> Result<Vec<ModSite>, String> {
     let header = main_header(p);
     let bid = header.as_ref().map(|h| h.0.clone()).unwrap_or_default();
@@ -268,7 +269,8 @@ fn mod_sites(p: &Paths) -> Result<Vec<ModSite>, String> {
                     continue;
                 }
                 if !MOD_SITE_KINDS.contains(&t[0]) {
-                    return Err(format!("{where_}:{ln}: \"{}\" is not a site a mod can add ({})", t[0], MOD_SITE_KINDS.join(", ")));
+                    // a kind another port defines, or a later one: skipped, as the release script does (issue #165)
+                    continue;
                 }
                 let addr = (t.len() == 2)
                     .then(|| u64::from_str_radix(t[1].trim_start_matches("0x").trim_start_matches("0X"), 16).ok())
@@ -1523,10 +1525,11 @@ mod tests {
             assert_eq!(missing_sites_detail(&p), e);
             assert_eq!(mod_sites_problem(&p).as_deref(), Some(e.as_str()));
         };
-        check(
-            "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\npatch 0x7100000000\n",
-            "Some_Mod/exefs/bad.sites:2: \"patch\" is not a site a mod can add",
-        );
+        // a kind a mod cannot add here (another port's, or a later one) is skipped, not an error (issue #165)
+        fs::write(&bad, "@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\npatch 0x7100000000\ndynimm 0x7100000004\n").unwrap();
+        let kept = mod_sites(&p).unwrap();
+        assert!(!kept.iter().any(|(_, _, k, _)| k == "patch" || k == "dynimm"), "{kept:?}");
+        assert!(kept.iter().all(|(_, _, k, _)| MOD_SITE_KINDS.contains(&k.as_str())), "{kept:?}");
         check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook zz\n", "bad.sites:2: expected \"<kind> <guest address in hex>\"");
         check("midhook 0x71016f21f4\n", "Some_Mod/exefs/bad.sites has no @nsobid line");
         check("@nsobid DB93B0125F4850601D61C3EDDE012F8EB2ECFE77\nmidhook 0x71016f21f2\n", "is not an instruction address in main");

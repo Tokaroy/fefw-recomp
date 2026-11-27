@@ -29,6 +29,7 @@
 #include "nxrt/log.h"
 #include "nxrt/memory.h"
 #include "nxrt/mod_api.h"
+#include "nxrt/mod_interfaces.h"
 #include "nxrt/mod_panels.h"
 #include "nxrt/services_api.h"
 #include "services_internal.h"
@@ -160,7 +161,15 @@ bool read_site_list(const std::filesystem::path& file, SiteList* out) {
     std::ifstream f(file);
     if (!f) return false;
     std::string line;
+    bool first = true;
     while (std::getline(f, line)) {
+        if (first) {
+            first = false;
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB && static_cast<unsigned char>(line[2]) == 0xBF) {
+                line.erase(0, 3);
+            }
+        }
         if (const size_t h = line.find('#'); h != std::string::npos) line.resize(h);
         char kind[32] = {}, arg[80] = {};
         if (std::sscanf(line.c_str(), "%31s %79s", kind, arg) != 2) continue;
@@ -476,32 +485,7 @@ void load_one(const std::string& mod, const std::filesystem::path& mod_dir, cons
     Mod* m = new Mod;
     m->name = name;
     m->dll = dll;
-    m->api.version = NXMOD_API_VERSION;
-    m->api.size = sizeof(NxModApi);
-    m->api.game_id = game::info().id;
-    m->api.main_base = base;
-    m->api.log = &api_log;
-    m->api.hook_inline = &api_hook_inline;
-    m->api.hook_mid = &api_hook_mid;
-    m->api.hook_entry = &api_hook_entry;
-    m->api.hook_remove = &api_hook_remove;
-    m->api.call_guest = &api_call_guest;
-    m->api.is_mapped = &api_is_mapped;
-    m->api.on_frame = &api_on_frame;
-    m->api.is_function = &api_is_function;
-    m->api.make_function = &api_make_function;
-    m->api.make_writable = &api_make_writable;
-    m->api.edit_file = &api_edit_file;
-    m->api.mod_count = &api_mod_count;
-    m->api.mod_folder = &api_mod_folder;
-    m->api.read_file = &api_read_file;
-    m->api.write_file = &api_write_file;
-    m->api.zstd_decompress = &api_zstd_decompress;
-    m->api.zstd_compress = &api_zstd_compress;
-    m->api.alloc = &api_alloc;
-    m->api.free_mem = &api_free;
-    m->api.add_panel = &add_panel;
-    m->api.panel_visible = &panel_visible;
+    make_mod_api(&m->api, base);
     m->init = init;
     m->dir = u8(mod_dir);
     {
@@ -524,22 +508,74 @@ void load_one(const std::string& mod, const std::filesystem::path& mod_dir, cons
     }
 }
 
-}  // namespace
-
-int sites_missing(const std::string& mod_dir) {
+ModSiteCheck check_mod_sites_against(const std::string& mod_dir, const SiteList& l) {
     namespace stdfs = std::filesystem;
-    const SiteList& l = lifted_sites();
-    if (!l.known || mod_dir.empty()) return -1;
+    ModSiteCheck out;
+    if (!l.known || mod_dir.empty()) return out;
     std::error_code ec;
-    int missing = 0;
+    out.missing = 0;
+    std::set<std::string> unknown;
     for (const stdfs::directory_entry& e : stdfs::directory_iterator(stdfs::u8path(mod_dir) / "exefs", ec)) {
         if (!e.is_regular_file(ec) || _wcsicmp(e.path().extension().c_str(), L".sites") != 0) continue;
         SiteList want;
         if (!read_site_list(e.path(), &want) || want.bid.empty() || !same_build(want.bid, l.bid)) continue;
-        for (const auto& s : want.sites) missing += l.sites.count(s) == 0;
+        for (const auto& s : want.sites) {
+            // only the kinds a mod can add (Set up skips any other with a warning, issue #165), or such a line would read as
+            // missing on every start
+            const std::string& k = s.first;
+            if (k != "inline" && k != "midhook" && k != "entryhook") {
+                unknown.insert(k);
+                continue;
+            }
+            out.missing += l.sites.count(s) == 0;
+        }
     }
-    return missing;
+    out.unknown.assign(unknown.begin(), unknown.end());
+    return out;
 }
+
+}  // namespace
+
+void make_mod_api(::NxModApi* out, uint64_t base) {
+    if (!out) return;
+    ::NxModApi api{};
+    api.version = NXMOD_API_VERSION;
+    api.size = sizeof(::NxModApi);
+    api.game_id = game::info().id;
+    api.main_base = base;
+    api.log = &api_log;
+    api.hook_inline = &api_hook_inline;
+    api.hook_mid = &api_hook_mid;
+    api.hook_entry = &api_hook_entry;
+    api.hook_remove = &api_hook_remove;
+    api.call_guest = &api_call_guest;
+    api.is_mapped = &api_is_mapped;
+    api.on_frame = &api_on_frame;
+    api.is_function = &api_is_function;
+    api.make_function = &api_make_function;
+    api.make_writable = &api_make_writable;
+    api.edit_file = &api_edit_file;
+    api.mod_count = &api_mod_count;
+    api.mod_folder = &api_mod_folder;
+    api.read_file = &api_read_file;
+    api.write_file = &api_write_file;
+    api.zstd_decompress = &api_zstd_decompress;
+    api.zstd_compress = &api_zstd_compress;
+    api.alloc = &api_alloc;
+    api.free_mem = &api_free;
+    api.add_panel = &add_panel;
+    api.panel_visible = &panel_visible;
+    api.get_interface = &::nxrt::nxmod::get_interface;
+    *out = api;
+}
+
+ModSiteCheck check_mod_sites(const std::string& mod_dir, const std::string& lifted_sites_file) {
+    SiteList l;
+    if (!lifted_sites_file.empty()) read_site_list(std::filesystem::u8path(lifted_sites_file), &l);
+    return check_mod_sites_against(mod_dir, l);
+}
+
+int sites_missing(const std::string& mod_dir) { return check_mod_sites_against(mod_dir, lifted_sites()).missing; }
 
 std::string notice() {
     std::lock_guard<std::mutex> lk(st().mu);
@@ -646,13 +682,23 @@ void load_dll_mods(uint64_t base, uint64_t frame_update) {
     if (st().loaded) return;
     st().loaded = true;
     st().main_base = base;
-    // a mod whose hook sites this build was not lifted with: say so on screen as well as in the log, since its hooks would never run
+    // a mod whose hook sites this build was not lifted with, or that uses unknown site kinds: say so on screen as well as in the log
     for (const RomfsMod& mod : installed_mods()) {
         if (mod.exefs.empty()) continue;
-        const int missing = sites_missing(u8(std::filesystem::u8path(mod.exefs).parent_path()));
-        if (missing <= 0) continue;
+        const ModSiteCheck check = check_mod_sites_against(u8(std::filesystem::u8path(mod.exefs).parent_path()), lifted_sites());
+        if (!check.unknown.empty()) {
+            std::string kinds;
+            for (const std::string& k : check.unknown) {
+                NXLOG_W(kTag, "%s: unknown hook site kind \"%s\" in exefs/*.sites (this port knows inline, midhook, entryhook): skipped",
+                        mod.name.c_str(), k.c_str());
+                kinds += (kinds.empty() ? "" : ", ") + k;
+            }
+            std::lock_guard<std::mutex> lk(st().mu);
+            st().notices.push_back(mod.name + ": skipped unknown hook site kind(s): " + kinds);
+        }
+        if (check.missing <= 0) continue;
         NXLOG_W(kTag, "%s: %d of its hook sites (exefs/*.sites) are not in this build: its hooks will not run. Run Set up.",
-                mod.name.c_str(), missing);
+                mod.name.c_str(), check.missing);
         std::lock_guard<std::mutex> lk(st().mu);
         st().notices.push_back(mod.name + ": run Set up (its hook sites are not in this build)");
     }
