@@ -543,38 +543,49 @@ constexpr const char* kOutOfMemoryHint =
 bool g_oom_hinted = false;   // under g_heap_mu: the hint is ours to clear
 }  // namespace
 
+// Lock order: the write tracker's scope is taken before g_heap_mu, as protect() does. The scope waits for an ImportFreeze over the range,
+// and an ImportFreeze holds its slot while it reads the heap's page table (heap_rw_pages, under g_heap_mu): waiting with the lock held,
+// neither would end. The commit-limit retries sleep without the lock too, so the page table stays readable for those seconds.
 bool heap_commit(uint64_t offset, uint64_t size) {
-    std::lock_guard lk(g_heap_mu);
-    if (!g_heap_size) {
-        NXLOG_W(kTag, "heap_commit: no heap");
-        return false;
+    uint64_t start = 0, end = 0;
+    {
+        std::lock_guard lk(g_heap_mu);
+        if (!g_heap_size) {
+            NXLOG_W(kTag, "heap_commit: no heap");
+            return false;
+        }
+        if (size == 0) return true;
+        if (offset > g_heap_size || size > g_heap_size - offset) {
+            NXLOG_E(kTag, "heap_commit: [%llx, +%llx) is outside the %llu MiB section",
+                    static_cast<unsigned long long>(offset), static_cast<unsigned long long>(size),
+                    static_cast<unsigned long long>(g_heap_size >> 20));
+            return false;
+        }
+        start = offset & ~(kPage - 1);
+        end = align_up(offset + size, kPage);
     }
-    if (size == 0) return true;
-    if (offset > g_heap_size || size > g_heap_size - offset) {
-        NXLOG_E(kTag, "heap_commit: [%llx, +%llx) is outside the %llu MiB section",
-                static_cast<unsigned long long>(offset), static_cast<unsigned long long>(size),
-                static_cast<unsigned long long>(g_heap_size >> 20));
-        return false;
-    }
-    const uint64_t start = offset & ~(kPage - 1);
-    const uint64_t end = align_up(offset + size, kPage);
     const ww::OsWriteScope wws(reinterpret_cast<void*>(kHeapBase + start), end - start);   // MEM_COMMIT makes committed pages read-write again
+    std::unique_lock lk(g_heap_mu);
+    if (!g_heap_size || end > g_heap_size) return false;   // the heap went away meanwhile
     // The game sets a heap of about 11 GB at boot and all of it is committed here. When the system's commit charge is near its limit (just after
     // the launcher's setup, or with a small page file) this fails, the game turns the result into nn::os OutOfMemory (0x1003) and calls svcBreak.
     // Windows grows a system-managed page file after such a failure and other processes give memory back, so wait a little and try again.
     bool ok = VirtualAlloc(reinterpret_cast<void*>(kHeapBase + start), static_cast<SIZE_T>(end - start), MEM_COMMIT, PAGE_READWRITE) != nullptr;
+    DWORD e = ok ? 0 : GetLastError();
     for (int attempt = 1; !ok && attempt <= 40; ++attempt) {
-        const DWORD e = GetLastError();
         if (e != ERROR_COMMITMENT_LIMIT && e != ERROR_NOT_ENOUGH_MEMORY && e != ERROR_COMMITMENT_MINIMUM) break;
         if (attempt == 1)
             NXLOG_W(kTag, "heap_commit [%llx, +%llx): the system is out of commit (error %lu); waiting up to 10 s for the page file to grow",
                     static_cast<unsigned long long>(start), static_cast<unsigned long long>(end - start), static_cast<unsigned long>(e));
+        lk.unlock();
         Sleep(250);
+        lk.lock();
+        if (!g_heap_size || end > g_heap_size) return false;
         ok = VirtualAlloc(reinterpret_cast<void*>(kHeapBase + start), static_cast<SIZE_T>(end - start), MEM_COMMIT, PAGE_READWRITE) != nullptr;
+        e = ok ? 0 : GetLastError();
         if (ok) NXLOG_I(kTag, "heap_commit: committed after %d retries", attempt);
     }
     if (!ok) {
-        DWORD e = GetLastError();
         NXLOG_E(kTag, "heap_commit [%llx, +%llx): VirtualAlloc failed, error %lu",
                 static_cast<unsigned long long>(start), static_cast<unsigned long long>(end - start),
                 static_cast<unsigned long>(e));
@@ -600,20 +611,25 @@ bool heap_commit(uint64_t offset, uint64_t size) {
 }
 
 bool heap_decommit(uint64_t offset, uint64_t size) {
-    std::lock_guard lk(g_heap_mu);
-    if (!g_heap_size) return false;
-    if (size == 0) return true;
-    if (offset > g_heap_size || size > g_heap_size - offset) {
-        NXLOG_E(kTag, "heap_decommit: [%llx, +%llx) is outside the section", static_cast<unsigned long long>(offset),
-                static_cast<unsigned long long>(size));
-        return false;
+    uint64_t start = 0, end = 0;
+    {
+        std::lock_guard lk(g_heap_mu);
+        if (!g_heap_size) return false;
+        if (size == 0) return true;
+        if (offset > g_heap_size || size > g_heap_size - offset) {
+            NXLOG_E(kTag, "heap_decommit: [%llx, +%llx) is outside the section", static_cast<unsigned long long>(offset),
+                    static_cast<unsigned long long>(size));
+            return false;
+        }
+        start = offset & ~(kPage - 1);
+        end = align_up(offset + size, kPage);
     }
+    const ww::OsWriteScope wws(reinterpret_cast<void*>(kHeapBase + start), end - start);   // before g_heap_mu, as in heap_commit
+    std::lock_guard lk(g_heap_mu);
+    if (!g_heap_size || end > g_heap_size) return false;   // the heap went away meanwhile
     // VirtualFree(MEM_DECOMMIT) is refused on pages of a section view (ERROR_INVALID_PARAMETER), so the pages are made
     // PAGE_NOACCESS through the primary view instead: guest accesses fault, the host pages stay charged to the section
     // (as in smo-recomp's SetMemoryHeapSize), and the alias views still show the section's contents.
-    const uint64_t start = offset & ~(kPage - 1);
-    const uint64_t end = align_up(offset + size, kPage);
-    const ww::OsWriteScope wws(reinterpret_cast<void*>(kHeapBase + start), end - start);
     for (uint64_t p = start / kPage; p < end / kPage;) {
         if (!bit_test(p)) {
             p++;
