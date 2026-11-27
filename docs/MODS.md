@@ -23,7 +23,9 @@ carry an emulator's patches and this port's DLL side by side. They load when the
 built with, call the game's functions, give the game functions of their own to call (what a new menu entry needs) and edit the game's
 data files as they are loaded. A mod can also show its own settings on a **Mods** tab in the **F1** menu, through the same panel
 interface as EmblemWeave and ObeliskChamber. A mod that needs hook sites of its own lists them in `exefs\<any name>.sites` next to
-its DLL; Set up lifts the game with them, so press **Set up** again after adding or removing such a mod. A DLL runs with the same
+its DLL; Set up lifts the game with them, so press **Set up** again after adding or removing such a mod. Unknown site kinds
+(for example from another port) are skipped with a warning. A DLL runs with the same
 rights as the game: only install mods you trust. `[fs] dll_mods = false` in `fefw.ini` turns them off. Writing one:
-[runtime/include/nxrt/mod_api.h](../runtime/include/nxrt/mod_api.h), with a sample in
+[runtime/include/nxrt/mod_api.h](../runtime/include/nxrt/mod_api.h) and
+[runtime/docs/MOD_INTERFACES.md](../runtime/docs/MOD_INTERFACES.md), with a sample in
 [examples/mods/panel-demo](../examples/mods/panel-demo/README.md).

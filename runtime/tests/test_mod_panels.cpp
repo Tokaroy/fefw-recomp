@@ -21,7 +21,7 @@ namespace modapi = nxrt::services::modapi;
 // another runtime's header relies on every offset.
 static_assert(offsetof(NxModApi, add_panel) == offsetof(NxModApi, free_mem) + sizeof(void*), "add_panel follows free_mem");
 static_assert(offsetof(NxModApi, panel_visible) == offsetof(NxModApi, add_panel) + sizeof(void*), "panel_visible follows add_panel");
-static_assert(sizeof(NxModApi) == offsetof(NxModApi, panel_visible) + sizeof(void*), "panel_visible is the last member");
+static_assert(offsetof(NxModApi, get_interface) == offsetof(NxModApi, panel_visible) + sizeof(void*), "get_interface follows panel_visible (version 6)");
 #define UI_AT(member, n) static_assert(offsetof(NxModUi, member) == 8 + (n) * sizeof(void*), "NxModUi: " #member)
 UI_AT(text, 0);
 UI_AT(text_disabled, 1);
@@ -38,7 +38,7 @@ UI_AT(tree_node, 11);
 UI_AT(tree_pop, 12);
 UI_AT(tooltip, 13);
 static_assert(sizeof(NxModUi) == 8 + 14 * sizeof(void*), "NxModUi ends at tooltip");
-static_assert(NXMOD_API_VERSION == 4, "version 4 is exactly the panels: a later member needs a version agreed with the other runtimes");
+static_assert(NXMOD_API_VERSION >= 4, "panels are version 4+");
 
 namespace {
 void panel(const NxModUi*, void*) {}

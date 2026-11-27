@@ -25,9 +25,10 @@
  *
  *     Set up lifts the game with main.sites plus the sites of the installed mods, so after installing, updating or removing such a
  *     mod the game is built again (the Play page says the build is out of date), and so after switching it off or on (a folder name
- *     starting with - or _). Set up writes the list main was lifted with next to fefw.exe (fefw.sites); the runtime checks
- *     hook_inline / hook_mid / hook_entry in main against it (a warning in the log for a site this build lacks) and, at start, the
- *     installed mods' .sites files: a mod whose sites are missing is named on screen for the first 20 seconds.
+ *     starting with - or _). Unknown site kinds (for example from another port) are skipped with a warning rather than failing Set up.
+ *     Set up writes the list main was lifted with next to fefw.exe (fefw.sites); the runtime checks hook_inline / hook_mid / hook_entry
+ *     in main against it (a warning in the log for a site this build lacks) and, at start, the installed mods' .sites files: a mod whose
+ *     sites are missing or use unknown kinds is named on screen for the first 20 seconds.
  *     The condition flags (NZCV) are kept inside each lifted function, not in the Ctx: a hook must not read or set c->N, c->Z,
  *     c->C or c->V. A midhook that runs the rest of the function itself (call_guest at its own site) starts it with stale flags,
  *     so such a site must be where the flags are set again before they are read, e.g. right after a call or at a cmp / tst,
@@ -47,10 +48,17 @@
  *         extern "C" __declspec(dllexport) int nxmod_early(const NxModApi* api, const char* mod_dir);
  *
  *     which is called as soon as the DLL is loaded. The game is not in memory yet: only log, edit_file, the version 3 helpers
- *     (mod folders, host files, zstd, memory) and add_panel may be used there. Nonzero = the mod declines, as for nxmod_init.
+ *     (mod folders, host files, zstd, memory), add_panel and get_interface may be used there. Nonzero = the mod declines, as for nxmod_init.
  *   - (version 4) show its own settings on the F1 menu's Mods tab (add_panel, panel_visible), drawn with simple widgets (NxModUi).
  *     This is the same interface, member for member, as EmblemWeave's version 4 and the panel part of ObeliskChamber's version 5, so
  *     a mod's panel works in all three. A mod checks api->version >= 4 before using it.
+ *   - (version 6) ask for a named interface table (get_interface): a lookup by name and version, so a feature is discovered
+ *     instead of inferred from the API version. Interface tables start with size and version and grow only at the end; names are
+ *     ASCII, case-sensitive and owned by a project prefix ("nxp.ui", "obeliskchamber.list"). Version 0 asks for any compatible
+ *     version. The shared name "nxp.nxmod" (version 1) answers with this table itself, so a plugin built on a shared layer reaches
+ *     hooks, guest calls, memory and file edits on every host that has version 6. Version 6 is the one the three ports agreed in
+ *     fefw-recomp issue #165, with the same member at the same place as EmblemWeave and ObeliskChamber (version 5 was
+ *     ObeliskChamber's panel alignment). Rules: runtime/docs/MOD_INTERFACES.md.
  *
  * Loading can be turned off with [fs] dll_mods = false. A DLL runs with the same rights as the game: install only mods you trust.
  */
@@ -65,12 +73,18 @@
 extern "C" {
 #endif
 
-#define NXMOD_API_VERSION 4u
+#define NXMOD_API_VERSION 6u
 
 typedef void (*NxModInlineFn)(Ctx* c, uint64_t addr, void* user);
 typedef int (*NxModSiteFn)(Ctx* c, uint64_t addr, void* user);   /* midhook / entry hook: nonzero = handled (nxrt/hooks.h) */
 typedef void (*NxModFrameFn)(Ctx* c, void* user);
 typedef void (*NxModFunctionFn)(Ctx* c, void* user);   /* a function the game calls: arguments in c->x[0..7], the result goes in c->x[0] */
+struct NxModApi;
+/* (version 6) Looks up a named interface table. `version` is the interface version the caller was written for; 0 asks for any
+ * compatible version. Answers the table (at the requested version or a compatible later one), or NULL when this runtime does
+ * not provide that name at a compatible version. Names are ASCII and case-sensitive; tables start with size and version and
+ * grow only at the end (runtime/docs/MOD_INTERFACES.md). */
+typedef const void* (*NxModGetInterfaceFn)(const struct NxModApi* api, const char* name, uint32_t version);
 
 
 /* A game data file being set up (version 3, edit_file). data/size is the content as it stands: the game's file, or the file an
@@ -202,6 +216,15 @@ typedef struct NxModApi {
 
     /* 1 while a mod's panel is on screen (the game gets no input meanwhile). Any thread. */
     int (*panel_visible)(void);
+
+    /* ---- version 6 (check api->version >= 6 and api->size before use) ---- */
+
+    /* The interface table named `name` (runtime/docs/MOD_INTERFACES.md), or NULL. Version 0 asks for any compatible version; a
+     * version newer than the table this runtime provides is NULL. `get_interface(api, name, 0) != NULL` is how a mod asks whether
+     * an interface exists. The shared name "nxp.nxmod" (version 1) answers `api` itself: this table, not a copy, so its own
+     * `version` and `size` fields apply (this table keeps its version-then-size order; it is the one bridged table, not a new
+     * interface structure). May be called from nxmod_early and from any thread; a returned table stays valid for the run. */
+    NxModGetInterfaceFn get_interface;
 } NxModApi;
 
 typedef int (*NxModInitFn)(const NxModApi* api, const char* mod_dir);

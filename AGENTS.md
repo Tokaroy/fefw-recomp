@@ -41,6 +41,7 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
   python recomp/tests/lift_workers_test.py
   python tools/analyze_reports_test.py
   python game-build/release/object_cache_test.py
+  python game-build/release/mod_sites_test.py
   ```
 - Oracle hash lock, as CI checks it (the files listed in `recomp/oracle/SHA256SUMS` must be unchanged):
   ```bash

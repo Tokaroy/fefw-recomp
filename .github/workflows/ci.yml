@@ -102,6 +102,9 @@ jobs:
       - name: Build script object cache tests
         run: python game-build/release/object_cache_test.py
 
+      - name: Build script mod sites tests
+        run: python game-build/release/mod_sites_test.py
+
   decky:
     runs-on: ubuntu-latest
     defaults:
