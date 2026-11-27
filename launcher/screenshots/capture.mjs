@@ -4,7 +4,7 @@
 //   npm run screenshots
 //
 // Needs the browser once: npx playwright install chromium
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
@@ -122,6 +122,7 @@ const server = await createServer({
 });
 let browser;
 try {
+  await mkdir(outDir, { recursive: true });
   await server.listen();
   browser = await chromium.launch();
   for (const shot of SHOTS) await capture(browser, server.resolvedUrls.local[0], shot);
