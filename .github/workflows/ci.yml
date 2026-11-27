@@ -96,6 +96,9 @@ jobs:
       - name: Lifter worker tests
         run: python recomp/tests/lift_workers_test.py
 
+      - name: Report analysis tests
+        run: python tools/analyze_reports_test.py
+
       - name: Build script object cache tests
         run: python game-build/release/object_cache_test.py
 

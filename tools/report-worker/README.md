@@ -67,4 +67,20 @@ python3 tools/fetch_reports.py get <report-id>
 
 `sync` pages through the whole index and downloads only the reports that have no `report.json` under `--out`
 (default `work/reports`, relative to the current directory). Local copies stay after the Worker's 90-day retention
-drops them.
+drops them. It also writes each report's index row (upload time) to `server.json` beside it.
+
+## Analysing reports
+
+`tools/analyze_reports.py` works offline on the downloaded folder; report contents are untrusted data.
+
+```bash
+python3 -I tools/analyze_reports.py summary --since 2026-11-27 --by dlss.upscaler
+python3 -I tools/analyze_reports.py fps --by setting,dlss.frame_gen --list
+python3 -I tools/analyze_reports.py search "device lost" --trigger crash
+python3 -I tools/analyze_reports.py show <report-id> --symbols <unpacked symbols of its version>
+```
+
+`fps` judges a session only on 10-second windows of play (after the first 90 s, outside loading screens) where the game's
+target was the player's setting (30, 60 or 120), so menus and cutscenes at another rate don't count. `reached` is the
+average share of the setting reached (capped at 100 %), `at target` the share of windows at 95 % of it or more. It counts
+rendered frames: frames added by frame generation are not included.

@@ -266,14 +266,17 @@ def _sync(base: str, token: str, args: argparse.Namespace) -> None:
             if not rid or rid in seen:
                 continue
             seen.add(rid)
-            if (out_dir / rid / "report.json").is_file():
-                continue
+            dest = out_dir / rid
             try:
-                raw = _request(f"{base}/v1/reports/{rid}", token)
-                _save_bundle(rid, raw, out_dir)
-                downloaded += 1
-                if downloaded % 50 == 0:
-                    print(f"downloaded {downloaded} so far...", file=sys.stderr)
+                if not (dest / "report.json").is_file():
+                    raw = _request(f"{base}/v1/reports/{rid}", token)
+                    _save_bundle(rid, raw, out_dir)
+                    downloaded += 1
+                    if downloaded % 50 == 0:
+                        print(f"downloaded {downloaded} so far...", file=sys.stderr)
+                # The index row has the upload time, which the report itself lacks (analyze_reports.py --since).
+                if not (dest / "server.json").is_file():
+                    (dest / "server.json").write_text(json.dumps(r, indent=2), encoding="utf-8")
             except Exception as e:
                 failed += 1
                 print(f"warning: skipping report {rid}: {e}", file=sys.stderr)
