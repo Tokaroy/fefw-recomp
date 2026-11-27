@@ -25,8 +25,7 @@ of the same name differs only in its CRLF line endings
 LICENSE-MIT, LICENSE-APACHE and NOTICE are copied from the same tag: the core of
 RenHDrum is dual licensed MIT OR Apache-2.0, and NOTICE asks for
 "Copyright (c) 2026 Three-Dola" to be kept. Since 0.5.0 the binary has libopus 1.5.2
-statically linked (BSD-3-Clause, for the DualSense speaker over Bluetooth, which this
-project does not use yet): LICENSE-opus is vendor/opus/COPYING from the same tag, with
+statically linked (BSD-3-Clause, for the DualSense speaker over Bluetooth): LICENSE-opus is vendor/opus/COPYING from the same tag, with
 LF line endings. The GPL-3.0-or-later parts of that project (integrations/brontide,
 integrations/recomp-c/reference) are not used here: the host calls the prebuilt library
 through its C ABI and does not build any of its sources.

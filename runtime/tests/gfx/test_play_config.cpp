@@ -1683,6 +1683,30 @@ NXTEST(pad_stick_keys_round_trip) {
     CHECK_EQ(format_settings(r), text);
 }
 
+NXTEST(pad_hd_haptics_on_by_default_and_round_trips) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings s = default_settings();
+    CHECK(s.pad.hd_haptics);
+    CHECK(format_settings(s).find("\nhd_haptics = 1\n") != std::string::npos);
+    s.pad.hd_haptics = false;
+    const std::string text = format_settings(s);
+    Settings r;
+    std::string err;
+    REQUIRE_MSG(parse_settings(text, &r, &err), err);
+    CHECK(!r.pad.hd_haptics);
+    CHECK_EQ(format_settings(r), text);
+    CHECK(!parse_settings("[pad]\nhd_haptics = maybe\n", &r, &err));
+}
+
+// "dualsense" was a haptic mode that did what auto does; a settings file that names it still loads.
+NXTEST(pad_haptic_dualsense_reads_as_auto) {
+    const nxrt::play::test::PlayTestGame play_game;
+    Settings r = default_settings();
+    std::string err;
+    REQUIRE_MSG(parse_settings("[pad]\nhaptic = dualsense\n", &r, &err), err);
+    CHECK(format_settings(r).find("\nhaptic = auto\n") != std::string::npos);
+}
+
 NXTEST(pad_stick_keys_written_in_order) {
     const nxrt::play::test::PlayTestGame play_game;
     const std::string text = format_settings(default_settings());

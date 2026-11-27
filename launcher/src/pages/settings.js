@@ -206,12 +206,15 @@ const TABS = [
           // [pad] haptic: how the game's HD Rumble value reaches the pad (runtime/gfx/haptic.cpp). The launcher only writes the
           // setting; the game reads it when it starts, so a change lands on the next run.
           { id: 'haptic', type: 'select', label: 'settings.haptic.label', sec: 'pad', key: 'haptic', def: 'auto',
-            options: [['auto', 'settings.haptic.auto'], ['off', 'settings.haptic.off'], ['rumble', 'settings.haptic.rumble'],
-              ['dualsense', 'settings.haptic.dualsense']],
-            hint: 'settings.haptic.hint', restart: true },
+            options: [['auto', 'settings.haptic.auto'], ['off', 'settings.haptic.off'], ['rumble', 'settings.haptic.rumble']],
+            // "dualsense" was a choice of its own that did what automatic does: an older file shows, and saves, as automatic
+            unsupported: ['dualsense', 'haptics'], hint: 'settings.haptic.hint', restart: true },
           // [pad] haptic_strength: 0..100 percent for the haptic backends, or -1 to keep using the rumble strength above.
           { id: 'haptic_strength', type: 'number', label: 'settings.hapticStrength.label', sec: 'pad', key: 'haptic_strength',
             def: '-1', min: -1, max: 100, hint: 'settings.hapticStrength.hint' },
+          // [pad] hd_haptics: a DualSense also gets taps on its speaker.
+          { id: 'hd_haptics', type: 'toggle', label: 'settings.hdHaptics.label', sec: 'pad', key: 'hd_haptics', def: '1',
+            hint: 'settings.hdHaptics.hint', restart: true },
         ],
       },
       {
