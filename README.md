@@ -75,9 +75,9 @@ On desktop Linux, or to set a handheld up by hand: download `fefw-recomp-<versio
 runs through Proton: Play needs Steam with a Proton installed, [umu-launcher](https://github.com/Open-Wine-Components/umu-launcher)
 (`umu-run`) or Wine, or press **Add to Steam** on the Play page and start it from Steam (also in the Steam Deck's Game Mode).
 
-FSR 3 frame generation does not work through Proton, so the Linux launcher offers [LSFG-VK](https://lsfg-vk.dev) instead (it needs
-Lossless Scaling on Steam). **Settings > Graphics** can install the layer, and shows its multiplier, flow scale and performance mode
-once it is found.
+Frame generation on Linux is either FSR 3, as on Windows (best on desktop GPUs: on a handheld's integrated GPU it can cost more
+frame rate than it gives), or [LSFG-VK](https://lsfg-vk.dev) (it needs Lossless Scaling on Steam), one at a time. **Settings >
+Graphics** can install LSFG-VK's layer, and shows its multiplier, flow scale and performance mode once it is found.
 
 ### Updating
 
@@ -131,7 +131,7 @@ processors (Core 2, AMD Phenom) are not supported; Setup and `fefw.exe` say so i
 
 **Linux and handhelds**
 
-- Runs through Proton, with LSFG-VK frame generation
+- Runs through Proton, with FSR 3 or LSFG-VK frame generation
 - On Steam Deck-style handhelds: a [one-file installer](#steam-deck-and-other-handhelds) and a Decky plugin to play, update and
   change settings from Game Mode
 

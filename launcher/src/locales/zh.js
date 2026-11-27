@@ -317,7 +317,7 @@ export const zh = {
     'settings.frameGen.label': '帧生成',
     'settings.frameGen.short': '在真实帧之间插入生成帧。最好关闭垂直同步。',
     'settings.frameGen.hint': '使用帧生成时请保持垂直同步关闭。DLSS 帧生成还需开启硬件 GPU 调度，且显卡须为 RTX 40 系或更新。',
-    'settings.frameGen.hintLinux': '在真实帧之间插入一帧生成帧；HUD 与文字取自真实帧。最好在 120 Hz 或更高刷新率的显示器上关闭垂直同步。开启垂直同步时，游戏最多以刷新率的一半渲染；显示器刷新率低于游戏帧率的两倍时帧生成会暂停。DLSS 需要 Streamline 帧生成文件。',
+    'settings.frameGen.hintLinux': '在真实帧之间插入一帧生成帧；HUD 与文字取自真实帧。最好在 120 Hz 或更高刷新率的显示器上关闭垂直同步。开启垂直同步时，游戏最多以刷新率的一半渲染；显示器刷新率低于游戏帧率的两倍时帧生成会暂停。FSR 3 使用 FSR 3 文件夹中的 amd_fidelityfx_vk.dll（图形 > 超分文件），适合桌面显卡：在掌机的集成显卡上，它的开销可能大于收益（Ryzen Z1 Extreme 在 1080p 下，43 fps 变为真实 25 帧、显示 50 帧），此时下方的 LSFG-VK 配合性能模式与较低的光流缩放，开销可能更低。DLSS 需要 Streamline 帧生成文件。',
     'settings.frameGen.off': '关',
     'settings.frameGen.dlss': 'NVIDIA DLSS 帧生成（RTX 40 系）',
     'settings.frameGen.fsr3': 'AMD FSR 3（需 amd_fidelityfx_vk.dll）',

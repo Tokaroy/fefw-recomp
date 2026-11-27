@@ -92,9 +92,8 @@ const TABS = [
               ['0.85', ['85%', 'settings.srTier.highQuality']], ['1.0', 'settings.renderRatio.full']],
             hint: 'settings.renderRatio.hint' },
           { id: 'frame_gen', type: 'select', label: 'settings.frameGen.label', sec: 'dlss', key: 'frame_gen', def: '0',
-            // Linux: the game's own FSR 3 frame generation is not supported under Proton, so it is not offered (`unsupported`)
-            options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss', { nv: true }], ...(IS_LINUX ? [] : [['fsr3', 'settings.frameGen.fsr3']])],
-            unsupported: IS_LINUX ? ['fsr3'] : [],
+            // FSR 3 frame generation runs under Proton too (RADV's single graphics queue: framegen_ffx_queues.h); on Linux LSFG-VK below is the other choice
+            options: [['0', 'settings.frameGen.off'], ['dlss', 'settings.frameGen.dlss', { nv: true }], ['fsr3', 'settings.frameGen.fsr3']],
             hint: IS_LINUX ? 'settings.frameGen.hintLinux' : 'settings.frameGen.hint', restart: true },
           // Linux only: LSFG-VK frame generation on the finished picture (launcher/src-tauri/src/lsfg.rs); stored in launcher.json
           ...(IS_LINUX ? [
@@ -515,8 +514,7 @@ export async function render(el, ctx) {
           n.appendChild(w);
         }
       });
-    // FSR 3 frame generation is not offered on Linux, so its file is not listed there
-    put('fsr', IS_LINUX ? `${line('settings.files.upscaling', r.fsr_upscaling)}.` : `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
+    put('fsr', `${line('settings.files.upscaling', r.fsr_upscaling)}. ${line('settings.files.frameGen', r.fsr_framegen)}.`);
     // With DLSS chosen (upscaling or frame generation), a folder that holds the rest of the Streamline SDK gets a note about the files this game does not use.
     const dlssOn = model.upscaler === 'dlss' || model.frame_gen === 'dlss';
     const unused = dlssOn && r.dlss.found && Array.isArray(r.dlss_unused) ? r.dlss_unused : [];

@@ -44,16 +44,16 @@ test("a setting left with nothing to pick is not listed", () => {
       { id: "frame_gen", label: "Frame generation", current: "Off", choices: [
         choice("Off"),
         choice("NVIDIA DLSS (RTX 40 or newer)", false),
-        choice("AMD FSR 3 (Windows only; needs AMD's file)", false),
+        choice("AMD FSR 3 (any GPU; needs AMD's file)", false),
       ] },
     ],
   };
   assert.deepEqual(allSettings(frameGen), []);
   // one already in fefw.ini stays listed, so that it can be switched off
-  const picked = { ...frameGen.settings[0], current: "AMD FSR 3 (Windows only; needs AMD's file)" };
+  const picked = { ...frameGen.settings[0], current: "AMD FSR 3 (any GPU; needs AMD's file)" };
   assert.deepEqual(allSettings({ consent: {}, settings: [picked] })[0].options.map((o) => o.choice), [
     "Off",
-    "AMD FSR 3 (Windows only; needs AMD's file)",
+    "AMD FSR 3 (any GPU; needs AMD's file)",
   ]);
 });
 

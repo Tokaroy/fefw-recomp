@@ -6,6 +6,9 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <vector>
+
+#include "extras/framegen_ffx_queues.h"
 
 namespace nxrt::gfx {
 class Device;
@@ -15,10 +18,12 @@ namespace nxrt::extras {
 
 bool ffx_fg_wanted();   // [dlss] frame_gen = fsr3 and amd_fidelityfx_vk.dll found (read once)
 bool ffx_fg_files();    // amd_fidelityfx_vk.dll found (ffx_files.h), whatever [dlss] frame_gen says
-// Device creation (vk_device.cpp): the queues to add to the graphics family (present, image acquire, async compute; 0 = none), then the
-// install once the device and its first queue exist (before any swapchain).
-uint32_t ffx_fg_extra_queues(uint32_t family_queue_count);
-void ffx_fg_install(gfx::Device& dev, uint32_t extra_queues);
+// Device creation (vk_device.cpp): where the swapchain's present, image acquire and async compute queues come from (framegen_ffx_queues.h;
+// !on = frame generation off), then the install once the device and its queues exist (before any swapchain).
+fgq::Plan ffx_fg_plan_queues(const std::vector<fgq::Family>& families, uint32_t game_family);
+void ffx_fg_install(gfx::Device& dev, const fgq::Plan& queues);
+// Device teardown (after vkDeviceWaitIdle): what the install made (the GPU timer's query pool).
+void ffx_fg_shutdown(gfx::Device& dev);
 
 struct FfxFgFrame {
     VkImage depth = VK_NULL_HANDLE, motion = VK_NULL_HANDLE;   // render size, GENERAL, oriented as the backbuffer (framegen.cpp)

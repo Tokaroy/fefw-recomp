@@ -64,7 +64,11 @@ the game. Frame generation adds one generated frame between two real ones; the H
 stay sharp. It works best with VSync off on a 120 Hz or faster display: with VSync on the game renders at most half the refresh
 rate, and on a display slower than twice the game's frame rate generation pauses. **FSR 3 (AMD) folder** shows whether the files
 are found, and can point to another folder. If a file is missing, `fefw.log` names it and the game carries on with TAAU (or without
-frame generation). FSR 3 frame generation does not work through Proton; on Linux, see [LSFG-VK](../README.md#linux).
+frame generation).
+
+FSR 3 frame generation also works through Proton. Its cost is fixed by the output size, not the render scale: on a desktop GPU it
+is small, but on a handheld's integrated GPU it can take more than it gives (a Ryzen Z1 Extreme at 1080p went from 43 fps to 25
+real and 50 shown). There, [LSFG-VK](../README.md#linux) with its performance mode and a lower flow scale may cost less.
 
 ## XeSS (any GPU, best on Intel Arc)
 

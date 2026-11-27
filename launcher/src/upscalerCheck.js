@@ -28,7 +28,7 @@ async function missingFiles(isLinux) {
   if (frameGen === 'dlss') need(t('settings.files.dlssFrameGen'), r.dlss_framegen, 'dlss_framegen', 'frame_gen');
   if (upscaler === 'dlss') need(t('settings.files.dlss'), r.dlss, 'dlss', 'upscaler');
   if (upscaler === 'fsr3') need(`FSR 3 ${t('settings.files.upscaling').toLowerCase()}`, r.fsr_upscaling, 'fsr', 'upscaler');
-  if (frameGen === 'fsr3' && !isLinux) need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr', 'frame_gen', g['dlss.frame_gen_dll'] || dirs.fsr);
+  if (frameGen === 'fsr3') need(`FSR 3 ${t('settings.files.frameGen').toLowerCase()}`, r.fsr_framegen, 'fsr', 'frame_gen', g['dlss.frame_gen_dll'] || dirs.fsr);
   if (upscaler === 'xess') need(t('settings.files.xess'), r.xess, 'xess', 'upscaler');
   return { missing };
 }
