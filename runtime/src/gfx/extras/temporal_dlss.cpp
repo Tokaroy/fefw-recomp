@@ -23,6 +23,7 @@
 #include "nxrt/config.h"
 #include "nxrt/extras.h"
 #include "nxrt/gfx.h"
+#include "nxrt/diag.h"
 #include "nxrt/log.h"
 
 #include "../../../third_party/nvidia_streamline/include/sl.h"
@@ -209,7 +210,10 @@ public:
         // whose scale is nearest the actual ratio and whose range holds the input (DLAA at the same size).
         const bool same_out = f.out.width == last_out_.width && f.out.height == last_out_.height;
         const int preset = extras::dlss_preset();   // the F1 menu changes it live
-        if (!same_out || !in_range(range_, f.render) || preset != last_preset_) {
+        const bool new_mode = !same_out || !in_range(range_, f.render) || preset != last_preset_;
+        // First evaluation of a DLSS mode/preset can trigger synchronous NGX PTX JIT compilation (>10 s on a cold cache).
+        const WatchdogLongOp long_op(new_mode || retry_pending_);
+        if (new_mode) {
             sl::DLSSMode m = sl::DLSSMode::eDLAA;
             Range rg{f.out.width, f.out.height, f.out.width, f.out.height};
             const double r = static_cast<double>(f.out.width) / static_cast<double>(f.render.width);

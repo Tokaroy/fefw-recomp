@@ -129,6 +129,18 @@ void watchdog_start(const WatchdogOptions& opt = {});
 void watchdog_stop();
 bool watchdog_running();
 void diag_progress();                  // a heartbeat that is not a frame: long work that is moving (texture transcodes on a cold cache) keeps the watchdog quiet
+// Marks a synchronous driver/SDK call that can legitimately exceed watchdog_seconds (e.g. first-run upscaler or frame-generation
+// pipeline/PTX JIT compilation). While any long op is active, the watchdog uses watchdog_boot_seconds (default 60 s) instead of
+// watchdog_seconds (default 10 s); ending the op also calls diag_progress() so the normal timer restarts cleanly.
+void diag_long_op_begin();
+void diag_long_op_end();
+struct WatchdogLongOp {
+    bool active;
+    explicit WatchdogLongOp(bool on = true) : active(on) { if (active) diag_long_op_begin(); }
+    ~WatchdogLongOp() { if (active) diag_long_op_end(); }
+    WatchdogLongOp(const WatchdogLongOp&) = delete;
+    WatchdogLongOp& operator=(const WatchdogLongOp&) = delete;
+};
 void diag_frame_tick();                // call once per presented frame (or any heartbeat)
 void diag_frame_tick_nolisten();       // the same without calling the frame listener (the test tooling's own boundary)
 void diag_set_frame_listener(void (*fn)());   // called by diag_frame_tick after counting (test tooling's frame source "tick"); null removes it
