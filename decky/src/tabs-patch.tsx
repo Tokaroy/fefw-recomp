@@ -12,6 +12,7 @@ import { ConfirmModal, createReactTreePatcher, findInReactTree, showModal } from
 import { cloneElement, useContext, type ComponentType, type Context, type ReactElement, type ReactNode } from "react";
 import { FaHammer, FaTimes } from "react-icons/fa";
 import { AboutTab, SettingsTab, SetupTab } from "./game-tabs";
+import { ProgressTrack } from "./progress-bar";
 import { ACTIVITY_TAB_ID, replaceTabStrip, toUnsignedAppId } from "./shortcuts";
 import type { SleepStatus } from "./sleep";
 import {
@@ -185,6 +186,31 @@ function FefwPlayButton({ orig }: { orig: ReactElement<Record<string, unknown>> 
   const iconStyle = { width: "20px", height: "20px", marginRight: "16px", flexShrink: 0 };
   const labelStyle = { fontSize: "16px", fontWeight: 500 };
 
+  if (playState.kind === "blocked") {
+    // nothing here can fix it yet (the game files are chosen in the launcher's window): say so rather than start a broken shortcut
+    const explain = () =>
+      showModal(
+        <ConfirmModal
+          strTitle="Finish setting up in Desktop Mode"
+          strDescription={`${playState.problem} Open fefw-launcher in Desktop Mode, then come back here to play.`}
+          strOKButtonText="OK"
+          bAlertDialog
+        />,
+      );
+    return cloneElement(orig, {
+      onMouseUp: undefined,
+      onActivate: undefined,
+      onClick: explain,
+      style: { ...baseStyle, background: FEFW_PURPLE_BG, color: "#ffffff" },
+      children: (
+        <>
+          <FaHammer style={iconStyle} />
+          <div style={labelStyle}>{playState.label}</div>
+        </>
+      ),
+    });
+  }
+
   if (playState.kind === "setup") {
     return cloneElement(orig, {
       onMouseUp: undefined,
@@ -235,24 +261,15 @@ function FefwPlayButton({ orig }: { orig: ReactElement<Record<string, unknown>> 
       <>
         <FaTimes style={iconStyle} />
         <div style={labelStyle}>{playState.buttonLabel}</div>
-        {pct !== null && (
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: "4px",
-              background: "rgba(0, 0, 0, 0.35)",
-            }}
-          >
-            <div
-              style={{
-                width: `${pct}%`,
-                height: "100%",
-                background: FEFW_PROGRESS_FILL,
-                transition: "width 0.35s ease",
-              }}
+        {(pct !== null || playState.working) && (
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
+            <ProgressTrack
+              pct={pct ?? 0}
+              working={playState.working}
+              height={4}
+              fill={FEFW_PROGRESS_FILL}
+              track="rgba(0, 0, 0, 0.35)"
+              rounded={false}
             />
           </div>
         )}

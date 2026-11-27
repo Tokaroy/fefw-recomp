@@ -18,6 +18,7 @@ import { addEventListener, definePlugin, removeEventListener, routerHook, toaste
 import { useEffect, useState, type ReactElement } from "react";
 import { FaDownload } from "react-icons/fa";
 import { pickSettingChoice } from "./game-tabs";
+import { ProgressTrack, progressText } from "./progress-bar";
 import { AppStore, SteamApps, startGame } from "./play";
 import { askToUpdate } from "./self_update";
 import { shownSettings } from "./settings";
@@ -65,22 +66,25 @@ const Note = ({ text }: { text: string }) => (
 );
 
 // Drawn here: Decky's progress bar puts its label beside the bar, which then runs off the narrow panel.
-const Progress = ({ title, message, fraction }: { title: string; message: string; fraction: number | null }) => (
-  <PanelSectionRow>
-    <div style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%", minWidth: 0, overflowWrap: "anywhere" }}>
-      <div style={{ fontWeight: "bold" }}>{title}</div>
-      <div style={{ fontSize: "0.85em" }}>{message}</div>
-      {fraction !== null && (
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div style={{ flex: 1, height: "6px", borderRadius: "3px", overflow: "hidden", background: "rgba(255, 255, 255, 0.2)" }}>
-            <div style={{ width: `${Math.round(fraction * 100)}%`, height: "100%", background: "#1a9fff", transition: "width 0.5s" }} />
+const Progress = ({ title, message, fraction, working }: { title: string; message: string; fraction: number | null; working: boolean }) => {
+  const pct = fraction !== null ? Math.max(0, Math.min(100, Math.round(fraction * 100))) : null;
+  return (
+    <PanelSectionRow>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%", minWidth: 0, overflowWrap: "anywhere" }}>
+        <div style={{ fontWeight: "bold" }}>{title}</div>
+        <div style={{ fontSize: "0.85em" }}>{message}</div>
+        {(pct !== null || working) && (
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ flex: 1 }}>
+              <ProgressTrack pct={pct ?? 0} working={working} />
+            </div>
+            <div style={{ fontSize: "0.85em" }}>{progressText(pct, working)}</div>
           </div>
-          <div style={{ fontSize: "0.85em" }}>{Math.round(fraction * 100)}%</div>
-        </div>
-      )}
-    </div>
-  </PanelSectionRow>
-);
+        )}
+      </div>
+    </PanelSectionRow>
+  );
+};
 
 const Button = (props: { label: string; onClick: () => void; disabled?: boolean }) => (
   <PanelSectionRow>
@@ -127,6 +131,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
                 title={jobStepTitle(job.step)}
                 message={job.cancelling ? "Cancelling" : job.message}
                 fraction={job.fraction}
+                working={!job.cancelling && job.counting === false}
               />
               <Note text={`Time elapsed: ${clock(job.elapsed)}`} />
               <PanelSectionRow>

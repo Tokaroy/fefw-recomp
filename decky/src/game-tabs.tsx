@@ -13,6 +13,7 @@ import {
   ToggleField,
 } from "@decky/ui";
 import { useEffect, useRef, type ReactNode } from "react";
+import { ProgressTrack, progressText } from "./progress-bar";
 import { groupedSettings } from "./settings";
 import type { SleepStatus } from "./sleep";
 import {
@@ -114,6 +115,7 @@ function JobProgress({ state, sleep }: { state: State; sleep: () => SleepStatus 
   const job = state.job;
   if (!job) return null;
   const pct = job.fraction !== null ? Math.max(0, Math.min(100, Math.round(job.fraction * 100))) : null;
+  const working = !job.cancelling && job.counting === false;
 
   return (
     <DialogControlsSection>
@@ -123,13 +125,11 @@ function JobProgress({ state, sleep }: { state: State; sleep: () => SleepStatus 
         description={`Time elapsed: ${clock(job.elapsed)}${job.step === "rebuild" ? " · Some steps take several minutes without moving." : ""}`}
         bottomSeparator="standard"
       >
-        {pct !== null ? `${pct}%` : ""}
+        {progressText(pct, working)}
       </Field>
-      {pct !== null && (
+      {(pct !== null || working) && (
         <div style={{ padding: "8px 0 12px" }}>
-          <div style={{ height: "6px", borderRadius: "3px", overflow: "hidden", background: "rgba(255, 255, 255, 0.2)" }}>
-            <div style={{ width: `${pct}%`, height: "100%", background: "#1a9fff", transition: "width 0.5s" }} />
-          </div>
+          <ProgressTrack pct={pct ?? 0} working={working} />
         </div>
       )}
       <ToggleField

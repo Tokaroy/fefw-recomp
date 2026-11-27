@@ -496,6 +496,8 @@ pub struct Progress {
     /// "idle", "running", "done", "cancelled", "error"
     pub state: String,
     pub step: String,
+    /// the part of the step the tool says it is in (fefw_build.py's "lift", "compile", "link"...), empty when it says none
+    pub part: String,
     pub done: u64,
     pub total: u64,
     pub message: String,
@@ -740,17 +742,19 @@ fn ninja_progress(line: &str) -> Option<(u64, u64)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
-/// "scan: 12 345" (extract_corpus.py --progress) or the harness's "done N/M" style lines.
-fn tool_progress(line: &str) -> Option<(u64, u64)> {
+/// "@progress <part> N M <text>" (fefw_build.py), "scan: 12 345" (extract_corpus.py --progress) or the harness's "done N/M" style
+/// lines: the part (empty when the line names none), done and total.
+fn tool_progress(line: &str) -> Option<(String, u64, u64)> {
     if let Some(rest) = line.strip_prefix("@progress ") {
-        let mut it = rest.split_whitespace().skip(1);
-        return Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?));
+        let mut it = rest.split_whitespace();
+        let part = it.next()?.to_string();
+        return Some((part, it.next()?.parse().ok()?, it.next()?.parse().ok()?));
     }
     if let Some(rest) = line.strip_prefix("scan: ").or_else(|| line.strip_prefix("prepare: ")) {
         let mut it = rest.split_whitespace();
-        return Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?));
+        return Some((String::new(), it.next()?.parse().ok()?, it.next()?.parse().ok()?));
     }
-    ninja_progress(line)
+    ninja_progress(line).map(|(d, t)| (String::new(), d, t))
 }
 
 pub struct Runner<'a> {
@@ -784,8 +788,8 @@ impl Runner<'_> {
         (self.emit_log)(lines);
     }
 
-    fn progress(&self, step: &str, done: u64, total: u64, message: &str) {
-        let p = Progress { state: "running".into(), step: step.into(), done, total, message: message.into() };
+    fn progress(&self, step: &str, part: &str, done: u64, total: u64, message: &str) {
+        let p = Progress { state: "running".into(), step: step.into(), part: part.into(), done, total, message: message.into() };
         *self.shared.progress.lock().unwrap() = p.clone();
         (self.emit)(p);
     }
@@ -795,7 +799,7 @@ impl Runner<'_> {
         if self.shared.cancel.load(Ordering::SeqCst) {
             return Ok(false);
         }
-        self.progress(step, 0, 0, message);
+        self.progress(step, "", 0, 0, message);
         self.log(vec![format!("> {:?}", cmd)]);
         cmd.current_dir(cwd);
         cmd.env("PYTHONUNBUFFERED", "1").env("NINJA_STATUS", "[%f/%t] ");
@@ -838,9 +842,9 @@ impl Runner<'_> {
             }
             match rx.recv_timeout(Duration::from_millis(150)) {
                 Ok(l) => {
-                    if let Some((d, t)) = tool_progress(&l) {
+                    if let Some((part, d, t)) = tool_progress(&l) {
                         let text = l.strip_prefix("@progress ").and_then(|r| r.splitn(4, ' ').nth(3)).unwrap_or(message).to_string();
-                        self.progress(step, d, t, &text);
+                        self.progress(step, &part, d, t, &text);
                     }
                     if let Some(e) = l.strip_prefix("@error ") {
                         script_error = Some(e.replace("\\n", "\n"));
@@ -969,7 +973,7 @@ fn run_package_steps(r: &Runner, p: &Paths, tools: &Path, jobs: usize, runner_se
     if r.shared.cancel.load(Ordering::SeqCst) {
         return Ok(false);
     }
-    r.progress("ini", 0, 0, "Writing fefw.ini");
+    r.progress("ini", "", 0, 0, "Writing fefw.ini");
     if let Some(note) = crate::settings::ensure_play_paths(&p.game_dir, p)? {
         r.log(vec![note]);
     }
@@ -1244,7 +1248,7 @@ fn run_steps(r: &Runner, p: &Paths, jobs: usize, runner_setting: &str) -> Result
     if !shader_steps(r, p, jobs, repo)? {
         return Ok(false);
     }
-    r.progress("ini", 0, 0, "Writing fefw.ini");
+    r.progress("ini", "", 0, 0, "Writing fefw.ini");
     if let Some(note) = crate::settings::ensure_play_paths(&p.game_dir, p)? {
         r.log(vec![note]);
     }
@@ -1325,8 +1329,10 @@ mod tests {
         assert_eq!(ninja_progress("[12/345] Building CXX object x.obj"), Some((12, 345)));
         assert_eq!(ninja_progress("[ 3/ 9] x"), Some((3, 9)));
         assert_eq!(ninja_progress("no"), None);
-        assert_eq!(tool_progress("scan: 5 10"), Some((5, 10)));
-        assert_eq!(tool_progress("prepare: 4900 9943"), Some((4900, 9943)));
+        assert_eq!(tool_progress("scan: 5 10"), Some((String::new(), 5, 10)));
+        assert_eq!(tool_progress("prepare: 4900 9943"), Some((String::new(), 4900, 9943)));
+        assert_eq!(tool_progress("@progress link 0 1 Linking fefw.exe"), Some(("link".into(), 0, 1)));
+        assert_eq!(tool_progress("[12/345] Building CXX object x.obj"), Some((String::new(), 12, 345)));
         assert_eq!(tool_progress("prepare: ready"), None);
         assert_eq!(tool_progress("prepare: done programs=9943 prepared=9943 failed=0 seconds=42.0"), None);
     }

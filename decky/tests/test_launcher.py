@@ -256,6 +256,20 @@ class Jobs(Case):
         self.assertEqual((await self.finish())["state"], "cancelled")
         self.assertEqual(self.jobs_run(), ["--update"])
 
+    async def test_a_part_that_cannot_count_is_told_apart(self):
+        await self.ready(rebuild=[
+            ["progress", {"phase": "build", "part": "compile", "done": 9, "total": 10, "fraction": 0.27, "message": "Compiling"}],
+            ["sleep", 0.3],
+            ["progress", {"phase": "build", "part": "link", "done": 0, "total": 1, "fraction": 0.3, "message": "Linking fefw.exe"}],
+            ["await-cancel", None]])
+        self.controller.start("rebuild")
+        await self.until(lambda: self.controller.job["message"] == "Compiling")
+        self.assertTrue(self.controller.job["counting"])
+        await self.until(lambda: self.controller.job["message"] == "Linking fefw.exe")
+        self.assertEqual((self.controller.job["counting"], self.controller.job["fraction"]), (False, 0.3))
+        self.controller.cancel()
+        await self.finish()
+
     async def test_a_cancel_too_late_for_the_update_still_stops_before_the_rebuild(self):
         await self.ready(update=[["progress", {"phase": "install", "done": 0, "total": 0, "message": "Installing"}], ["sleep", 0.5],
                                  ["end", {"state": "done", "rebuild": True, "message": "Installed."}]])

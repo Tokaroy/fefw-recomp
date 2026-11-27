@@ -9,9 +9,12 @@ const ready = { setup_complete: true, rebuild: false, problem: null, busy: null 
 test("ready game keeps Steam's Play button", () => {
   assert.deepEqual(resolvePlayButton(null), { kind: "play" });
   assert.deepEqual(resolvePlayButton({ status: ready, job: null, checking: false }), { kind: "play" });
+});
+
+test("an install the launcher cannot build from here says what is needed instead of Play", () => {
   assert.deepEqual(
-    resolvePlayButton({ status: { ...ready, setup_complete: false, problem: "No dump" }, job: null, checking: false }),
-    { kind: "play" },
+    resolvePlayButton({ status: { ...ready, setup_complete: false, problem: "Choose your game files first." }, job: null, checking: false }),
+    { kind: "blocked", label: "Set up", problem: "Choose your game files first." },
   );
 });
 
@@ -40,6 +43,7 @@ test("running job shows Cancel button and native-style progress readout", () => 
       statusTitle: "Building",
       statusDetail: "42% Complete",
       fraction: 0.424,
+      working: false,
     },
   );
   assert.deepEqual(
@@ -51,6 +55,7 @@ test("running job shows Cancel button and native-style progress readout", () => 
       statusTitle: "Updating",
       statusDetail: "Downloading release",
       fraction: null,
+      working: false,
     },
   );
   assert.deepEqual(
@@ -62,6 +67,7 @@ test("running job shows Cancel button and native-style progress readout", () => 
       statusTitle: "Downloading",
       statusDetail: "50% Complete",
       fraction: 0.5,
+      working: false,
     },
   );
   assert.deepEqual(
@@ -73,8 +79,31 @@ test("running job shows Cancel button and native-style progress readout", () => 
       statusTitle: "Cancelling",
       statusDetail: "50% Complete",
       fraction: 0.5,
+      working: false,
     },
   );
+});
+
+test("a part that cannot count shows its message and a moving bar, not a still percentage", () => {
+  assert.deepEqual(
+    resolvePlayButton({
+      status: ready,
+      job: { step: "rebuild", message: "Linking fefw.exe", fraction: 0.3, counting: false, cancelling: false },
+      checking: false,
+    }),
+    {
+      kind: "job",
+      buttonLabel: "Cancel",
+      cancelling: false,
+      statusTitle: "Building",
+      statusDetail: "Linking fefw.exe",
+      fraction: 0.3,
+      working: true,
+    },
+  );
+  // a backend from before `counting` keeps the percentage
+  const old = resolvePlayButton({ status: ready, job: { step: "rebuild", fraction: 0.3, cancelling: false }, checking: false });
+  assert.equal(old.kind === "job" && old.working, false);
 });
 
 test("playButtonKey changes only when visible state changes", () => {

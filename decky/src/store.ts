@@ -40,6 +40,7 @@ export interface JobState {
   step: "update" | "rebuild" | "download";
   message: string;
   fraction: number | null;
+  counting?: boolean; // the part that runs says how far it is; not told by a backend from before it
   cancelling: boolean;
   elapsed: number;
 }

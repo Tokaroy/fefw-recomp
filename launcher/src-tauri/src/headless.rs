@@ -450,6 +450,10 @@ fn add_to_steam(cfg: &Config, before_setup: bool, close_steam: bool) -> Result<V
     Ok(json!({ "state": "done", "message": message, "steam_shortcuts": steam::shortcut_ids(&exe) }))
 }
 
+/// The parts fefw_build.py runs, in order, each counting from 0 again: the build step's share is split between them, so that a part
+/// that cannot count (linking says 0 of 1 until it ends) starts where the one before ended instead of at the step's start.
+const BUILD_PARTS: [&str; 5] = ["verify", "lift", "compile", "link", "finish"];
+
 /// How far a whole setup is, from the progress of the step that runs.
 pub struct Overall {
     base: f64,
@@ -468,14 +472,19 @@ impl Overall {
         Overall { base, steps: steps as f64, seen: Mutex::new((String::new(), 0)) }
     }
 
-    /// 0..1. It goes back when a step starts its next part, which counts from the start again.
+    /// 0..1. It goes back when a step starts its next part, which counts from the start again, unless that part is a build part.
     pub fn at(&self, pr: &setup::Progress) -> f64 {
         let mut g = self.seen.lock().unwrap();
         if g.0 != pr.step {
             g.0 = pr.step.clone();
             g.1 += 1;
         }
-        let within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
+        let mut within = if pr.total > 0 { (pr.done as f64 / pr.total as f64).min(1.0) } else { 0.0 };
+        if pr.step == "build" {
+            if let Some(i) = BUILD_PARTS.iter().position(|p| *p == pr.part) {
+                within = (i as f64 + within) / BUILD_PARTS.len() as f64;
+            }
+        }
         (self.base + (1.0 - self.base) * (g.1.saturating_sub(1) as f64 + within) / self.steps).clamp(0.0, 1.0)
     }
 }
@@ -514,7 +523,10 @@ fn rebuild(cfg: &Config) -> Result<Value, String> {
     let overall = Overall::new(&p, 0.0);
     let progress = |pr: setup::Progress| {
         let fraction = overall.at(&pr);
-        emit("progress", json!({ "phase": pr.step, "done": pr.done, "total": pr.total, "fraction": fraction, "message": pr.message }));
+        emit(
+            "progress",
+            json!({ "phase": pr.step, "part": pr.part, "done": pr.done, "total": pr.total, "fraction": fraction, "message": pr.message }),
+        );
     };
     let end = setup::run(&shared, &p, crate::jobs_of(cfg), &cfg.runner, &progress, &|_| {});
     if end.state == "cancelled" {
@@ -598,6 +610,17 @@ mod tests {
         assert_eq!(at("build", 100, 100), 0.5);
         assert_eq!(at("prepare", 0, 0), 0.5);
         assert_eq!(at("prepare", 10, 10), 1.0);
+    }
+
+    #[test]
+    fn the_build_steps_parts_share_it_in_order() {
+        let o = Overall::of(2, 0.0);
+        let at = |part: &str, done, total| o.at(&setup::Progress { step: "build".into(), part: part.into(), done, total, ..Default::default() });
+        assert_eq!(at("verify", 1, 1), 0.1);
+        assert_eq!(at("compile", 50, 100), 0.25);
+        // linking cannot count: it starts where compiling ended, not at 0
+        assert_eq!(at("link", 0, 1), 0.3);
+        assert_eq!(at("finish", 1, 1), 0.5);
     }
 
     #[test]
