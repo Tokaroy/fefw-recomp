@@ -168,6 +168,7 @@ bool import_range(PoolGpu* g, PoolChunk& c, uint64_t off, uint64_t size, const c
     gfx::Device& dev = device();
     const uint64_t start = reinterpret_cast<uint64_t>(g->base) + off;
     if (!dev.features().external_memory_host) { c.failed = true; return false; }
+    if (!mem::heap_touch(start, size)) { c.failed = true; return false; }   // [memory] heap_lazy_commit: the driver imports committed pages only
 
     // Small pools share one import rather than consuming an allocation each. The weak
     // cache releases the slab after its last pool's deferred GPU retirement.
