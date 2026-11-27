@@ -29,6 +29,8 @@ UNTRANSLATED = {"RomFS", "ExeFS", "QWERTYUIOP", "ASDFGHJKL_", "ZXCVBNM;:/"}
 
 TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[A-Za-z_]\w*|\S', re.S)
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
+# what menu_i18n.cpp trims: any other space, such as a no-break or ideographic one, is part of the text
+TRIM = " \t\r\n"
 # one printf conversion after its "%": flags, width, precision, length, letter
 SPEC = r"[{flags}]*(\*|[0-9]*)(?:\.(\*|[0-9]*))?([hlLjzt]*)([diouxXeEfFgGaAcspn])"
 PLAIN = re.compile(SPEC.format(flags="-+#0"))
@@ -150,10 +152,10 @@ def read_table(path):
     """The keys the menu would translate, and (line, key, problem) of each line it would drop."""
     keys, dropped = set(), []
     for number, line in enumerate(path.read_text(encoding="utf-8-sig").split("\n"), 1):
-        line = line.strip()
+        line = line.removeprefix("\ufeff").strip(TRIM)
         if not line or line[0] in "#;":
             continue
-        key, _, value = (part.strip() for part in line.partition("\t" if "\t" in line else "="))
+        key, _, value = (part.strip(TRIM) for part in line.partition("\t" if "\t" in line else "="))
         if not key or not value:
             continue
         problem = translation_problem(key, value)
@@ -175,8 +177,9 @@ def main():
         found, helpers = menu_strings(source)
         used |= helpers
         for text, line in found:
-            if needs_translation(text.strip()):
-                strings.setdefault(text.strip(), f"{path.relative_to(ROOT).as_posix()}:{line}")
+            text = text.strip(TRIM)
+            if needs_translation(text):
+                strings.setdefault(text, f"{path.relative_to(ROOT).as_posix()}:{line}")
 
     problems = []
     # a renamed helper would silently drop its strings from the check

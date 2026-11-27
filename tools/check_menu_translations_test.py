@@ -56,6 +56,13 @@ class TableTest(unittest.TestCase):
         self.assertEqual(keys, {"a", "x = y"})
         self.assertEqual([(number, key) for number, key, _ in dropped], [(2, "every %d s")])
 
+    def test_only_what_the_menu_trims_is_trimmed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            table = Path(folder) / "xx.ini"
+            table.write_bytes(" \ta \t= x \r\n\u00a0b = x\nc\u3000= x\nd = \u3000\n\ufeffe = x\n".encode("utf-8"))
+            keys, _ = c.read_table(table)
+        self.assertEqual(keys, {"a", "\u00a0b", "c\u3000", "d", "e"})
+
 
 class SourceTest(unittest.TestCase):
     def strings(self, code: str) -> set:
