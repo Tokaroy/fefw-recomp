@@ -496,6 +496,18 @@ When the sink has a clock of its own (XAudio2, or `paced`), the audio renderer k
 
 While a sink is active, a line `sink <name>: queue avg A ms (min..max ms), underruns +N (total), dropped +D, written F frames/s (rate R)` is logged every `stats_interval` seconds. The queue is the audio waiting in the device, which is the output latency; `written` should match the rate (lower: the game is starved or the stream is stretched). When a sink closes, it writes one line to the log with its counters: frames written, accepted, dropped, underruns (times the device ran out of audio after playback had started) and the largest number of buffers queued at once.
 
+The game can ask audren to drop voices when its DSP runs out of time (`voice_drop_enabled` in the renderer's configuration); the host honours that request but only drops when its own processor is actually behind, because the command estimate is calibrated to the console's DSP (a fixed 5.76 ms frame) and can call a busy frame too long on a PC that has time to spare. The `OpenAudioRenderer` line says whether the game asked for it, and the periodic `audren-use` line separates `dropped voices` (the engine muted them) from `starved voices` (a started voice that had already played and then had no wave buffer left to play, so its stream ran dry): the first is a timing decision, the second is a data or guest-side problem. A voice the game has only just started and not fed yet is not counted, because that is a normal first frame, not starvation.
+
+### AV1 decoder assembly (CMake options, not ini keys)
+
+dav1d's x86-64 assembly is chosen when the build is configured (`third_party/dav1d/CMakeLists.txt`), not in `nxrt.ini`. It is several times faster than the C-only decoder, and 1440p movies need it to play smoothly.
+
+- `NXRT_NASM`: path of `nasm.exe` (NASM 2.14+). Found on `PATH`, in `NXRT_NASM_DIR`, in `C:\Program Files\NASM` or in `%LOCALAPPDATA%\bin\NASM`, or set with `-DNXRT_NASM=<path>`.
+- `NXRT_NASM_DIR`: an extra folder searched for `nasm.exe`. Default: `$ENV{NX_TOOLCHAIN}/bin`.
+- `NXRT_DAV1D_ASM`: a cached boolean. Its default is `ON` when NASM is found at the first configure and `OFF` when it is not (with a warning). `ON` with no NASM stops the configure with an error.
+
+Both values are cached in the build folder. A folder first configured without NASM keeps the assembly off after NASM is installed: configure it again with `-DNXRT_NASM=<path to nasm.exe> -DNXRT_DAV1D_ASM=ON`, or start a new build folder. The `movie::VideoDecoder` log line says whether a build has the assembly.
+
 ## Fortune's Weave graphics presets (`fefw.ini`, `[fefw]`)
 
 A preset is not a key of its own. Picking one (launcher **Graphics > Preset**, or F1 **Graphics > Graphics preset**) writes the seven keys

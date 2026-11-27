@@ -36,6 +36,7 @@
 #include "fs_volume.h"
 #include "nxrt/config.h"
 #include "nxrt/diag.h"
+#include "nxrt/game.h"
 #include "nxrt/gauge.h"
 #include "nxrt/log.h"
 #include "nxrt/services_api.h"
@@ -54,6 +55,7 @@ using fs::Volume;
 
 constexpr size_t kPathBuf = 0x301;
 constexpr uint32_t kUnsupportedWrite = fs::rc::kReadOnlyFileSystem;
+constexpr int64_t kMaxGuardedSaveBytes = 64ll << 20;
 
 // ---- process-wide state ---------------------------------------------------------------------------------------------------------
 
@@ -176,6 +178,18 @@ bool save_exists(const std::string& key) {
     return stdfs::exists(meta_of(key), ec) && stdfs::is_directory(root_of(key), ec);
 }
 
+// Files below a save folder, not counting folders. Used only for the diagnostic
+// lines around mounting: a save tree with a populated 000 but no .meta must not
+// be reported, or treated, as an empty one (issue #79).
+size_t file_count_below(const stdfs::path& dir) {
+    std::error_code ec;
+    size_t n = 0;
+    for (stdfs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file(ec)) ++n;
+    }
+    return n;
+}
+
 uint32_t create_save(const SaveAttr& a, int64_t size, int64_t journal, uint64_t owner) {
     const std::string key = save_key(a);
     if (save_exists(key)) return fs::rc::kPathAlreadyExists;
@@ -190,7 +204,8 @@ uint32_t create_save(const SaveAttr& a, int64_t size, int64_t journal, uint64_t 
     write_meta(key, m);
     std::lock_guard<std::mutex> lk(st().mu);
     st().ids[save_id_of(key)] = key;
-    NXLOG_I("fs", "save data created: %s (%lld bytes, journal %lld)", key.c_str(), static_cast<long long>(size), static_cast<long long>(journal));
+    NXLOG_I("fs", "save data created: %s at '%s' (%lld bytes, journal %lld)", key.c_str(), root_of(key).string().c_str(),
+            static_cast<long long>(size), static_cast<long long>(journal));
     return 0;
 }
 
@@ -351,12 +366,31 @@ std::shared_ptr<Service> make_filesystem(std::shared_ptr<Volume> v, std::string 
         });
         s.add_cmd(8, "OpenFile", [v, label](Request& req, Response& rsp) -> uint32_t {
             PATH_OR_FAIL(p, 0);
+            const uint32_t mode = req.arg<uint32_t>(0);
             std::shared_ptr<fs::VFile> f;
-            const uint32_t r = v->open_file(p, req.arg<uint32_t>(0), &f);
+            const uint32_t r = v->open_file(p, mode, &f);
             diag_note_file("open", (label + p).c_str());
             if (r) {
-                NXLOG_D("fs", "OpenFile %s%s (mode %u) -> 0x%x", label.c_str(), p.c_str(), req.arg<uint32_t>(0), r);
+                NXLOG_D("fs", "OpenFile %s%s (mode %u) -> 0x%x", label.c_str(), p.c_str(), mode, r);
                 return r;
+            }
+            const nxrt::game::Info& game_info = nxrt::game::info();
+            if ((mode & fs::kModeRead) && label.rfind("save:", 0) == 0 && game_info.save_guard_path &&
+                game_info.save_file_readable && p == game_info.save_guard_path) {
+                int64_t size = 0;
+                bool readable = f->get_size(&size) == 0 && size > 0 && size <= kMaxGuardedSaveBytes;
+                std::vector<uint8_t> bytes;
+                if (readable) {
+                    bytes.resize(static_cast<size_t>(size));
+                    uint64_t got = 0;
+                    readable = f->read(0, bytes.data(), bytes.size(), &got) == 0 && got == bytes.size();
+                }
+                if (readable) readable = game_info.save_file_readable(label.c_str(), p.c_str(), bytes.data(), bytes.size());
+                if (!readable) {
+                    NXLOG_W("fs", "OpenFile %s%s (mode %u): the save file guard rejected it; the game sees it as missing",
+                            label.c_str(), p.c_str(), mode);
+                    return fs::rc::kPathNotFound;
+                }
             }
             rsp.push_object(make_file(f, p));
             return 0;
@@ -631,10 +665,29 @@ std::shared_ptr<Service> make_info_reader() {
 uint32_t open_save(uint8_t space, const SaveAttr& a, bool read_only, std::shared_ptr<Service>* out) {
     if (space == 2 || space == 4) return fs::rc::kPortSdCardNoDevice;
     const std::string key = save_key(a);
+    const stdfs::path root = root_of(key);
+    const std::string root_s = root.string();
+    const size_t existing_files = file_count_below(root / "000");
     // The running title's device save data (type 3) exists before it starts on the console: the system creates it at launch from
     // control.nacp's DeviceSaveDataSize (Ryujinx: EnsureApplicationSaveData when the application is loaded). Here it is made on the
     // first open, when the title profile gives a device save size.
     const TitleProfile& p = profile();
+    // A populated account folder without its .meta is the one save-tree shape
+    // where the old runtime silently created fresh metadata and the game could
+    // look empty. Put the metadata back, keep every file, and say so in the log.
+    std::error_code meta_ec;
+    if (a.type == 1 && existing_files > 0 && !stdfs::exists(meta_of(key), meta_ec)) {
+        SaveMeta m;
+        m.size = p.account_save_size;
+        m.journal = p.account_save_journal;
+        m.owner = p.save_data_owner_id;
+        SaveAttr fixed = a;
+        std::memcpy(fixed.raw, &fixed.application_id, 8);
+        m.attr_hex = hex_of(fixed.raw, 0x40);
+        write_meta(key, m);
+        NXLOG_W("fs", "OpenSaveDataFileSystem %s: '%s' has %zu files in 000 but no .meta; wrote the missing metadata and kept the files",
+                key.c_str(), root_s.c_str(), existing_files);
+    }
     if (a.type == 3 && a.application_id == p.program_id && p.device_save_size > 0 && !save_exists(key)) {
         SaveAttr d;
         d.application_id = p.program_id;
@@ -651,17 +704,21 @@ uint32_t open_save(uint8_t space, const SaveAttr& a, bool read_only, std::shared
         std::memcpy(&hi, a.uid, 8);
         std::memcpy(&lo, a.uid + 8, 8);
         if (hi == p.user_uid_hi && lo == p.user_uid_lo) {
-            NXLOG_I("fs", "OpenSaveDataFileSystem %s: creating the account save data of the starting user", key.c_str());
+            NXLOG_I("fs", "OpenSaveDataFileSystem %s: creating the account save data of the starting user at '%s' (000 has %zu files); the game starts with no progress",
+                    key.c_str(), root_s.c_str(), existing_files);
             fsapi::ensure_account_save(hi, lo, nullptr);
         }
     }
     if (!save_exists(key)) {
-        NXLOG_I("fs", "OpenSaveDataFileSystem %s: no such save data", key.c_str());
+        NXLOG_W("fs", "OpenSaveDataFileSystem %s: no save data at '%s' (%zu files in 000, meta missing); the game sees an empty namespace",
+                key.c_str(), root_s.c_str(), existing_files);
         return fs::rc::kTargetNotFound;
     }
     auto v = open_save_volume(key, read_only);
     if (!v) return fs::rc::kGenericFailure;
     diag_note_file("save", key.c_str());
+    NXLOG_I("fs", "save data opened: %s at '%s' (%zu files in 000, meta %s)", key.c_str(), root_s.c_str(), existing_files,
+            stdfs::exists(meta_of(key), meta_ec) ? "present" : "missing");
     *out = make_filesystem(v, "save:" + key);
     return 0;
 }

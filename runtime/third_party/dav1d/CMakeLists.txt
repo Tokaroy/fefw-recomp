@@ -58,4 +58,7 @@ if(NXRT_DAV1D_ASM)
 endif()
 set_property(TARGET nxrt_dav1d PROPERTY C_STANDARD 11)
 # Decoding speed matters in every configuration (a movie plays in real time): optimised, warnings off (third-party code)
-target_compile_options(nxrt_dav1d PRIVATE "$<$<COMPILE_LANGUAGE:C>:-w;/O2;-fno-strict-aliasing>")
+# Flags per C compiler, each one its own list item: MSVC gets /O2 and its warning switches; clang-cl, Clang and GCC get -w -fno-strict-aliasing -O2
+target_compile_options(nxrt_dav1d PRIVATE
+    "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:MSVC>>:/O2;/wd4018;/wd4146;/wd4244;/wd4267;/wd4305;/wd4311;/wd4312;/wd4996>"
+    "$<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:Clang,GNU>>:-w;-fno-strict-aliasing;-O2>")

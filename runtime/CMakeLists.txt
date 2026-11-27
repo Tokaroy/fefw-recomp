@@ -149,6 +149,7 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/diag/config.cpp" PR
 target_sources(nxrt PRIVATE "${NXRT_CONFIG_KEYS}")
 target_include_directories(nxrt PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 include(cmake/media_deps.cmake)   # libvpx for the Switch 2 video decoders (optional)
+include(cmake/zstd_deps.cmake)    # nxrt_zstd: shader pack (graphics) and the save checks of the game modules
 
 if(NXRT_BUILD_TESTS)
     enable_testing()
@@ -161,7 +162,7 @@ if(NXRT_BUILD_TESTS)
     add_executable(nxrt_tests ${NXRT_TEST_SOURCES})
     target_include_directories(nxrt_tests PRIVATE tests)
     # nxrt calls into the graphics shell (switch2.cpp: HDR metadata, tt_core.cpp: screenshot writes), so the tests link it when it is built
-    target_link_libraries(nxrt_tests PRIVATE nxrt $<TARGET_NAME_IF_EXISTS:nxrt_gfx>)
+    target_link_libraries(nxrt_tests PRIVATE nxrt nxrt_zstd $<TARGET_NAME_IF_EXISTS:nxrt_gfx>)
     # A code mod built against the public header, loaded by tests/test_mod_api.cpp: the mod side of the ABI.
     add_library(nxrt_test_mod SHARED tests/mods/test_mod.cpp)
     target_include_directories(nxrt_test_mod PRIVATE include)

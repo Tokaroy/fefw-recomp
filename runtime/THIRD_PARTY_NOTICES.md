@@ -94,8 +94,8 @@ Copyright (c) 2017-2026 Advanced Micro Devices, Inc. All rights reserved. MIT li
 
 ### Zstandard 1.5.7 (BSD-3-Clause; dual-licensed BSD or GPL-2.0, used under BSD)
 
-The library sources (lib/common, lib/compress, lib/decompress), fetched pinned by cmake/gfx_deps.cmake, compress and read the
-shader preload pack (src/gfx/nvn/nvn_shaders.cpp).
+The library sources (lib/common, lib/compress, lib/decompress), fetched pinned by cmake/zstd_deps.cmake, compress and read the
+shader preload pack (src/gfx/nvn/nvn_shaders.cpp) and check the save files the game reads (games/fefw/fefw_core.cpp).
 
 ```
 BSD License
