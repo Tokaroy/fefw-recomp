@@ -520,3 +520,32 @@ NXTEST(has_written_and_write_seq_track_faults_and_forget) {
     CHECK(!ww::has_written(r));
     teardown(r);
 }
+
+// Rapid back-to-back ImportFreeze cycles while multiple threads continuously write to the same heap pages:
+// exercises the race where a new ImportFreeze starts between on_fault's initial freeze_overlaps() check and final_retry().
+NXTEST(import_freeze_rapid_cycles_with_concurrent_writers) {
+    ww::Region* r = setup();
+    REQUIRE(r != nullptr);
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> writes{0};
+    std::vector<std::thread> writers;
+    for (int t = 0; t < 2; ++t) {
+        writers.emplace_back([&, t] {
+            uint64_t n = 0;
+            while (!stop.load(std::memory_order_relaxed)) {
+                const uint64_t pg = 4 + ((n + static_cast<uint64_t>(t)) & 3u);
+                *reinterpret_cast<volatile uint32_t*>(mem::kHeapBase + pg * kPg + static_cast<uint64_t>(t) * 64) = static_cast<uint32_t>(n);
+                ++n;
+            }
+            writes.fetch_add(n, std::memory_order_relaxed);
+        });
+    }
+    for (int i = 0; i < 60; ++i) {
+        const ww::ImportFreeze fz(reinterpret_cast<void*>(mem::kHeapBase + 4 * kPg), 4 * kPg);
+        if ((i & 3) == 0) std::this_thread::yield();
+    }
+    stop.store(true, std::memory_order_relaxed);
+    for (std::thread& th : writers) th.join();
+    CHECK(writes.load() > 0);
+    teardown(r);
+}
