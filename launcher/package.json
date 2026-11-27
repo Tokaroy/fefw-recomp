@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "screenshots": "node screenshots/capture.mjs",
+    "check-translations": "node scripts/check-translations.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
