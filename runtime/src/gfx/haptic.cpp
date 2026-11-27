@@ -58,10 +58,10 @@ namespace {
 
 constexpr const char* kTag = "haptic";
 
-// The library's own constants (renhdrum.h v0.4.0, kept in third_party/renhdrum). The header is not included: these are the
-// ABI-stable parts we call. renhdrum_version() must be on the same major.minor branch (0x0004xx) before anything is created;
+// The library's own constants (renhdrum.h v0.6.0, kept in third_party/renhdrum). The header is not included: these are the
+// ABI-stable parts we call. renhdrum_version() must be on the same major.minor branch (0x0006xx) before anything is created;
 // a patch release of that branch keeps the ABI and is accepted.
-constexpr uint32_t kExpectedVersion = 0x000400;
+constexpr uint32_t kExpectedVersion = 0x000600;
 constexpr int64_t kStaleUs = 250000;                 // silence watchdog: no new value for this long -> neutral sample
 constexpr uint64_t kEnumPeriodNs = 2000000000ull;    // the DualSense audio endpoint takes 1-2 s to appear after the cable
 constexpr int kSendFailuresBeforeFallback = 3;       // SDL refusing the packets this many times drops back to the rumble

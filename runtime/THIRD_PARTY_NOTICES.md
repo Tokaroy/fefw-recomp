@@ -279,14 +279,14 @@ Files: `third_party/nvidia_streamline/include/` (unmodified). Copyright (c) NVID
 
 `sl.interposer.dll`, `sl.common.dll` and `sl.dlss.dll` (NVIDIA-signed, from `bin/x64` of the Streamline SDK v2.14.16 release, https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16; MIT, `licenses/LICENSE.Streamline.MIT.txt`, third-party notices in `licenses/NOTICE.Streamline-3rd-party.md`) are not in this repository and this project does not distribute them. The game loads them at run time only, if you install them yourself. Copyright (c) NVIDIA CORPORATION.
 
-## RenHDrum 0.4.0 (MIT OR Apache-2.0)
+## RenHDrum 0.6.0 (MIT OR Apache-2.0)
 
-`renhdrum.dll` (the upstream v0.4.0 release binary, https://github.com/trzz1214/RenHDrum/releases/tag/v0.4.0; sha256
-`853ddc07fcf2c1011f7dcae791c61d405aca378b5fd46248006e0e5880153a59`) is the HD Rumble, DualSense haptics and Xbox four-motor
+`renhdrum.dll` (the upstream v0.6.0 release binary, https://github.com/trzz1214/RenHDrum/releases/tag/v0.6.0; sha256
+`1e266ce970876c025dadba5780fde00f081c5f6dd474b9946af3cea7cbca6026`) is the HD Rumble, DualSense haptics and Xbox four-motor
 engine that `src/gfx/haptic.cpp` loads at run time with `LoadLibraryExW` from the executable's own folder. Since 0.4.0 the
 upstream build links the C runtime statically, so the release binary imports only `KERNEL32.dll`, `ntdll.dll` and
 `api-ms-win-core-synch-l1-2-0.dll` and is shipped as it is: the haptics do not need the Visual C++ redistributable.
-`haptic.cpp` accepts any 0.4.x library (`renhdrum_version()` on the 0x0004xx branch).
+`haptic.cpp` accepts any 0.6.x library (`renhdrum_version()` on the 0x0006xx branch).
 
 Its core library is dual-licensed MIT OR Apache-2.0, so unlike the Streamline and FidelityFX DLLs it is distributed with the
 release package: the haptics work without the player installing anything. Delete the file and the game keeps the standard
@@ -299,6 +299,13 @@ Copyright (c) 2026 Three-Dola. Licence texts: `third_party/renhdrum/LICENSE-MIT`
 the upstream NOTICE, including its MIT-licensed Ryujinx/Ryuhdr heritage and the dekuNukem and Switchbrew documentation
 credits, is reproduced in `third_party/renhdrum/NOTICE` and shipped as `licenses/NOTICE.RenHDrum.txt`. The build recipe and
 both hashes are in `third_party/renhdrum/SHA256SUMS`.
+
+### libopus 1.5.2 (BSD-3-Clause), inside renhdrum.dll
+
+`renhdrum.dll` has libopus (https://github.com/xiph/opus, v1.5.2) statically linked for the DualSense speaker over
+Bluetooth, which this project does not use. Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin,
+Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon. Licence text:
+`third_party/renhdrum/LICENSE-opus`, shipped as `licenses/LICENSE.libopus.txt`.
 
 ## NVIDIA DLSS (nvngx_dlss.dll, not shipped)
 
