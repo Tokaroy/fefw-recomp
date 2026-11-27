@@ -46,12 +46,25 @@ For local testing, setting `FEFW_REPORT_URL` in the environment when running the
 
 ## Fetching reports locally
 
-```bash
-export FEFW_REPORT_URL="https://fefw-reports.<your-subdomain>.workers.dev"
-export FEFW_REPORT_ADMIN_TOKEN="<your ADMIN_TOKEN>"
+Save the URL and admin token once. `login` prompts for both, checks them against the Worker and writes them to
+`~/.config/fefw-recomp/reports.json` (`%APPDATA%\fefw-recomp\reports.json` on Windows):
 
+```bash
+python3 tools/fetch_reports.py login
+```
+
+The token is stored as plain text, readable by your user account, and it can also delete reports. Remove the file to
+forget it. `FEFW_REPORT_URL` and `FEFW_REPORT_ADMIN_TOKEN` (or `--url` and `--token`) still work and take priority. The
+saved token is only sent to the saved URL.
+
+```bash
+python3 tools/fetch_reports.py sync                  # every report not yet in work/reports
+python3 tools/fetch_reports.py sync --limit 30       # only look at the newest 30
 python3 tools/fetch_reports.py list
 python3 tools/fetch_reports.py list --trigger crash --limit 20
-python3 tools/fetch_reports.py get <report-id> --out work/reports
-python3 tools/fetch_reports.py sync --limit 30 --out work/reports
+python3 tools/fetch_reports.py get <report-id>
 ```
+
+`sync` pages through the whole index and downloads only the reports that have no `report.json` under `--out`
+(default `work/reports`, relative to the current directory). Local copies stay after the Worker's 90-day retention
+drops them.

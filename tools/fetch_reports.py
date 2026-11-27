@@ -5,13 +5,16 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import io
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -20,14 +23,86 @@ from pathlib import Path
 
 # Hard cap on expanded JSON size to protect against maliciously crafted zstd bombs.
 MAX_EXPANDED_BYTES = 8 * 1024 * 1024  # 8 MiB
+# The Worker's largest list page.
+PAGE_SIZE = 200
 
 
-def _env_or_die(val: str | None, env_name: str) -> str:
-    v = (val or os.environ.get(env_name, "")).strip()
-    if not v:
-        print(f"error: set {env_name} or pass the corresponding flag", file=sys.stderr)
+_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_first(*args, **kwargs) -> list:
+    # urllib tries addresses one at a time and reconnects for every request, so on a network whose IPv6 is
+    # configured but broken, each report would first wait several seconds. IPv6-only networks still work.
+    return sorted(_getaddrinfo(*args, **kwargs), key=lambda a: a[0] != socket.AF_INET)
+
+
+def _config_path() -> Path:
+    root = os.environ.get("APPDATA" if os.name == "nt" else "XDG_CONFIG_HOME")
+    return (Path(root) if root else Path.home() / ".config") / "fefw-recomp" / "reports.json"
+
+
+def _load_config() -> dict[str, str]:
+    path = _config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        print(f"warning: ignoring {path}: {e}", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v.strip() for k, v in data.items() if isinstance(v, str)}
+
+
+def _save_config(url: str, token: str) -> Path:
+    path = _config_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # mkstemp creates a file only its owner can read (on Windows the profile folder's permissions do that).
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"url": url, "token": token}, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return path
+
+
+def _setting(flag: str | None, env_name: str) -> str:
+    return (flag or os.environ.get(env_name, "")).strip()
+
+
+def _credentials(args: argparse.Namespace) -> tuple[str, str]:
+    saved = _load_config()
+    saved_url = saved.get("url", "").rstrip("/")
+    base = _setting(args.url, "FEFW_REPORT_URL").rstrip("/") or saved_url
+    token = _setting(args.token, "FEFW_REPORT_ADMIN_TOKEN")
+    # A saved token is only ever sent to the URL it was saved with.
+    if not token and base == saved_url:
+        token = saved.get("token", "")
+    if not base or not token:
+        print(
+            "error: run 'fetch_reports.py login' once, or set FEFW_REPORT_URL and FEFW_REPORT_ADMIN_TOKEN",
+            file=sys.stderr,
+        )
         sys.exit(2)
-    return v
+    return base, token
+
+
+def _login(args: argparse.Namespace) -> None:
+    saved_url = _load_config().get("url", "")
+    url = _setting(args.url, "FEFW_REPORT_URL")
+    if not url:
+        hint = f" [{saved_url}]" if saved_url else ""
+        url = input(f"Worker URL{hint}: ").strip() or saved_url
+    url = url.rstrip("/")
+    token = _setting(args.token, "FEFW_REPORT_ADMIN_TOKEN") or getpass.getpass("Report admin token: ").strip()
+    if not url or not token:
+        raise RuntimeError("both a URL and a token are needed")
+    # Check them before saving, so a mistyped token is reported now.
+    _request(f"{url}/v1/reports?limit=1", token)
+    print(f"Saved the URL and token to {_save_config(url, token)}")
 
 
 def _request(url: str, token: str, method: str = "GET") -> bytes:
@@ -116,7 +191,6 @@ def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
         raise ValueError("report payload is not a JSON object")
     dest = out_dir / report_id
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / "report.json").write_text(json.dumps(bundle, indent=2), encoding="utf-8")
     if isinstance(bundle.get("log"), str) and bundle["log"]:
         (dest / "fefw.log").write_text(bundle["log"], encoding="utf-8")
     crash_files = bundle.get("crash_files")
@@ -125,6 +199,10 @@ def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
             safe = Path(str(name)).name
             if safe and isinstance(text, str) and text:
                 (dest / safe).write_text(text, encoding="utf-8")
+    # sync treats report.json as "already downloaded", so it appears last and all at once.
+    tmp = dest / "report.json.tmp"
+    tmp.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+    tmp.replace(dest / "report.json")
     return dest
 
 
@@ -158,8 +236,8 @@ def _print_table(rows: list[dict]) -> None:
             print(f"    cause: {_safe_term(r['crash_cause'])}")
 
 
-def _build_list_url(base: str, args: argparse.Namespace) -> str:
-    params: dict[str, str] = {"limit": str(args.limit), "offset": str(args.offset)}
+def _build_list_url(base: str, args: argparse.Namespace, limit: int, offset: int) -> str:
+    params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
     for key in ("trigger", "build_id", "gpu", "os", "since"):
         val = getattr(args, key, None)
         if val:
@@ -167,11 +245,53 @@ def _build_list_url(base: str, args: argparse.Namespace) -> str:
     return f"{base.rstrip('/')}/v1/reports?{urllib.parse.urlencode(params)}"
 
 
+def _list_page(base: str, token: str, args: argparse.Namespace, limit: int, offset: int) -> list[dict]:
+    data = json.loads(_request(_build_list_url(base, args, limit, offset), token))
+    return data.get("reports") or []
+
+
+def _sync(base: str, token: str, args: argparse.Namespace) -> None:
+    out_dir = Path(args.out)
+    seen: set[str] = set()
+    offset = args.offset
+    downloaded = 0
+    failed = 0
+    while args.limit is None or len(seen) < args.limit:
+        want = PAGE_SIZE if args.limit is None else min(PAGE_SIZE, args.limit - len(seen))
+        rows = _list_page(base, token, args, want, offset)
+        offset += len(rows)
+        for r in rows:
+            rid = r.get("id")
+            # An upload during the sync shifts the pages, which repeats rows.
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            if (out_dir / rid / "report.json").is_file():
+                continue
+            try:
+                raw = _request(f"{base}/v1/reports/{rid}", token)
+                _save_bundle(rid, raw, out_dir)
+                downloaded += 1
+                if downloaded % 50 == 0:
+                    print(f"downloaded {downloaded} so far...", file=sys.stderr)
+            except Exception as e:
+                failed += 1
+                print(f"warning: skipping report {rid}: {e}", file=sys.stderr)
+        if len(rows) < want:
+            break
+    msg = f"Synced {downloaded} new report(s) into {out_dir} ({len(seen)} matched"
+    if failed:
+        msg += f", {failed} failed"
+    print(msg + ").")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Fetch anonymized fefw-recomp reports.")
-    p.add_argument("--url", help="Worker base URL (or FEFW_REPORT_URL)")
-    p.add_argument("--token", help="Admin bearer token (or FEFW_REPORT_ADMIN_TOKEN)")
+    p.add_argument("--url", help="Worker base URL (or FEFW_REPORT_URL, or saved by login)")
+    p.add_argument("--token", help="Admin bearer token (or FEFW_REPORT_ADMIN_TOKEN, or saved by login)")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("login", help="Save the URL and admin token for later runs")
 
     for name in ("list", "sync"):
         sp = sub.add_parser(name, help="List reports" if name == "list" else "Download new reports locally")
@@ -180,7 +300,10 @@ def main() -> None:
         sp.add_argument("--gpu")
         sp.add_argument("--os")
         sp.add_argument("--since", help="ISO-8601 UTC timestamp, e.g. 2026-11-01T00:00:00Z")
-        sp.add_argument("--limit", type=int, default=30)
+        if name == "sync":
+            sp.add_argument("--limit", type=int, help="Only the newest N matches (default: all of them)")
+        else:
+            sp.add_argument("--limit", type=int, default=30)
         sp.add_argument("--offset", type=int, default=0)
         if name == "sync":
             sp.add_argument("--out", default="work/reports", help="Output directory (default: work/reports)")
@@ -193,38 +316,21 @@ def main() -> None:
     sp_del.add_argument("id")
 
     args = p.parse_args()
-    base = _env_or_die(args.url, "FEFW_REPORT_URL").rstrip("/")
-    token = _env_or_die(args.token, "FEFW_REPORT_ADMIN_TOKEN")
+    socket.getaddrinfo = _ipv4_first
 
     try:
+        if args.cmd == "login":
+            _login(args)
+            return
+        base, token = _credentials(args)
         if args.cmd == "list":
-            data = json.loads(_request(_build_list_url(base, args), token))
-            _print_table(data.get("reports") or [])
+            _print_table(_list_page(base, token, args, args.limit, args.offset))
         elif args.cmd == "get":
             raw = _request(f"{base}/v1/reports/{args.id}", token)
             dest = _save_bundle(args.id, raw, Path(args.out))
             print(f"Saved report to {dest}")
         elif args.cmd == "sync":
-            out_dir = Path(args.out)
-            data = json.loads(_request(_build_list_url(base, args), token))
-            rows = data.get("reports") or []
-            downloaded = 0
-            failed = 0
-            for r in rows:
-                rid = r.get("id")
-                if not rid or (out_dir / rid / "report.json").is_file():
-                    continue
-                try:
-                    raw = _request(f"{base}/v1/reports/{rid}", token)
-                    _save_bundle(rid, raw, out_dir)
-                    downloaded += 1
-                except Exception as e:
-                    failed += 1
-                    print(f"warning: skipping report {rid}: {e}", file=sys.stderr)
-            msg = f"Synced {downloaded} new report(s) into {out_dir} ({len(rows)} matched"
-            if failed:
-                msg += f", {failed} failed"
-            print(msg + ").")
+            _sync(base, token, args)
         elif args.cmd == "delete":
             _request(f"{base}/v1/reports/{args.id}", token, method="DELETE")
             print(f"Deleted report {args.id}")
