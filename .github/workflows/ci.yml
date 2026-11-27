@@ -2,6 +2,7 @@
 #
 #   oracle-lock  recomp/oracle/SHA256SUMS still matches the locked oracle files (recomp/oracle/LOCKED, scripts/oracle_sums.py)
 #   linux        launcher: cargo fmt, clippy, cargo test, the frontend build; Python: every .py under recomp/ and tools/ compiles
+#   translations every launcher language has every string; the F1 menu tables have the strings found in the menu's sources
 #   decky        the Decky plugin: type check, tests, build and pack (the zip is kept with the run)
 #   runtime      Windows, only when runtime/, recomp/include, tools/tiling or tools/textures change: nxrt_tests under
 #                CTest. The graphics groups (nxrt_gfx_tests) need a Vulkan GPU and the lift tests the
@@ -104,6 +105,21 @@ jobs:
 
       - name: Build script mod sites tests
         run: python game-build/release/mod_sites_test.py
+
+  translations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Launcher translations
+        working-directory: launcher
+        run: node scripts/check-translations.mjs
+      # also when the launcher's check failed: both lists in one run
+      - name: F1 menu translations
+        if: success() || failure()
+        run: python3 tools/check_menu_translations.py
 
   decky:
     runs-on: ubuntu-latest

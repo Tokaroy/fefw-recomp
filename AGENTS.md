@@ -35,6 +35,11 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
   cd launcher && npm ci && npm run build
   cd src-tauri && cargo fmt --check && cargo clippy --release --all-targets -- -D warnings && cargo test --release
   ```
+- Translations, as CI checks them (a new launcher or F1 menu string needs its entry in every translation):
+  ```bash
+  node launcher/scripts/check-translations.mjs
+  python tools/check_menu_translations.py
+  ```
 - Python, as CI checks it:
   ```bash
   python -m compileall -q recomp tools
