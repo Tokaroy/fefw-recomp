@@ -37,6 +37,17 @@ Stats stats();
 void first_pass_begin();
 void first_pass_end();
 
+// Default worker count for [gfx] astc_upgrade_threads when not set in config:
+// 1 on integrated GPUs (shared CPU/iGPU power budget) or under 16 hardware threads; 2 from 16 threads on discrete GPUs.
+inline int default_threads(int cpus, bool integrated) {
+    if (integrated) return 1;
+    const int n = cpus / 8;
+    return n < 1 ? 1 : (n > 2 ? 2 : n);
+}
+
+// Tells the pool whether the active GPU is integrated (called when the Vulkan back end starts, before jobs are submitted).
+void set_integrated_gpu(bool integrated);
+
 // [gfx] texture_eco (default true): the calling thread runs in Windows efficiency mode (EcoQoS) while `on`, so texture transcodes go to the efficiency
 // cores of a hybrid CPU and at a lower clock elsewhere, with much less heat; false gives the thread its normal scheduling back. No-op elsewhere.
 void set_thread_eco(bool on);

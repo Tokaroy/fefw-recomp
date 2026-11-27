@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "video_alloc_stats.h"
+#include "nvn_texup.h"
 
 NXTEST_GROUP(gfx_video_alloc_stats)
 
@@ -60,11 +61,26 @@ NXTEST(vma_block_sizing_for_small_and_large_heaps) {
     CHECK_EQ(nxrt::gfx::vma_preferred_block_size(3935 * kMiB), 32 * kMiB);
     // 6 GB card / Steam Deck (6.0 GiB heap): 64 MiB blocks
     CHECK_EQ(nxrt::gfx::vma_preferred_block_size(6 * kGiB), 64 * kMiB);
-    // 8+ GB card: VMA default (256 MiB)
-    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(8 * kGiB), 0ull);
+    // 8 GB card (7.8-8.0 GiB heap, ~6.1 GiB OS budget on Windows): 64 MiB blocks
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(7987 * kMiB), 64 * kMiB);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(8 * kGiB), 64 * kMiB);
+    // 10+ GB card: VMA default (256 MiB)
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(10 * kGiB), 0ull);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(12 * kGiB), 0ull);
     // The boundaries belong to the smaller size
     CHECK_EQ(nxrt::gfx::vma_preferred_block_size(4608 * kMiB), 32 * kMiB);
     CHECK_EQ(nxrt::gfx::vma_preferred_block_size(4608 * kMiB + 1), 64 * kMiB);
-    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(7168 * kMiB), 64 * kMiB);
-    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(7168 * kMiB + 1), 0ull);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(8704 * kMiB), 64 * kMiB);
+    CHECK_EQ(nxrt::gfx::vma_preferred_block_size(8704 * kMiB + 1), 0ull);
+}
+
+NXTEST(texup_default_threads_caps_integrated_gpu) {
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(4, false), 1);
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(15, false), 1);
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(16, false), 2);
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(32, false), 2);
+    // Integrated GPUs share power/thermal budget with the CPU: cap at 1 thread even on 16+ thread APUs
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(4, true), 1);
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(16, true), 1);
+    CHECK_EQ(nxrt::nvn::be::texup::default_threads(32, true), 1);
 }
