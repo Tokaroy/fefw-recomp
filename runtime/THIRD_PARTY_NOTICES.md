@@ -292,8 +292,8 @@ Its core library is dual-licensed MIT OR Apache-2.0, so unlike the Streamline an
 release package: the haptics work without the player installing anything. Delete the file and the game keeps the standard
 two-motor rumble.
 
-The file is used unmodified through its C ABI (`renhdrum_engine_*`, `renhdrum_dualsense_dsp_*`, `renhdrum_tri_trigger_*`,
-`renhdrum_hd_haptics_*`, `renhdrum_xbox_rumble_*`, `renhdrum_set_nx2_mode`); no RenHDrum source is compiled into this project and nothing is linked. Its GPL-3.0 `integrations/brontide/` patches are not used.
+The file is used unmodified through its C ABI (`renhdrum_engine_*`, `renhdrum_dualsense_dsp_*`,
+`renhdrum_hd_haptics_speaker_block`, `renhdrum_xbox_rumble_*`, `renhdrum_set_nx2_mode`); no RenHDrum source is compiled into this project and nothing is linked. Its GPL-3.0 `integrations/brontide/` patches are not used.
 
 Copyright (c) 2026 Three-Dola. Licence texts: `third_party/renhdrum/LICENSE-MIT` and `third_party/renhdrum/LICENSE-APACHE`;
 the upstream NOTICE, including its MIT-licensed Ryujinx/Ryuhdr heritage and the dekuNukem and Switchbrew documentation

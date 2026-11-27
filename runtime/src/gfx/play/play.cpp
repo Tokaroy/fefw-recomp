@@ -487,7 +487,7 @@ void vib_sink(uint32_t slot, int hand, const hid::VibrationValue& v, void*) {
         st.dirty = false;
     }
     nvn::backend_flush_caches();                    // the pipeline cache; this path does not shut the back end down
-    haptic::release_for_exit();                     // a DualSense would keep its trigger effects
+    haptic::release_for_exit();                     // a DualSense would keep its speaker route
     nxrt::log_flush();
     if (tt::enabled() && !tt::finished()) tt::end_run(code, verdict, message);     // writes result.json, then terminates
     TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));

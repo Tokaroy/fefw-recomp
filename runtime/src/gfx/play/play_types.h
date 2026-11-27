@@ -153,12 +153,12 @@ struct PadSettings {
     double gyro_scale = 1.0;
     bool rumble = true;
     double rumble_scale = 1.0;
-    // How the game's HD Rumble value reaches the pad (haptic.h): 0 auto (DualSense haptics on a wire, HD Rumble packets for a
-    // Switch Pro Controller, the standard rumble for everything else), 1 off, 2 the standard rumble only, 3 DualSense haptics.
+    // How the game's HD Rumble value reaches the pad (haptic.h): 0 auto (DualSense haptics, HD Rumble packets for a Switch
+    // Pro Controller, all four motors of an Xbox pad, the standard rumble for everything else), 1 off, 2 the standard rumble only.
     // haptic_strength is 0..100 percent, or -1 to keep using rumble_scale above.
     int haptic = 0;
     int haptic_strength = -1;
-    bool hd_haptics = false;       // a DualSense also gets its speaker and adaptive triggers
+    bool hd_haptics = true;        // a DualSense also gets its speaker and deeper heavy hits
     double alt_orbit = 2.0;       // rad/s at full right-stick deflection, 0 = off (0..6). The alternate body's camera only (mpr: morph ball).
 };
 struct TimingSettings {

@@ -347,7 +347,7 @@ bool apply_fixed(Sec sec, const std::string& k, const std::string& v, Settings* 
             if (k == "haptic") {
                 gfx::haptic::Mode m = gfx::haptic::Mode::Auto;
                 if (!gfx::haptic::mode_from_name(v.c_str(), &m)) {
-                    *msg = "haptic must be auto, off, rumble or dualsense, got '" + v + "'";
+                    *msg = "haptic must be auto, off or rumble, got '" + v + "'";
                     return false;
                 }
                 s->pad.haptic = static_cast<int>(m);

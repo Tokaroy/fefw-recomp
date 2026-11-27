@@ -1219,8 +1219,8 @@ void mouse_section(UiHost& host, Menu& m) {
 // How the game's HD Rumble value reaches the pad. The backends live in gfx/haptic.cpp: the standard two-motor rumble always
 // works, the DualSense gets real haptics, a Switch Pro Controller gets HD Rumble packets, an Xbox pad its four motors. The state line reports
 // what is actually driving the pad, not what was asked for.
-constexpr const char* kHapticNames[] = {"Automatic", "Off", "Standard rumble", "DualSense haptics"};
-constexpr int kHapticCount = 4;
+constexpr const char* kHapticNames[] = {"Automatic", "Off", "Standard rumble"};
+constexpr int kHapticCount = 3;
 
 void haptic_group(UiHost& host, Menu& m) {
     play::PadSettings& p = m.edit.pad;
@@ -1244,9 +1244,11 @@ void haptic_group(UiHost& host, Menu& m) {
             p.haptic_strength = static_cast<int>(std::lround(strength));
             apply(host, m);
         }
-        row(m, "DualSense HD haptics", When::Live,
-            "A DualSense also plays taps on its own speaker, and L2 / R2 kick back to hard hits while you hold them. Needs DualSense haptics (cable or Bluetooth). Experimental.");
-        if (check(m, "##hdhap", &p.hd_haptics)) apply(host, m);
+        if (st.backend == haptic::Backend::DualSenseUsb || st.backend == haptic::Backend::DualSenseBt) {
+            row(m, "DualSense HD haptics", When::Live,
+                "A DualSense also plays taps on its own speaker, and heavy hits feel deeper. Works over a cable and Bluetooth.");
+            if (check(m, "##hdhap", &p.hd_haptics)) apply(host, m);
+        }
         row(m, "Test", When::Info, nullptr);
         const bool can_test = st.running && st.requested != haptic::Mode::Off;
         ImGui::BeginDisabled(!can_test);

@@ -7,9 +7,8 @@
 //              two-motor rumble the runtime always had.
 //   Off        nothing is sent (the game's vibration values are dropped).
 //   Rumble     always the standard SDL two-motor rumble, whatever the pad is.
-//   DualSense  haptics when a DualSense is connected; falls back to the mode above it would have picked, and says why.
 //
-// [pad] hd_haptics adds a DualSense's speaker and adaptive triggers to whichever mode drives it with haptics.
+// [pad] hd_haptics, on by default, adds a DualSense's speaker and deeper heavy hits to its haptics.
 //
 // The haptic backends come from renhdrum.dll (MIT OR Apache-2.0, https://github.com/trzz1214/RenHDrum), loaded next to the
 // executable when it is there: the library is optional, and without it Auto and DualSense behave as Rumble.
@@ -30,23 +29,22 @@
 namespace nxrt::gfx::haptic {
 
 // What the settings ask for ([pad] haptic).
-enum class Mode : uint8_t { Auto = 0, Off, Rumble, DualSense };
+enum class Mode : uint8_t { Auto = 0, Off, Rumble };
 // Inline: play_config.cpp uses them in builds without this module.
-inline const char* mode_name(Mode m) {   // "auto" "off" "rumble" "dualsense"
+inline const char* mode_name(Mode m) {   // "auto" "off" "rumble"
     switch (m) {
         case Mode::Off: return "off";
         case Mode::Rumble: return "rumble";
-        case Mode::DualSense: return "dualsense";
         default: return "auto";
     }
 }
 
 inline bool mode_from_name(const char* s, Mode* out) {
     if (!s || !out) return false;
-    if (!std::strcmp(s, "auto")) *out = Mode::Auto;
+    // "dualsense" (or "haptics") was a mode of its own that did what Auto does: older settings files still load.
+    if (!std::strcmp(s, "auto") || !std::strcmp(s, "dualsense") || !std::strcmp(s, "haptics")) *out = Mode::Auto;
     else if (!std::strcmp(s, "off") || !std::strcmp(s, "none")) *out = Mode::Off;
     else if (!std::strcmp(s, "rumble") || !std::strcmp(s, "standard")) *out = Mode::Rumble;
-    else if (!std::strcmp(s, "dualsense") || !std::strcmp(s, "haptics")) *out = Mode::DualSense;
     else return false;
     return true;
 }
@@ -85,7 +83,7 @@ struct Status {
 //                           (1.0 = unchanged, up to 2.0), so an untouched controls.ini keeps exactly one strength knob.
 //   rumble_on             : the [pad] rumble master switch. False silences every output path, the standard rumble included
 //                           (legacy_rumble() returns false too), and clears what the backends are still playing.
-//   hd_haptics            : a DualSense also gets its speaker and adaptive triggers.
+//   hd_haptics            : a DualSense also gets its speaker and deeper heavy hits.
 // Only a different mode, master switch or hd_haptics re-attaches: the strength applies to the next value, so moving its slider never
 // reopens the DualSense audio stream.
 void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics);
@@ -106,8 +104,8 @@ void push(uint32_t npad_slot, int hand, float amp_low, float freq_low, float amp
 // every pad whenever [pad] rumble is off or the mode is Off, because then nothing is to vibrate at all.
 bool legacy_rumble(uint32_t pad_id);
 
-// Before the process ends without shutdown(): a DualSense keeps its trigger effects and speaker route until told otherwise,
-// so with HD haptics driving one this releases them. Does nothing otherwise.
+// Before the process ends without shutdown(): a wired DualSense keeps its sound routed to the speaker until told otherwise,
+// so with HD haptics driving one this releases it. Does nothing otherwise.
 void release_for_exit();
 
 // Stops everything and drops the pads (play mode is ending).
