@@ -605,12 +605,16 @@ NXTEST(queued_texture_demoted_before_pump_is_dropped) {
             CHECK(demoted);
             CHECK(gpu::tex_level_drop(t) > drop_before);
             CHECK(gpu::tex_gpu_identity(t) != id_before);
-            // Pumping must drop the stale job cleanly instead of issuing out-of-bounds vkCmdCopyBufferToImage on the smaller image.
+            CHECK(!t->cpu_dirty.load());
+            // Pumping must drop the stale job via the !live identity check (leaving cpu_dirty false) rather than running it and hitting
+            // Pass::Failed (which would set cpu_dirty true) or issuing out-of-bounds vkCmdCopyBufferToImage on the smaller image.
             gpu::counters().presents.fetch_add(1);
             gpu::run_frame_sync([&](Frame& f) { gpu::astc_gpu_pump(f); });
+            CHECK(!t->cpu_dirty.load());
             // A subsequent pump also sees nothing left in the queue (only the idle scratch buffer until kScratchIdlePresents).
             gpu::counters().presents.fetch_add(1);
             gpu::run_frame_sync([&](Frame& f) { gpu::astc_gpu_pump(f); });
+            CHECK(!t->cpu_dirty.load());
         } else {
             CHECK(false);
         }
