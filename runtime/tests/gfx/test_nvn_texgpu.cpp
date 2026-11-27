@@ -1769,3 +1769,56 @@ NXTEST(sparse_texture_segments) {
     uint64_t hp = 0;
     CHECK(!texture_hash_virtual(plain, hp));
 }
+
+// Off-thread defer_destroy (~MemoryPool, ~Texture, GPL workers) must wait for submissions already queued (g->reserved), not just g->submitted.
+NXTEST(off_thread_defer_destroy_waits_for_queued_submissions) {
+    if (!config_get_bool("nvn", "async_submit", true)) {
+        nxtest::skip("requires [nvn] async_submit = true");
+        return;
+    }
+    Rig r;
+    if (!bring_up(r)) {
+        CHECK(false);
+        return;
+    }
+    // Prime one completed submission so g->submitted == g->completed >= 1.
+    gpu::run_frame_sync([](Frame&) {});
+    gpu::finish();
+
+    // Pause the render thread so we can queue a submission ahead of g->submitted and then call defer_destroy from this (non-render) thread.
+    std::mutex mu;
+    std::condition_variable cv;
+    bool paused = false, release = false;
+    std::thread blocker([&] {
+        gpu::run_on_render_thread([&] {
+            std::unique_lock<std::mutex> lk(mu);
+            paused = true;
+            cv.notify_all();
+            cv.wait(lk, [&] { return release; });
+        });
+    });
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [&] { return paused; });
+    }
+
+    const uint64_t queued_serial = gpu::submit({});
+    std::atomic<bool> destroyed{false};
+    std::atomic<bool> destroyed_early{false};
+    gpu::defer_destroy([&] {
+        if (!gpu::serial_done(queued_serial)) destroyed_early.store(true);
+        destroyed.store(true);
+    });
+
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        release = true;
+    }
+    cv.notify_all();
+    blocker.join();
+
+    gpu::finish();
+    CHECK(!destroyed_early.load());
+    CHECK(destroyed.load());
+    teardown(r);
+}

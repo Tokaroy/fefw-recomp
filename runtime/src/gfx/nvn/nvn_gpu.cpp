@@ -172,7 +172,7 @@ struct Gpu {
 
     // deferred destruction
     std::mutex dmu;
-    std::vector<std::function<void()>> pending_destroy;   // from any thread, assigned a serial by the render thread
+    std::vector<Deferred> pending_destroy;                // from any thread; off-thread callers capture g->reserved so queued submissions stay safe
     std::deque<Deferred> deferred;                        // render thread
 
     PresentPass present;
@@ -210,13 +210,16 @@ uint64_t read_completed() {
 }
 
 void drain_pending_destroy() {
-    std::vector<std::function<void()>> pend;
+    std::vector<Deferred> pend;
     {
         std::lock_guard<std::mutex> lk(g->dmu);
         pend.swap(g->pending_destroy);
     }
-    const uint64_t s = g->recording ? g->recording : g->submitted;
-    for (auto& fn : pend) g->deferred.push_back({s, std::move(fn)});
+    const uint64_t cur = g->recording ? g->recording : g->submitted;
+    for (auto& d : pend) {
+        const uint64_t s = std::max(cur, d.serial);
+        g->deferred.push_back({s, std::move(d.fn)});
+    }
 }
 
 void retire() {
@@ -780,8 +783,11 @@ void defer_destroy(std::function<void()> fn) {
         fn();
         return;
     }
+    // Off-thread callers (~MemoryPool, ~Texture, GPL workers) may run while submissions referencing the resource are still queued ahead of
+    // g->submitted; capture g->reserved so retire() waits until every already-queued submission has completed on the GPU.
+    const uint64_t min_serial = on_render_thread() ? 0 : g->reserved.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lk(g->dmu);
-    g->pending_destroy.push_back(std::move(fn));
+    g->pending_destroy.push_back({min_serial, std::move(fn)});
     g_gauge_deferred.add(1);
 }
 
