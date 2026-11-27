@@ -49,7 +49,9 @@ Unpack the zip into Decky's plugin folder (`~/homebrew/plugins/`, which may need
   library. It shows when the game is built and nothing is at work on it. Which shortcuts there are comes from the launcher. While
   the panel is open, an install seen busy is looked at again every few seconds, so Play comes back when the game ends.
 - **The plugin updates itself** to the one in the installed release (`decky/fefw-recomp-decky.zip` in the Linux package), when that
-  is newer. After an update of the game made from the panel it asks Decky to install it, and Decky asks the player; the panel also
+  is newer. After an update of the game made from the panel it asks Decky to install it, and Decky asks the player. Such an update
+  does not go on to build the game, since replacing the plugin unloads it and would cut the build short: the player builds afterwards
+  with **Set up**, with the new plugin. The panel also
   has a button for it, for an update made in the launcher or a question answered no. It uses Decky's own installer
   (`utilities/install_plugin`, not part of the plugin API), which keeps the plugin's settings. Decky runs as root and removes the old
   plugin before it checks the new one's hash, so the plugin first checks the ZIP (this plugin's name, no `root` flag, nothing

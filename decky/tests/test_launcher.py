@@ -445,12 +445,27 @@ class PluginUpdate(Case):
             self.assertNotIn("plugin_update", await self.finish(kind), kind)
             self.assertIsNotNone(self.controller.state()["plugin_update"])  # the button stays
 
-    async def test_a_cancelled_rebuild_after_the_update_does_not_ask(self):
-        self.package("1.1.0")
-        self.write_plan(update=[["end", {"state": "done", "updated": True, "rebuild": True}]],
-                        rebuild=[["end", {"state": "cancelled", "message": "Paused."}]])
+    async def test_an_update_that_needs_a_build_stops_for_a_newer_plugin(self):
+        # Decky replaces the plugin by unloading it, which would cut the build short: the player builds afterwards
+        self.write_plan(update=[["end", {"state": "done", "updated": True, "rebuild": True, "message": "Updated to 1.1.0."}]],
+                        rebuild=[["end", {"state": "done", "message": "Built."}]])
         await self.ready()
-        self.assertNotIn("plugin_update", await self.finish("update"))
+        self.package("1.1.0")  # as the update puts it there
+        result = await self.finish("update")
+        self.assertEqual(result["state"], "done")
+        self.assertEqual(result["message"], f"Updated to 1.1.0. {fl.PLUGIN_FIRST}")
+        self.assertEqual(result["plugin_update"]["version"], "1.1.0")
+        self.assertNotIn("--rebuild", [r["argument"] for r in self.runs()])
+
+    async def test_an_update_that_needs_a_build_goes_on_without_a_newer_plugin(self):
+        self.write_plan(update=[["end", {"state": "done", "updated": True, "rebuild": True}]],
+                        rebuild=[["end", {"state": "done", "message": "Built."}]])
+        await self.ready()
+        self.package("1.0.0")  # the release's plugin is this one
+        result = await self.finish("update")
+        self.assertEqual(result["message"], "Built.")
+        self.assertNotIn("plugin_update", result)
+        self.assertIn("--rebuild", [r["argument"] for r in self.runs()])
 
     async def test_another_folder_forgets_it(self):
         self.package("1.1.0")
