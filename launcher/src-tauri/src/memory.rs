@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Running out of memory: a warning on the Play page when Windows has little left to give, and the cause of a run that ended for it.
 //!
-//! What counts is the commit limit (RAM plus page file), not free RAM. The game commits an 11 GB heap at boot, and more for itself
+//! What counts is the commit limit (RAM plus page file), not free RAM. The game commits a 9 GB heap at boot, and more for itself
 //! and the graphics driver afterwards.
 
 use serde::Serialize;
