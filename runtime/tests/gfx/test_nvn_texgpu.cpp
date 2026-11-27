@@ -1772,6 +1772,10 @@ NXTEST(sparse_texture_segments) {
 
 // Off-thread defer_destroy (~MemoryPool, ~Texture, GPL workers) must wait for submissions already queued (g->reserved), not just g->submitted.
 NXTEST(off_thread_defer_destroy_waits_for_queued_submissions) {
+    if (!config_get_bool("nvn", "async_submit", true)) {
+        nxtest::skip("requires [nvn] async_submit = true");
+        return;
+    }
     Rig r;
     if (!bring_up(r)) {
         CHECK(false);
