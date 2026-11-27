@@ -6,6 +6,7 @@
 // and GPU writes are visible through every view of the section.
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -120,7 +121,21 @@ nxrt::GaugeCounter g_copy_fallbacks("nvn.pool_copy_fallbacks");
 std::mutex g_slabs_mu;
 std::unordered_map<uint64_t, std::weak_ptr<PoolChunk>> g_slabs;
 std::unordered_set<uint64_t> g_rejected_slabs;
-constexpr uint64_t kSlab = 16ull << 20;
+// [nvn] pool_slab_mb: the size of the shared slab imports, a power of two from 1 to 16 MiB (0 = auto: 16, or 4 with memory limits scaled to
+// the PC). A slab pins all of its pages in RAM for as long as any pool in it lives, so small pools spread over the heap pin far more than
+// they hold. A smaller slab pins less around each, but fewer pools fit inside one (a pool across a slab edge is imported on its own), so
+// there are more imports. Read once, at the first import.
+uint64_t slab_bytes() {
+    static const uint64_t b = [] {
+        const int64_t v = config_get_int("nvn", "pool_slab_mb", 0);
+        const bool scaled = v <= 0 && mem::limits_scaled();
+        const uint64_t mb = std::bit_floor(static_cast<uint64_t>(std::clamp<int64_t>(v > 0 ? v : (scaled ? 4 : 16), 1, 16)));
+        NXLOG_I(kTag, "pool imports: shared slabs of %llu MiB ([nvn] pool_slab_mb = %lld%s)", static_cast<unsigned long long>(mb),
+                static_cast<long long>(v), v > 0 ? "" : (scaled ? ", auto: memory limits scaled" : ", auto"));
+        return mb << 20;
+    }();
+    return b;
+}
 std::mutex g_copies_mu;
 std::unordered_set<PoolChunk*> g_copies;
 std::atomic<bool> g_have_copies{false};
@@ -147,8 +162,8 @@ bool committed_slab(uint64_t start) {
     // pages after the address (up to 85 ms) under g_slabs_mu, which a render-thread import of a small pool waits for. A slab is imported through
     // a private view, so the primary view's protection does not matter here, only the commit. [memory] freeze_table = false: always the walk.
     static const bool use_table = config_get_bool("memory", "freeze_table", true);
-    if (use_table && mem::heap_rw_pages(start, kSlab) == 1 && !mem::ww::any_guarded(start, start + kSlab)) return true;
-    const uint64_t end = start + kSlab;
+    const uint64_t end = start + slab_bytes();
+    if (use_table && mem::heap_rw_pages(start, slab_bytes()) == 1 && !mem::ww::any_guarded(start, end)) return true;
     while (start < end) {
         MEMORY_BASIC_INFORMATION m{};
         if (!VirtualQuery(reinterpret_cast<void*>(start), &m, sizeof(m)) || m.State != MEM_COMMIT ||
@@ -172,6 +187,7 @@ bool import_range(PoolGpu* g, PoolChunk& c, uint64_t off, uint64_t size, const c
 
     // Small pools share one import rather than consuming an allocation each. The weak
     // cache releases the slab after its last pool's deferred GPU retirement.
+    const uint64_t kSlab = slab_bytes();
     const uint64_t slab = start & ~(kSlab - 1);
     if (batch && g->viewed && start + size <= slab + kSlab &&
         slab >= mem::kHeapBase && slab + kSlab <= mem::kHeapBase + mem::heap_reserved()) {
@@ -2708,9 +2724,11 @@ void log_import_census(const char* why) {
         std::lock_guard<std::mutex> lk(g_slabs_mu);
         for (const auto& kv : g_slabs) slabs += kv.second.expired() ? 0 : 1;
     }
-    NXLOG_I("nvn.census", "%s: pool imports: %llu pools; host imports %.0f MiB, in shared 16 MiB slabs %.0f MiB (%zu slabs); copy buffers %.0f MiB; "
-            "not imported %.0f MiB; mirrors %llu, %.0f MiB of video memory",
-            why, static_cast<unsigned long long>(pools), imported / 1048576.0, shared / 1048576.0, slabs, copies / 1048576.0, failed / 1048576.0,
+    const uint64_t slab_mb = slab_bytes() >> 20;
+    NXLOG_I("nvn.census", "%s: pool imports: %llu pools; host imports %.0f MiB, in shared %llu MiB slabs %.0f MiB (%zu slabs, %llu MiB of RAM pinned); "
+            "copy buffers %.0f MiB; not imported %.0f MiB; mirrors %llu, %.0f MiB of video memory",
+            why, static_cast<unsigned long long>(pools), imported / 1048576.0, static_cast<unsigned long long>(slab_mb), shared / 1048576.0, slabs,
+            static_cast<unsigned long long>(slabs * slab_mb), copies / 1048576.0, failed / 1048576.0,
             static_cast<unsigned long long>(mirrors), g_mirror_bytes / 1048576.0);
 }
 
