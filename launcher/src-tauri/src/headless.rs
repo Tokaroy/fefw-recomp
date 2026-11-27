@@ -351,11 +351,18 @@ fn host_path(setting: &str, game_dir: &Path, windows: bool) -> Result<String, St
 
 fn upscaler_files(cfg: &Config, ini: &Ini, game_dir: &Path) -> Result<crate::UpscalerFiles, String> {
     // a folder that cannot be found from here is looked for as written, and so shows as missing: the download then says why
-    let dir = |key: &str| {
-        let raw = ini.get("upscale", key).unwrap_or_default();
+    let dir = |sec: &str, key: &str| {
+        let raw = ini.get(sec, key).unwrap_or_default();
         host_path(&raw, game_dir, cfg!(windows)).unwrap_or(raw)
     };
-    crate::upscaler_state(cfg, dir("fsr_dll"), dir("dlss_dll"), Some(dir("xess_dll")), None)
+    // [dlss] frame_gen_dll: the game looks there for amd_fidelityfx_vk.dll before the FSR folder
+    crate::upscaler_state(
+        cfg,
+        dir("upscale", "fsr_dll"),
+        dir("upscale", "dlss_dll"),
+        Some(dir("upscale", "xess_dll")),
+        Some(dir("dlss", "frame_gen_dll")),
+    )
 }
 
 fn list_settings(cfg: &Config) -> Result<Value, String> {

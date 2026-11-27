@@ -727,6 +727,17 @@ bool ffx_fg_frame(VkCommandBuffer cb, const FfxFgFrame& fr) {
     return true;
 }
 
+void ffx_fg_shutdown(gfx::Device& dev) {
+    Ffx& f = g();
+    if (f.dev != &dev) return;
+    // the renderer's swapchain went first (hook_destroy), so FFX's present thread no longer records timestamps; a context still alive
+    // here goes now, before the pool its callbacks write into
+    if (f.sc_ctx) destroy_contexts();
+    if (f.qpool) vkDestroyQueryPool(dev.device(), f.qpool, nullptr);
+    f.qpool = VK_NULL_HANDLE;
+    f.time_prepare = f.time_interp = false;
+}
+
 bool ffx_fg_owns_swapchain() {
     Ffx& f = g();
     return f.sc_ctx && f.sc && !f.failed;

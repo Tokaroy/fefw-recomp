@@ -1212,6 +1212,7 @@ Device::~Device() {
     }
     unregister_vma_gauges();   // before the allocator goes: the gauges read it (the registry lock makes this wait for a running read)
     extras::framegen_shutdown(this);
+    extras::ffx_fg_shutdown(*this);
     extras::xess_shutdown();   // the XeSS context holds device memory
     if (impl_ && vma_)
         for (auto& [mt, pool] : impl_->small_pools)

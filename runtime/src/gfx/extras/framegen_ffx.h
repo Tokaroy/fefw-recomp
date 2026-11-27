@@ -22,6 +22,8 @@ bool ffx_fg_files();    // amd_fidelityfx_vk.dll found (ffx_files.h), whatever [
 // !on = frame generation off), then the install once the device and its queues exist (before any swapchain).
 fgq::Plan ffx_fg_plan_queues(const std::vector<fgq::Family>& families, uint32_t game_family);
 void ffx_fg_install(gfx::Device& dev, const fgq::Plan& queues);
+// Device teardown (after vkDeviceWaitIdle): what the install made (the GPU timer's query pool).
+void ffx_fg_shutdown(gfx::Device& dev);
 
 struct FfxFgFrame {
     VkImage depth = VK_NULL_HANDLE, motion = VK_NULL_HANDLE;   // render size, GENERAL, oriented as the backbuffer (framegen.cpp)
