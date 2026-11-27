@@ -20,7 +20,6 @@ namespace nxrt::gfx::pad_volume {
 namespace {
 
 constexpr const char* kTag = "haptic";
-constexpr float kFull = 0.999f;   // the scalar reads back within rounding of 1.0
 // PKEY_Device_FriendlyName, spelled out so that no property key library is needed
 constexpr PROPERTYKEY kFriendlyName = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
 
@@ -96,7 +95,7 @@ bool raise(const char* endpoint_name) {
         if (FAILED(list->Item(i, &device.p)) || name_of(device.p) != wanted || !volume_of(device.p, v)) continue;
         Saved now;
         if (FAILED(v->GetMasterVolumeLevelScalar(&now.volume)) || FAILED(v->GetMute(&now.mute))) continue;
-        if (now.volume >= kFull && !now.mute) return false;   // nothing to change (and a value saved earlier stays)
+        if (now.volume >= kFullVolume && !now.mute) return false;   // nothing to change (and a value saved earlier stays)
         LPWSTR id = nullptr;
         if (FAILED(device->GetId(&id)) || !id) continue;
         now.id = id;
@@ -122,12 +121,14 @@ void restore() {
         Ref<IMMDevice> device;
         Ref<IAudioEndpointVolume> v;
         float now = 0.f;
-        if (FAILED(devices->GetDevice(s.id.c_str(), &device.p)) || !volume_of(device.p, v) || FAILED(v->GetMasterVolumeLevelScalar(&now)))
+        BOOL muted = FALSE;
+        if (FAILED(devices->GetDevice(s.id.c_str(), &device.p)) || !volume_of(device.p, v) || FAILED(v->GetMasterVolumeLevelScalar(&now)) ||
+            FAILED(v->GetMute(&muted)))
             return false;                           // gone for now: keep it
-        if (now < kFull) return true;               // changed since, by the player: theirs to keep
-        if (FAILED(v->SetMasterVolumeLevelScalar(s.volume, nullptr))) return false;
-        v->SetMute(s.mute, nullptr);
-        NXLOG_I(kTag, "controller volume put back to %.0f%%", static_cast<double>(s.volume) * 100.0);
+        const PutBack back = put_back(now, muted != FALSE);
+        if (back.volume && FAILED(v->SetMasterVolumeLevelScalar(s.volume, nullptr))) return false;
+        if (back.mute && FAILED(v->SetMute(s.mute, nullptr))) return false;
+        if (back.volume) NXLOG_I(kTag, "controller volume put back to %.0f%%", static_cast<double>(s.volume) * 100.0);
         return true;
     });
 }

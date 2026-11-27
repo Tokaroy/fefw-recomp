@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// A volume of 100%, as pactl counts it.
@@ -120,14 +122,31 @@ fn store(file: &Path, saved: &Saved) -> bool {
     if saved.is_empty() {
         return !file.exists() || std::fs::remove_file(file).is_ok();
     }
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    serde_json::to_string(saved).is_ok_and(|t| std::fs::write(file, t).is_ok())
+    // written beside it and moved over it: a write cut short must not take the earlier record with it
+    serde_json::to_string(saved).is_ok_and(|t| crate::settings::write_atomic(file, &t).is_ok())
 }
 
-/// Puts back what an earlier session could not.
-pub fn restore_leftover(file: &Path) {
+/// The recovery `recover` started, until a session has seen it finish.
+static RECOVERY: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// Puts back, in the background, what an earlier session could not.
+pub fn recover(file: PathBuf) {
+    start_recovery(move || restore_leftover(&file));
+}
+
+fn start_recovery(job: impl FnOnce() + Send + 'static) {
+    *RECOVERY.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::thread::spawn(job));
+}
+
+/// A session starts only after the recovery: one that ran beside it would find the pad at the full volume left over, take it
+/// as dealt with, and then have it lowered for the rest of the game.
+fn wait_for_recovery() {
+    if let Some(t) = RECOVERY.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        let _ = t.join();
+    }
+}
+
+fn restore_leftover(file: &Path) {
     let mut saved = load(file);
     if saved.is_empty() {
         return;
@@ -139,23 +158,28 @@ pub fn restore_leftover(file: &Path) {
 /// Raises the pad's volume while it lives; `finish` puts it back.
 pub struct Session {
     stop: mpsc::Sender<()>,
-    thread: std::thread::JoinHandle<()>,
+    thread: JoinHandle<()>,
 }
 
 impl Session {
     /// `file`: where the volumes to put back are kept.
     pub fn start(file: PathBuf) -> Session {
+        Session::start_with(file, host_pactl)
+    }
+
+    fn start_with(file: PathBuf, mut pactl: impl FnMut(&[&str]) -> Option<String> + Send + 'static) -> Session {
         let (stop, stopped) = mpsc::channel();
         let thread = std::thread::spawn(move || {
+            wait_for_recovery();
             let mut saved = load(&file);
             let mut handled = HashSet::new();
             loop {
-                raise(&mut host_pactl, &mut saved, &mut handled, &mut |s| store(&file, s));
+                raise(&mut pactl, &mut saved, &mut handled, &mut |s| store(&file, s));
                 if stopped.recv_timeout(LOOK) != Err(RecvTimeoutError::Timeout) {
                     break;
                 }
             }
-            restore(&mut host_pactl, &mut saved);
+            restore(&mut pactl, &mut saved);
             store(&file, &saved);
         });
         Session { stop, thread }
@@ -171,6 +195,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     const PAD: &str = "alsa_output.usb-Sony_Interactive_Entertainment_DualSense_Wireless_Controller-00.Direct__Direct__sink";
 
@@ -271,6 +296,30 @@ mod tests {
         let mut saved = Saved::new();
         raise(&mut |a| f.run(a), &mut saved, &mut HashSet::new(), &mut |_| false);
         assert!(f.sets.is_empty() && saved.is_empty());
+    }
+
+    #[test]
+    fn a_session_waits_for_the_recovery() {
+        let dir = std::env::temp_dir().join(format!("fefw-pad-volume-test-{}", std::process::id()));
+        let file = dir.join("pad-volume.json");
+        assert!(store(&file, &Saved::from([(PAD.to_string(), vec![26214; 4])])));
+        // left at full by a session that never finished
+        let fake = Arc::new(Mutex::new(Fake { sinks: vec![(PAD.into(), 4, vec![FULL; 4])], ..Default::default() }));
+        let (f, record) = (fake.clone(), file.clone());
+        start_recovery(move || {
+            std::thread::sleep(Duration::from_millis(100)); // still at work when Play is pressed
+            let mut saved = load(&record);
+            restore(&mut |a| f.lock().unwrap().run(a), &mut saved);
+            store(&record, &saved);
+        });
+        let f = fake.clone();
+        let session = Session::start_with(file.clone(), move |a| f.lock().unwrap().run(a));
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(fake.lock().unwrap().sinks[0].2, vec![FULL; 4], "raised again, after the recovery");
+        session.finish();
+        assert_eq!(fake.lock().unwrap().sinks[0].2, vec![26214; 4]);
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

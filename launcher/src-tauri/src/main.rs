@@ -1196,7 +1196,7 @@ fn main() {
             // a controller volume an earlier session could not put back; not while a game it was raised for may still run
             if let Some(file) = pad_volume_file(app.handle()).filter(|_| cfg!(target_os = "linux")) {
                 if !headless::game_running(&headless::install_dirs(&load_config(app.handle()))) {
-                    std::thread::spawn(move || pad_volume::restore_leftover(&file));
+                    pad_volume::recover(file);
                 }
             }
             // at every start, so that an update or a new default also reaches a game started without Play; the package first,

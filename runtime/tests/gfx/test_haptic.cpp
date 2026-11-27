@@ -44,3 +44,16 @@ NXTEST(pad_volume_of_a_missing_endpoint) {
     pad_volume::restore();
     CHECK(!pad_volume::raised());
 }
+
+// A volume or a mute switch the player changed during the game stays theirs; the other one still goes back.
+NXTEST(pad_volume_leaves_the_players_changes) {
+    namespace pad_volume = nxrt::gfx::pad_volume;
+    const pad_volume::PutBack untouched = pad_volume::put_back(1.0f, false);
+    CHECK(untouched.volume && untouched.mute);
+    const pad_volume::PutBack muted = pad_volume::put_back(1.0f, true);
+    CHECK(muted.volume && !muted.mute);
+    const pad_volume::PutBack turned_down = pad_volume::put_back(0.6f, false);
+    CHECK(!turned_down.volume && turned_down.mute);
+    const pad_volume::PutBack both = pad_volume::put_back(0.6f, true);
+    CHECK(!both.volume && !both.mute);
+}
