@@ -145,6 +145,12 @@ bool in_heap_view(uint64_t start, uint64_t end) {
     return fast_query() && g_heap_size && !g_heap_cls.empty() && start >= kHeapBase && end <= kHeapBase + g_heap_size && start < end;
 }
 
+// Page table reads and writes (g_heap_mu held except for lazy_try's unlocked pre-check). Every element access is atomic.
+uint8_t get_cls(uint64_t p) { return std::atomic_ref<uint8_t>(g_heap_cls[p]).load(std::memory_order_relaxed); }
+void set_cls(uint64_t first, uint64_t end, uint8_t cls) {
+    for (uint64_t p = first; p < end; ++p) std::atomic_ref<uint8_t>(g_heap_cls[p]).store(cls, std::memory_order_relaxed);
+}
+
 bool bit_test(uint64_t page) { return (g_commit_bits[page / 64] >> (page % 64)) & 1; }
 void bit_set(uint64_t page) { g_commit_bits[page / 64] |= uint64_t{1} << (page % 64); }
 void bit_clear(uint64_t page) { g_commit_bits[page / 64] &= ~(uint64_t{1} << (page % 64)); }
@@ -195,10 +201,10 @@ bool lazy_commit(std::unique_lock<std::mutex>& lk, uint64_t p0, uint64_t p1) {
     if (!g_lazy.load(std::memory_order_relaxed)) return true;
     int attempt = 0;
     for (uint64_t p = p0; p < std::min<uint64_t>(p1, g_heap_cls.size());) {
-        if (g_heap_cls[p] != kLazy) { ++p; continue; }
+        if (get_cls(p) != kLazy) { ++p; continue; }
         const uint64_t end = std::min<uint64_t>(p1, g_heap_cls.size());
         uint64_t q = p;
-        while (q < end && g_heap_cls[q] == kLazy) ++q;
+        while (q < end && get_cls(q) == kLazy) ++q;
         if (!VirtualAlloc(reinterpret_cast<void*>(kHeapBase + p * kPage), static_cast<SIZE_T>((q - p) * kPage), MEM_COMMIT, PAGE_READWRITE)) {
             const DWORD e = GetLastError();
             // Once a whole wait has failed, later calls do not wait again for a while: the same fault asks twice (the write tracker's handler,
@@ -222,10 +228,9 @@ bool lazy_commit(std::unique_lock<std::mutex>& lk, uint64_t p0, uint64_t p1) {
             }
             return false;
         }
-        for (uint64_t r = p; r < q; ++r) {
-            g_heap_cls[r] = 3;   // the same answer as kLazy: no epoch change
+        set_cls(p, q, 3);   // the same answer as kLazy: no epoch change
+        for (uint64_t r = p; r < q; ++r)
             if (!bit_test(r)) { bit_set(r); g_committed += kPage; }
-        }
         g_lazy_bytes.fetch_add((q - p) * kPage, std::memory_order_relaxed);
         p = q;
     }
@@ -235,19 +240,20 @@ bool lazy_commit(std::unique_lock<std::mutex>& lk, uint64_t p0, uint64_t p1) {
 // First touch of a kLazy page from any thread: commit its 2 MiB granule and run the access again. Nothing in this file touches guest memory
 // while holding g_heap_mu, so taking it here cannot deadlock on this thread. True when the access can run again.
 bool lazy_try(uint64_t a) {
-    if (!g_lazy.load(std::memory_order_relaxed) || a < kHeapBase || a - kHeapBase >= kHeapMax) return false;
+    // acquire: with g_lazy seen set, so is the table lazy_setup was called after, which keeps its size while g_lazy stays set
+    if (!g_lazy.load(std::memory_order_acquire) || a < kHeapBase || a - kHeapBase >= kHeapMax) return false;
     const uint64_t p = (a - kHeapBase) / kPage;
-    // the write tracker's faults come here first: a quick look without the lock (the table is sized once, at heap_create)
-    if (p >= g_heap_cls.size() || reinterpret_cast<const volatile uint8_t*>(g_heap_cls.data())[p] != kLazy) return false;
+    // the write tracker's faults come here first: a quick look without the lock
+    if (p >= g_heap_cls.size() || get_cls(p) != kLazy) return false;
     std::unique_lock lk(g_heap_mu);
     if (a - kHeapBase >= g_heap_size) return false;
     // Another thread's first touch committed the page while this one waited for the lock: the access can run again. (Once only: the retried
     // access finds the page committed, and a fault on it after that is not a lazy one.)
-    if (g_heap_cls[p] == 3 && bit_test(p)) {
+    if (get_cls(p) == 3 && bit_test(p)) {
         g_lazy_raced.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    if (g_heap_cls[p] != kLazy) return false;   // a real fault (or the write tracker's): not ours
+    if (get_cls(p) != kLazy) return false;   // a real fault (or the write tracker's): not ours
     constexpr uint64_t kGranPages = (2ull << 20) / kPage;
     const uint64_t first = p & ~(kGranPages - 1);
     if (!lazy_commit(lk, first, first + kGranPages)) return false;
@@ -264,7 +270,7 @@ bool lazy_fault_handled(uint64_t kind, uint64_t a) {
     {
         std::lock_guard lk(g_heap_mu);
         const uint64_t p = (a - kHeapBase) / kPage;
-        if (a - kHeapBase >= g_heap_size || g_heap_cls[p] != 3 || !bit_test(p)) return false;
+        if (a - kHeapBase >= g_heap_size || get_cls(p) != 3 || !bit_test(p)) return false;
     }
     // Bounded per thread and page, as the write tracker's late-write retry: a fault that keeps coming back still reaches the crash handler.
     thread_local uint64_t t_page = 0;
@@ -381,10 +387,10 @@ void shutdown() {
         if (g_section) CloseHandle(g_section);
         g_section = nullptr;
         g_heap_size = 0;
+        g_lazy = false;   // before the table goes
         g_commit_bits.clear();
         g_heap_cls.clear();
         g_committed = 0;
-        g_lazy = false;
         g_lazy_gave_up_ms = 0;
     }
     {
@@ -500,12 +506,11 @@ bool protect(uint64_t addr, uint64_t size, Prot p) {
         if (in_heap_view(start, end)) {
             const uint64_t p0 = (start - kHeapBase) / kPage, p1 = (end - kHeapBase) / kPage;
             bool all = true;
-            for (uint64_t q = p0; q < p1 && all; ++q) all = g_heap_cls[q] != 0;
+            for (uint64_t q = p0; q < p1 && all; ++q) all = get_cls(q) != 0;
             if (all) all = lazy_commit(hk, p0, p1) && in_heap_view(start, end);   // VirtualProtect refuses uncommitted pages
             DWORD old = 0;
             if (all && VirtualProtect(reinterpret_cast<void*>(start), static_cast<SIZE_T>(end - start), np, &old)) {
-                std::fill(g_heap_cls.begin() + static_cast<std::ptrdiff_t>(p0), g_heap_cls.begin() + static_cast<std::ptrdiff_t>(p1),
-                          np == PAGE_NOACCESS ? uint8_t{1} : np == PAGE_READWRITE ? uint8_t{3} : uint8_t{2});
+                set_cls(p0, p1, np == PAGE_NOACCESS ? uint8_t{1} : np == PAGE_READWRITE ? uint8_t{3} : uint8_t{2});
                 g_heap_epoch.fetch_add(1, std::memory_order_seq_cst);
                 return true;
             }
@@ -575,7 +580,7 @@ bool is_mapped(uint64_t addr, uint64_t size) {
         if (in_heap_view(start, end)) {
             const uint64_t p0 = (start - kHeapBase) / kPage, p1 = (end - kHeapBase) / kPage;
             for (uint64_t q = p0; q < p1; ++q)
-                if (g_heap_cls[q] < 2) return false;
+                if (get_cls(q) < 2) return false;
             return true;
         }
     }
@@ -713,9 +718,9 @@ bool heap_commit(uint64_t offset, uint64_t size) {
         if (g_lazy) {
             // a range with a page committed before (or decommitted: no-access now) is committed whole here, as without the switch
             bool all_new = true;
-            for (uint64_t p = start / kPage; p < end / kPage && all_new; ++p) all_new = g_heap_cls[p] == 0 || g_heap_cls[p] == kLazy;
+            for (uint64_t p = start / kPage; p < end / kPage && all_new; ++p) all_new = get_cls(p) == 0 || get_cls(p) == kLazy;
             if (all_new) {
-                std::fill(g_heap_cls.begin() + static_cast<std::ptrdiff_t>(start / kPage), g_heap_cls.begin() + static_cast<std::ptrdiff_t>(end / kPage), kLazy);
+                set_cls(start / kPage, end / kPage, kLazy);
                 g_heap_epoch.fetch_add(1, std::memory_order_seq_cst);
                 return true;
             }
@@ -761,7 +766,7 @@ bool heap_commit(uint64_t offset, uint64_t size) {
             bit_set(p);
             g_committed += kPage;
         }
-        g_heap_cls[p] = 3;       // MEM_COMMIT with PAGE_READWRITE applies to pages that were committed already too
+        set_cls(p, p + 1, 3);    // MEM_COMMIT with PAGE_READWRITE applies to pages that were committed already too
     }
     g_heap_epoch.fetch_add(1, std::memory_order_seq_cst);
     return true;
@@ -789,8 +794,8 @@ bool heap_decommit(uint64_t offset, uint64_t size) {
     // (as in smo-recomp's SetMemoryHeapSize), and the alias views still show the section's contents.
     for (uint64_t p = start / kPage; p < end / kPage;) {
         if (!bit_test(p)) {
-            if (g_heap_cls[p] == kLazy) {   // never used: back to reserved
-                g_heap_cls[p] = 0;
+            if (get_cls(p) == kLazy) {   // never used: back to reserved
+                set_cls(p, p + 1, 0);
                 g_heap_epoch.fetch_add(1, std::memory_order_seq_cst);
             }
             p++;
@@ -810,7 +815,7 @@ bool heap_decommit(uint64_t offset, uint64_t size) {
         for (uint64_t q = p; q < run; q++) {
             bit_clear(q);
             g_committed -= kPage;
-            g_heap_cls[q] = 1;
+            set_cls(q, q + 1, 1);
         }
         g_heap_epoch.fetch_add(1, std::memory_order_seq_cst);
         p = run;
@@ -826,14 +831,14 @@ int heap_rw_pages(uint64_t addr, uint64_t size) {
     const uint64_t p0 = (start - kHeapBase) / kPage, p1 = (end - kHeapBase) / kPage;
     bool lazy = false;
     for (uint64_t q = p0; q < p1; ++q) {
-        if (g_heap_cls[q] == kLazy) lazy = true;
-        else if (g_heap_cls[q] != 3) return 0;
+        if (get_cls(q) == kLazy) lazy = true;
+        else if (get_cls(q) != 3) return 0;
     }
     if (!lazy) return 1;
     // the callers import or protect the range: it must be committed. The commit may let the lock go, so look again after it.
     if (!lazy_commit(lk, p0, p1) || !in_heap_view(start, end)) return 0;
     for (uint64_t q = p0; q < p1; ++q)
-        if (g_heap_cls[q] != 3) return 0;
+        if (get_cls(q) != 3) return 0;
     return 1;
 }
 
@@ -981,7 +986,8 @@ uint64_t heap_alias(uint64_t offset, uint64_t size, uint64_t at, Prot p) {
 void* heap_private_view(uint64_t offset, uint64_t size) {
     std::unique_lock lk(g_heap_mu);
     if (!g_section || size == 0 || offset % kAllocGranularity || offset > g_heap_size || size > g_heap_size - offset) return nullptr;
-    if (!lazy_commit(lk, offset / kPage, (offset + size) / kPage) || !g_section) return nullptr;
+    // the view maps whole pages, and a fault through it is not the lazy handler's: a partial last page is committed too
+    if (!lazy_commit(lk, offset / kPage, align_up(offset + size, kPage) / kPage) || !g_section) return nullptr;
     return MapViewOfFile(g_section, FILE_MAP_ALL_ACCESS, static_cast<DWORD>(offset >> 32), static_cast<DWORD>(offset & 0xFFFFFFFFu), static_cast<SIZE_T>(size));
 }
 
@@ -1043,7 +1049,7 @@ std::string describe_page(uint64_t addr) {
         else if (addr >= kHeapBase && addr - kHeapBase < g_heap_size) {
             const uint64_t pg = (addr - kHeapBase) / kPage;
             std::snprintf(line, sizeof line, "  heap metadata: page=%llu committed=%d class=%u epoch=%llu (class: 0=reserved 1=noaccess 2=readonly 3=readwrite 4=not yet used)\n",
-                (unsigned long long)pg, bit_test(pg), (unsigned)g_heap_cls[pg], (unsigned long long)g_heap_epoch.load());
+                (unsigned long long)pg, bit_test(pg), (unsigned)get_cls(pg), (unsigned long long)g_heap_epoch.load());
             out += line;
         } else out += "  heap metadata: outside primary heap\n";
     }

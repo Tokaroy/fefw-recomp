@@ -129,6 +129,12 @@ NXTEST(heap_lazy_commit_on_first_use) {
         word_at(alias)[0] = 0xCAFE0005u;
         CHECK_EQ(word_at(mem::kHeapBase + 5 * kGran)[0], 0xCAFE0005u);
         CHECK(mem::heap_alias_unmap(alias));
+        const uint64_t held = mem::heap_committed();
+        void* part = mem::heap_private_view(7 * kGran, kPg + 1);   // a view maps whole pages: the partial last one is committed too
+        REQUIRE(part != nullptr);
+        CHECK_EQ(mem::heap_committed(), held + 2 * kPg);
+        static_cast<volatile uint8_t*>(part)[2 * kPg - 1] = 0x5A;
+        CHECK(mem::heap_private_view_unmap(part));
     }
     const uint64_t before = mem::heap_committed();
     CHECK(mem::heap_commit(6 * kGran, kGran));                    // asked for again before any use: still waiting
