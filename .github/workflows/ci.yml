@@ -120,6 +120,9 @@ jobs:
       - name: F1 menu translations
         if: success() || failure()
         run: python3 tools/check_menu_translations.py
+      - name: F1 menu check tests
+        if: success() || failure()
+        run: python3 tools/check_menu_translations_test.py
 
   decky:
     runs-on: ubuntu-latest

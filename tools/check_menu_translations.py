@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Fails when an F1 menu table (locales/*.ini) lacks a string the menu shows (CI runs it).
+"""Fails when an F1 menu table (locales/*.ini) lacks a string the menu shows, or has a line the menu would drop for its
+format specifiers (CI runs it).
 
 The strings are read from the sources that include nxrt/menu_i18n.h: literals passed to tr() and to the helpers that call
 it (HELPERS), the k...Names[] lists and the help texts. A string built some other way, such as one a function returns for
@@ -18,7 +19,8 @@ HELPERS = {
     "section": (0,),
     "row": (1, 3),
     "button": (1,),
-    "ini_combo_row": (2, 3, 6),
+    # the last: the label for a value no entry holds. Counted from the end, as a std::array<..., N> argument splits in two
+    "ini_combo_row": (2, 3, -1),
     "path_row": (0, 2),
 }
 
@@ -27,6 +29,10 @@ UNTRANSLATED = {"RomFS", "ExeFS", "QWERTYUIOP", "ASDFGHJKL_", "ZXCVBNM;:/"}
 
 TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|[A-Za-z_]\w*|\S', re.S)
 ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
+# one printf conversion after its "%": flags, width, precision, length, letter
+SPEC = r"[{flags}]*(\*|[0-9]*)(?:\.(\*|[0-9]*))?([hlLjzt]*)([diouxXeEfFgGaAcspn])"
+PLAIN = re.compile(SPEC.format(flags="-+#0"))
+SPACED = re.compile(SPEC.format(flags="-+#0 "))
 
 
 def needs_translation(text):
@@ -93,7 +99,12 @@ def menu_strings(source):
         if token in HELPERS and after[:1] == ["("]:
             args = split(tokens, i + 2, (")",))
             for position in HELPERS[token]:
-                if position < len(args) and add(args[position], i):
+                if position >= len(args):
+                    continue
+                arg = args[position]
+                if arg[:1] == ["const"] and "=" in arg:   # a declaration: its default value
+                    arg = arg[arg.index("=") + 1:]
+                if add(arg, i):
                     used.add(token)
         elif re.fullmatch(r"k\w*Names", token) and after == ["[", "]", "=", "{"]:
             for item in split(tokens, i + 5, ("}",)):
@@ -103,17 +114,54 @@ def menu_strings(source):
     return found, used
 
 
-def table_keys(path):
-    """The keys with a translation, read as menu_i18n.cpp reads them."""
-    keys = set()
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
+def conversions(text, space_flag=False):
+    """What printf would read for `text`, one entry per argument, as conversions() in menu_i18n.cpp lists them. "n" stands
+    for a %n. A "%" that starts no conversion is plain text; so is one before a space, unless `space_flag`."""
+    found, i = [], 0
+    while (i := text.find("%", i)) >= 0:
+        if text.startswith("%%", i):
+            i += 2
+            continue
+        match = (SPACED if space_flag else PLAIN).match(text, i + 1)
+        if not match:
+            i += 1
+            continue
+        width, precision, length, letter = match.groups()
+        if letter == "n":
+            found.append("n")
+        else:
+            found += ["*"] * (width, precision).count("*") + [length + letter]
+        i = match.end()
+    return found
+
+
+def translation_problem(key, value):
+    """Why the menu would drop this line (menu_translation_problem in menu_i18n.cpp), or None."""
+    plain, spaced = conversions(value), conversions(value, space_flag=True)
+    if "n" in plain or "n" in spaced:
+        return "it uses %n"
+    # to printf a space is a flag ("99% de" reads an int), but English prose has such percents too ("% of one thread")
+    if plain != conversions(key) or (spaced != plain and spaced != conversions(key, space_flag=True)):
+        return "its format specifiers differ from the English"
+    return None
+
+
+def read_table(path):
+    """The keys the menu would translate, and (line, key, problem) of each line it would drop."""
+    keys, dropped = set(), []
+    for number, line in enumerate(path.read_text(encoding="utf-8-sig").split("\n"), 1):
         line = line.strip()
         if not line or line[0] in "#;":
             continue
-        key, _, value = line.partition("\t" if "\t" in line else "=")
-        if key.strip() and value.strip():
-            keys.add(key.strip())
-    return keys
+        key, _, value = (part.strip() for part in line.partition("\t" if "\t" in line else "="))
+        if not key or not value:
+            continue
+        problem = translation_problem(key, value)
+        if problem:
+            dropped.append((number, key, problem))
+        else:
+            keys.add(key)
+    return keys, dropped
 
 
 def main():
@@ -137,9 +185,11 @@ def main():
     if not tables:
         problems.append("no tables found in locales/")
     for table in tables:
-        keys = table_keys(table)
+        keys, dropped = read_table(table)
+        problems += [f"locales/{table.name}:{number}: the menu drops {key!r}: {why}" for number, key, why in dropped]
+        listed = keys | {key for _, key, _ in dropped}
         problems += [f"locales/{table.name}: no translation for {text!r} ({where})" for text, where in strings.items()
-                     if text not in keys]
+                     if text not in listed]
 
     if problems:
         sys.stdout.reconfigure(errors="backslashreplace")

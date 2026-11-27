@@ -39,6 +39,7 @@ Shared instructions for coding agents (Antigravity, Claude Code and others). The
   ```bash
   node launcher/scripts/check-translations.mjs
   python tools/check_menu_translations.py
+  python tools/check_menu_translations_test.py
   ```
 - Python, as CI checks it:
   ```bash
