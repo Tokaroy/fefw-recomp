@@ -355,6 +355,7 @@ bool apply_fixed(Sec sec, const std::string& k, const std::string& v, Settings* 
             }
             if (k == "haptic_strength") return set_int(-1, 100, &s->pad.haptic_strength);
             if (k == "hd_haptics") return set_bool(&s->pad.hd_haptics);
+            if (k == "dualsense_full_volume") return set_bool(&s->pad.dualsense_full_volume);
             if (k == key_alt_orbit()) return set_real(0.0, 6.0, &s->pad.alt_orbit);
             break;
         case Sec::Timing:
@@ -964,6 +965,7 @@ std::string format_settings(const Settings& s) {
     kv("haptic", gfx::haptic::mode_name(static_cast<gfx::haptic::Mode>(s.pad.haptic)));
     kv("haptic_strength", std::to_string(s.pad.haptic_strength));
     kv("hd_haptics", flag(s.pad.hd_haptics));
+    kv("dualsense_full_volume", flag(s.pad.dualsense_full_volume));
     kv(key_alt_orbit(), num(s.pad.alt_orbit));
 
     o += "\n[padmap]\n";

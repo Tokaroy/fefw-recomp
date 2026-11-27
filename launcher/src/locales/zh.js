@@ -389,6 +389,9 @@ export const zh = {
   'settings.hdHaptics.label': 'DualSense 扬声器敲击声',
   'settings.hdHaptics.short': '手柄扬声器随震动发出敲击声。',
   'settings.hdHaptics.hint': 'DualSense 还会随震动用自带扬声器播放敲击声。USB 有线和蓝牙都支持。',
+  'settings.padVolume.label': 'USB 连接时 DualSense 音量调满',
+  'settings.padVolume.short': '游戏时调高手柄音量，结束后恢复。',
+  'settings.padVolume.hint': '用 USB 线连接时，震动和扬声器的强度取决于手柄音量。开启后游戏期间调到 100%，结束后恢复原值。在 Linux 上，需要在本启动器的“游玩”页面启动游戏才会生效。如果 USB 震动仍然偏弱，请在系统声音设置里调高手柄音量。',
 
     // 输入、存档与日志
     'settings.jc2Mouse.label': '用 PC 鼠标模拟 Joy-Con 2 鼠标',

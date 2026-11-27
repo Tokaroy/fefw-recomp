@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "nxrt/haptic.h"
+#include "pad_volume.h"
 
 NXTEST_GROUP(haptic)
 
@@ -31,4 +32,15 @@ NXTEST(dualsense_descriptor_edges) {
     CHECK(haptic::dualsense_descriptor_is_bluetooth(long_item, sizeof(long_item)));
     const uint8_t cut_long[] = {0xFE};
     CHECK(!haptic::dualsense_descriptor_is_bluetooth(cut_long, sizeof(cut_long)));
+}
+
+// An endpoint that is not there changes nothing and leaves nothing to put back.
+NXTEST(pad_volume_of_a_missing_endpoint) {
+    namespace pad_volume = nxrt::gfx::pad_volume;
+    CHECK(!pad_volume::raise(nullptr));
+    CHECK(!pad_volume::raise(""));
+    CHECK(!pad_volume::raise("nxrt test: no such audio endpoint"));
+    CHECK(!pad_volume::raised());
+    pad_volume::restore();
+    CHECK(!pad_volume::raised());
 }

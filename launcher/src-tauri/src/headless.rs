@@ -157,7 +157,7 @@ fn in_use(exe: &Path) -> bool {
 
 /// Whether the fefw.exe of one of `dirs` runs, however it was started (Steam, a window of the launcher). Another install's does not
 /// count.
-fn game_running(dirs: &[PathBuf]) -> bool {
+pub(crate) fn game_running(dirs: &[PathBuf]) -> bool {
     if cfg!(windows) {
         return dirs.iter().any(|d| in_use(&d.join("fefw.exe")));
     }
@@ -173,7 +173,7 @@ fn game_running(dirs: &[PathBuf]) -> bool {
 
 /// Where this install's fefw.exe and the files it runs with are: the launcher's folder and the run folder, and in a checkout the
 /// build's.
-fn install_dirs(cfg: &Config) -> Vec<PathBuf> {
+pub(crate) fn install_dirs(cfg: &Config) -> Vec<PathBuf> {
     let mut dirs = vec![crate::exe_dir()];
     if let Some(repo) = crate::repo_of(cfg) {
         dirs.push(crate::game_dir_of(cfg, &repo));

@@ -487,7 +487,7 @@ void vib_sink(uint32_t slot, int hand, const hid::VibrationValue& v, void*) {
         st.dirty = false;
     }
     nvn::backend_flush_caches();                    // the pipeline cache; this path does not shut the back end down
-    haptic::release_for_exit();                     // a DualSense would keep its speaker route
+    haptic::release_for_exit();                     // a DualSense would keep its speaker route and volume
     nxrt::log_flush();
     if (tt::enabled() && !tt::finished()) tt::end_run(code, verdict, message);     // writes result.json, then terminates
     TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
@@ -839,7 +839,8 @@ int update_hook(::Ctx*, uint64_t, void*) {
             apply_fps_counter(s.fps);
             st.want_present.store(static_cast<int>(present_mode_for(s.display)));
             apply_audio(s.audio);
-            haptic::configure(static_cast<haptic::Mode>(s.pad.haptic), s.pad.haptic_strength, s.pad.rumble_scale, s.pad.rumble, s.pad.hd_haptics);
+            haptic::configure(static_cast<haptic::Mode>(s.pad.haptic), s.pad.haptic_strength, s.pad.rumble_scale, s.pad.rumble, s.pad.hd_haptics,
+                              s.pad.dualsense_full_volume);
             if (st.window && s.display.monitor != old_monitor && s.display.monitor > 0) {
                 if (platform::move_to_display(s.display.monitor)) st.limiter.reset_schedule();
                 apply_frame_cap(s);                        // another display can mean another refresh rate
@@ -1421,7 +1422,7 @@ bool start(const StartOptions& opt) {
     hid::set_input_source(st.source);
     hid::set_vibration_sink(&vib_sink, nullptr);
     haptic::configure(static_cast<haptic::Mode>(st.settings.pad.haptic), st.settings.pad.haptic_strength, st.settings.pad.rumble_scale, st.settings.pad.rumble,
-                      st.settings.pad.hd_haptics);
+                      st.settings.pad.hd_haptics, st.settings.pad.dualsense_full_volume);
     tt::set_mouse_sink(&test_mouse_sink);
     tt::set_key_sink(&key_sink);
     if (st.renderer) tt::set_screenshot_provider(&screenshot_provider, nullptr);

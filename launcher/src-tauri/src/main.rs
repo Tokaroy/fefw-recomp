@@ -18,6 +18,7 @@ mod lsfg;
 mod manifest;
 mod memory;
 mod nup;
+mod pad_volume;
 mod play;
 mod report;
 mod screen;
@@ -764,7 +765,15 @@ fn play(app: AppHandle, state: State<Arc<setup::Shared>>) -> Result<(), String> 
         launcher_dir: exe_dir(),
         launcher_version: env!("CARGO_PKG_VERSION").to_string(),
     };
-    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock, report_opts)
+    // a DualSense on a cable vibrates as strongly as its audio output is loud; on Windows the game sees to that itself
+    let controls = std::fs::read_to_string(p.game_dir.join(settings::CONTROLS_INI)).ok();
+    let volume = (cfg!(target_os = "linux") && pad_volume::wanted(controls.as_deref())).then(|| pad_volume_file(&app)).flatten();
+    play::start(&app, &p.exe(), &p.game_dir, &exe_dir(), cfg.minimize_on_play, &cfg.runner, extra_env, lock, report_opts, volume)
+}
+
+/// Where the controller volumes to put back are kept (pad_volume.rs).
+fn pad_volume_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("pad-volume.json"))
 }
 
 /// Opens LSFG-VK's install instructions in the browser (Settings, when the layer is missing). A fixed address, nothing from the page.
@@ -1184,6 +1193,12 @@ fn main() {
         .manage(Arc::new(update::Shared::default()))
         .manage(Arc::new(fetch::Shared::default()))
         .setup(|app| {
+            // a controller volume an earlier session could not put back; not while a game it was raised for may still run
+            if let Some(file) = pad_volume_file(app.handle()).filter(|_| cfg!(target_os = "linux")) {
+                if !headless::game_running(&headless::install_dirs(&load_config(app.handle()))) {
+                    std::thread::spawn(move || pad_volume::restore_leftover(&file));
+                }
+            }
             // at every start, so that an update or a new default also reaches a game started without Play; the package first,
             // as the run folder takes its tables from there
             // not under another process's setup or update: Set up and Play bring the run folder in step

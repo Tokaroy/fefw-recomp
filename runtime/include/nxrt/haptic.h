@@ -77,16 +77,18 @@ struct Status {
     uint64_t packets = 0;      // haptic packets/audio frames sent since then
 };
 
-// Applies [pad] haptic, [pad] haptic_strength, [pad] rumble_scale, [pad] rumble and [pad] hd_haptics.
+// Applies [pad] haptic, [pad] haptic_strength, [pad] rumble_scale, [pad] rumble, [pad] hd_haptics and
+// [pad] dualsense_full_volume.
 //   strength_percent >= 0 : the haptic amplitude scale, 0..100 percent.
 //   strength_percent <  0 : inherit the player's own [pad] rumble_scale, which is the multiplier the standard rumble uses
 //                           (1.0 = unchanged, up to 2.0), so an untouched controls.ini keeps exactly one strength knob.
 //   rumble_on             : the [pad] rumble master switch. False silences every output path, the standard rumble included
 //                           (legacy_rumble() returns false too), and clears what the backends are still playing.
 //   hd_haptics            : a DualSense also gets taps on its speaker.
-// Only a different mode, master switch or hd_haptics re-attaches: the strength applies to the next value, so moving its slider never
+//   full_volume           : a wired DualSense's audio output is raised to full while it is driven (pad_volume.h; Windows).
+// Only a different mode, master switch, hd_haptics or full_volume re-attaches: the strength applies to the next value, so moving its slider never
 // reopens the DualSense audio stream.
-void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics);
+void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics, bool full_volume);
 
 // Pads, from the platform layer's hot-plug events (main thread).
 void pad_added(uint32_t instance_id);
@@ -104,8 +106,8 @@ void push(uint32_t npad_slot, int hand, float amp_low, float freq_low, float amp
 // every pad whenever [pad] rumble is off or the mode is Off, because then nothing is to vibrate at all.
 bool legacy_rumble(uint32_t pad_id);
 
-// Before the process ends without shutdown(): a wired DualSense keeps its sound routed to the speaker until told otherwise,
-// so with HD haptics driving one this releases it. Does nothing otherwise.
+// Before the process ends without shutdown(): a wired DualSense keeps its sound routed to the speaker, and a raised volume,
+// until told otherwise, so this releases both. Does nothing when neither is the case.
 void release_for_exit();
 
 // Stops everything and drops the pads (play mode is ending).

@@ -215,6 +215,10 @@ const TABS = [
           // [pad] hd_haptics: a DualSense also gets taps on its speaker.
           { id: 'hd_haptics', type: 'toggle', label: 'settings.hdHaptics.label', sec: 'pad', key: 'hd_haptics', def: '1',
             hint: 'settings.hdHaptics.hint', restart: true },
+          // [pad] dualsense_full_volume: a wired DualSense's volume goes to full while playing (Windows: the game; Linux: the
+          // launcher, pad_volume.rs).
+          { id: 'dualsense_full_volume', type: 'toggle', label: 'settings.padVolume.label', sec: 'pad', key: 'dualsense_full_volume',
+            def: '1', hint: 'settings.padVolume.hint', restart: true },
         ],
       },
       {

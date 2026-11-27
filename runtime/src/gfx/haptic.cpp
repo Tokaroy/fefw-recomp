@@ -58,6 +58,7 @@
 #include "nxrt/input_source.h"
 #include "nxrt/log.h"
 #include "nxrt/platform.h"
+#include "pad_volume.h"
 
 namespace nxrt::gfx::haptic {
 namespace {
@@ -268,6 +269,7 @@ std::atomic<bool> g_running{false};       // a backend is really driving the pad
 std::atomic<uint32_t> g_pad_id{0};        // g_pad.id, readable without g_host_mu: legacy_rumble() runs on the game's thread
 std::atomic<bool> g_rumble_on{true};      // [pad] rumble: the master switch, and it covers every output path
 std::atomic<bool> g_hd_wanted{false};     // [pad] hd_haptics
+std::atomic<bool> g_full_volume{false};   // [pad] dualsense_full_volume
 std::atomic<uint64_t> g_next_enum_ns{0};  // next DualSense audio endpoint scan
 std::atomic<float> g_last_amp{0.f};
 std::atomic<uint64_t> g_pushes{0};
@@ -466,6 +468,7 @@ bool open_dualsense_audio() {
         if (g_pad.joy) SDL_RumbleJoystick(g_pad.joy, 0, 0, 0);
     }
     SDL_ResumeAudioStreamDevice(stream);
+    if (g_full_volume.load(std::memory_order_relaxed)) pad_volume::raise(SDL_GetAudioDeviceName(dev));
     {
         std::lock_guard<std::mutex> lk(g_audio_mu);
         g_stream = stream;
@@ -491,6 +494,7 @@ void close_dualsense_audio() {
         g_dev = 0;
     }
     if (stream) SDL_DestroyAudioStream(stream);   // waits for the callback to return, so g_eng_mu is not held here
+    pad_volume::restore();                         // nothing to do unless the cable path raised it
     {
         std::lock_guard<std::mutex> lk(g_eng_mu);
         if (g_dsp) {
@@ -1045,15 +1049,17 @@ const char* backend_name(Backend b) {
     }
 }
 
-void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics) {
+void configure(Mode m, int strength_percent, double rumble_scale, bool rumble_on, bool hd_haptics, bool full_volume) {
     const int strength = std::clamp(strength_percent, -1, 100);
     const float scale = static_cast<float>(std::clamp(static_cast<float>(rumble_scale), 0.f, 2.f));
     std::lock_guard<std::mutex> lk(g_life_mu);
     const bool was_on = g_rumble_on.exchange(rumble_on, std::memory_order_relaxed);
     const bool was_hd = g_hd_wanted.exchange(hd_haptics, std::memory_order_relaxed);
-    // Only a different mode, master switch or HD haptics switch changes what drives the pad. The strength and the scale are
-    // read by push() on the next value, so moving the slider must not touch the audio stream.
-    const bool changed = m != g_mode.load(std::memory_order_relaxed) || was_on != rumble_on || was_hd != hd_haptics;
+    const bool was_full = g_full_volume.exchange(full_volume, std::memory_order_relaxed);
+    // Only a different mode or a different switch changes what drives the pad. The strength and the scale are read by push()
+    // on the next value, so moving the slider must not touch the audio stream.
+    const bool changed =
+        m != g_mode.load(std::memory_order_relaxed) || was_on != rumble_on || was_hd != hd_haptics || was_full != full_volume;
     g_mode.store(m, std::memory_order_relaxed);
     g_strength.store(strength, std::memory_order_relaxed);
     g_scale.store(scale, std::memory_order_relaxed);
@@ -1185,7 +1191,9 @@ bool test_start() {
 
 void release_for_exit() {
     std::lock_guard<std::mutex> lk(g_life_mu);
-    if (g_backend.load(std::memory_order_relaxed) != Backend::DualSenseUsb || !g_hd_wanted.load(std::memory_order_relaxed)) return;
+    // only a wired DualSense keeps anything: the speaker route of HD haptics, and a raised volume
+    const bool speaker = g_backend.load(std::memory_order_relaxed) == Backend::DualSenseUsb && g_hd_wanted.load(std::memory_order_relaxed);
+    if (!speaker && !pad_volume::raised()) return;
     detach();
     SDL_Delay(50);   // SDL writes effects reports on its own thread: give it time before the process goes
 }
