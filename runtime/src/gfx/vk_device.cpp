@@ -1035,20 +1035,33 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         features_.full_screen_exclusive = true;
     }
 #endif
-    // [dlss] frame_gen = fsr3: the FSR 3 swapchain presents and acquires on queues of its own (extras/framegen_ffx.h)
-    uint32_t fg_queues = 0;
-    if (!headless) {
-        uint32_t nfam = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nfam, nullptr);
+    // [dlss] frame_gen = fsr3: the FSR 3 swapchain presents, acquires and computes on queues of its own (extras/framegen_ffx_queues.h): in the
+    // game's family when it has 4, else (RADV's single graphics queue) in other families
+    extras::fgq::Plan fg_queues;
+    uint32_t nfam = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nfam, nullptr);
+    if (!headless && extras::ffx_fg_wanted()) {
         std::vector<VkQueueFamilyProperties> fams(nfam);
         vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nfam, fams.data());
-        if (queue_family_ < nfam) fg_queues = extras::ffx_fg_extra_queues(fams[queue_family_].queueCount);
+        std::vector<extras::fgq::Family> ff(nfam);
+        for (uint32_t i = 0; i < nfam; ++i) {
+            VkBool32 present = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_, i, surface_, &present);
+            ff[i] = {static_cast<uint32_t>(fams[i].queueFlags), fams[i].queueCount, present == VK_TRUE};
+        }
+        fg_queues = extras::ffx_fg_plan_queues(ff, queue_family_);
     }
-    const float prio[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    qci.queueFamilyIndex = queue_family_;
-    qci.queueCount = 1 + fg_queues;
-    qci.pQueuePriorities = prio;
+    const float prio[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // a family gets 4 queues at most (the game's and 3 more)
+    std::vector<VkDeviceQueueCreateInfo> qcis;
+    for (uint32_t i = 0; i < nfam; ++i) {
+        const uint32_t n = extras::fgq::queues_in(fg_queues, i, queue_family_);
+        if (!n) continue;
+        VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        qci.queueFamilyIndex = i;
+        qci.queueCount = n;
+        qci.pQueuePriorities = prio;
+        qcis.push_back(qci);
+    }
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &en};
     // Video memory (VK_EXT_memory_budget is enabled above, with the priority and pageable extensions).
     // AMD's driver refuses an allocation that takes this process past the size of a heap (VK_ERROR_OUT_OF_DEVICE_MEMORY) where other
@@ -1062,8 +1075,8 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         overalloc.pNext = dci.pNext;
         dci.pNext = &overalloc;
     }
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
+    dci.queueCreateInfoCount = static_cast<uint32_t>(qcis.size());
+    dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = static_cast<uint32_t>(dev_exts.size());
     dci.ppEnabledExtensionNames = dev_exts.data();
     r = vkCreateDevice(physical_, &dci, nullptr, &device_);
@@ -1110,7 +1123,7 @@ bool Device::init(const DeviceDesc& desc, std::string* error) {
         nxrt::mem::limits_note_video_heap(largest);
     }
     vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
-    if (fg_queues) extras::ffx_fg_install(*this, fg_queues);
+    if (fg_queues.on) extras::ffx_fg_install(*this, fg_queues);
 
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical_, &nq, nullptr);

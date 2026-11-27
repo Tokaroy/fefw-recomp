@@ -500,27 +500,42 @@ bool ffx_fg_wanted() {
     return v;
 }
 
-uint32_t ffx_fg_extra_queues(uint32_t family_queue_count) {
-    if (!ffx_fg_wanted()) return 0;
-    if (family_queue_count < 4) {
-        NXLOG_W(kTag, "FSR 3 frame generation needs 4 queues in the graphics family, it has %u: off", family_queue_count);
-        return 0;
+fgq::Plan ffx_fg_plan_queues(const std::vector<fgq::Family>& families, uint32_t game_family) {
+    if (!ffx_fg_wanted()) return {};
+    const fgq::Plan p = fgq::plan(families, game_family);
+    if (!p.on) {
+        std::string fams;
+        for (size_t i = 0; i < families.size(); ++i) {
+            char b[64];
+            std::snprintf(b, sizeof b, "%s%zu: flags 0x%x, %u queues%s", i ? "; " : "", i, families[i].flags, families[i].count,
+                          families[i].present ? ", presents" : "");
+            fams += b;
+        }
+        NXLOG_W(kTag, "FSR 3 frame generation needs 3 queues besides the game's, %s (families %s): off", p.why.c_str(), fams.c_str());
+    } else if (p.cross_family) {
+        NXLOG_I(kTag, "FSR 3 frame generation: game family %u has %u queue(s), so its queues are present %u.%u, image acquire %u.%u, async compute %u.%u "
+                      "(family.index)",
+                game_family, families[game_family].count, p.present.family, p.present.index, p.acquire.family, p.acquire.index, p.compute.family,
+                p.compute.index);
     }
-    return 3;
+    return p;
 }
 
-void ffx_fg_install(gfx::Device& dev, uint32_t extra_queues) {
-    if (extra_queues < 3 || !load()) return;
+void ffx_fg_install(gfx::Device& dev, const fgq::Plan& qp) {
+    if (!qp.on || !load()) return;
     Ffx& f = g();
     f.dev = &dev;
     f.installed = std::chrono::steady_clock::now();
     const uint32_t fam = dev.queue_family();
     f.game = {dev.queue(), fam, nullptr};   // FFX uses it only inside vkQueuePresentKHR, which the renderer calls under its queue lock
-    VkQueue q[3] = {};
-    for (uint32_t i = 0; i < 3; ++i) vkGetDeviceQueue(dev.device(), fam, i + 1, &q[i]);
-    f.present = {q[0], fam, nullptr};
-    f.acquire = {q[1], fam, nullptr};
-    f.compute = {q[2], fam, nullptr};
+    auto get = [&](const fgq::Queue& q) {
+        VkQueue vq = VK_NULL_HANDLE;
+        vkGetDeviceQueue(dev.device(), q.family, q.index, &vq);
+        return VkQueueInfoFFXAPI{vq, q.family, nullptr};
+    };
+    f.present = get(qp.present);
+    f.acquire = get(qp.acquire);
+    f.compute = get(qp.compute);
     f.orig_create = vkCreateSwapchainKHR;
     f.orig_destroy = vkDestroySwapchainKHR;
     f.orig_images = vkGetSwapchainImagesKHR;
@@ -533,7 +548,8 @@ void ffx_fg_install(gfx::Device& dev, uint32_t extra_queues) {
     vkAcquireNextImageKHR = &hook_acquire;
     vkQueuePresentKHR = &hook_present;
     if (f.orig_hdr) vkSetHdrMetadataEXT = &hook_hdr;
-    NXLOG_I(kTag, "FSR 3 frame generation: amd_fidelityfx_vk.dll loaded, swapchain calls go through it (3 extra queues in family %u)", fam);
+    NXLOG_I(kTag, "FSR 3 frame generation: amd_fidelityfx_vk.dll loaded, swapchain calls go through it (present %u.%u, acquire %u.%u, compute %u.%u)",
+            qp.present.family, qp.present.index, qp.acquire.family, qp.acquire.index, qp.compute.family, qp.compute.index);
 }
 
 bool ffx_fg_frame(VkCommandBuffer cb, const FfxFgFrame& fr) {
