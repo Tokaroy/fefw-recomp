@@ -511,9 +511,9 @@ void load_one(const std::string& mod, const std::filesystem::path& mod_dir, cons
 ModSiteCheck check_mod_sites_against(const std::string& mod_dir, const SiteList& l) {
     namespace stdfs = std::filesystem;
     ModSiteCheck out;
-    if (!l.known || mod_dir.empty()) return out;
+    if (mod_dir.empty()) return out;
     std::error_code ec;
-    out.missing = 0;
+    if (l.known) out.missing = 0;
     std::set<std::string> unknown;
     for (const stdfs::directory_entry& e : stdfs::directory_iterator(stdfs::u8path(mod_dir) / "exefs", ec)) {
         if (!e.is_regular_file(ec) || _wcsicmp(e.path().extension().c_str(), L".sites") != 0) continue;
@@ -527,7 +527,7 @@ ModSiteCheck check_mod_sites_against(const std::string& mod_dir, const SiteList&
                 unknown.insert(k);
                 continue;
             }
-            out.missing += l.sites.count(s) == 0;
+            if (l.known) out.missing += l.sites.count(s) == 0;
         }
     }
     out.unknown.assign(unknown.begin(), unknown.end());

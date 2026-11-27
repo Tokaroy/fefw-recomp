@@ -304,5 +304,15 @@ NXTEST(mod_sites_filter_unknown_kinds) {
     CHECK_EQ(check.unknown[1], std::string("midHook"));
     CHECK_EQ(check.unknown[2], std::string("patch"));
 
+    // Without fefw.sites, missing stays -1, but unknown kinds are still collected for startup warnings.
+    const auto no_list = nxrt::services::modapi::check_mod_sites(mod_dir.string(), "");
+    CHECK_EQ(no_list.missing, -1);
+    CHECK_EQ(no_list.unknown.size(), 4u);   // includes otherkind when no build ID is known
+    REQUIRE(no_list.unknown.size() == 4u);
+    CHECK_EQ(no_list.unknown[0], std::string("dynimm"));
+    CHECK_EQ(no_list.unknown[1], std::string("midHook"));
+    CHECK_EQ(no_list.unknown[2], std::string("otherkind"));
+    CHECK_EQ(no_list.unknown[3], std::string("patch"));
+
     fs::remove_all(root, ec);
 }
