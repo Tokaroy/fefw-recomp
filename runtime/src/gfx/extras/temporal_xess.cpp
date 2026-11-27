@@ -31,6 +31,7 @@
 #include "nxrt/config.h"
 #include "nxrt/extras.h"
 #include "nxrt/gfx.h"
+#include "nxrt/diag.h"
 #include "nxrt/log.h"
 
 namespace nxrt::extras {
@@ -315,6 +316,8 @@ public:
 
     bool evaluate(VkCommandBuffer cb, const TemporalFrame& f) override {
         if (failed_) return false;
+        // First context creation / pipeline build / dispatch compiles XeSS kernels synchronously in the driver.
+        const WatchdogLongOp long_op(!ctx_ || evals_ == 0);
         if (!context() || !init_size(f.render, f.out)) return false;
         if (f.render.width != vel_w_ || f.render.height != vel_h_) {
             // the motion vectors are in UV units of the render size; XeSS wants render pixels

@@ -12,6 +12,7 @@
 #include "extras/temporal.h"
 #include "nxrt/extras.h"
 #include "nxrt/gfx.h"
+#include "nxrt/diag.h"
 #include "nxrt/log.h"
 
 #include "../../../third_party/amd_ffx_api/api/include/ffx_api.h"
@@ -84,7 +85,10 @@ public:
 
     bool evaluate(VkCommandBuffer cb, const TemporalFrame& f) override {
         if (failed_) return false;
-        if (!ctx_ || f.render.width > max_render_.width || f.render.height > max_render_.height || f.out.width != max_out_.width || f.out.height != max_out_.height) {
+        const bool need_make = !ctx_ || f.render.width > max_render_.width || f.render.height > max_render_.height || f.out.width != max_out_.width || f.out.height != max_out_.height;
+        // First context creation / first dispatch compiles FSR 3 pipelines synchronously in the driver (>10 s on a cold shader cache).
+        const WatchdogLongOp long_op(need_make);
+        if (need_make) {
             if (!make(f.render, f.out)) {
                 failed_ = true;
                 return false;

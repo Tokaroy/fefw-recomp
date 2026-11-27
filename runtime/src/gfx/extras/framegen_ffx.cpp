@@ -19,6 +19,7 @@
 #include "extras/framegen.h"
 #include "nxrt/config.h"
 #include "nxrt/gfx.h"
+#include "nxrt/diag.h"
 #include "nxrt/log.h"
 
 #include "../../../third_party/amd_ffx_api_fg/ffx_api.h"
@@ -548,6 +549,7 @@ bool ensure_fg_context(const FfxFgFrame& fr) {
     const bool fits = f.fg_ctx && f.fg_display.width == fr.bb.width && f.fg_display.height == fr.bb.height && fr.render.width <= f.fg_max.width &&
                       fr.render.height <= f.fg_max.height && f.fg_inverted == fr.depth_inverted;
     if (fits) return true;
+    const WatchdogLongOp long_op;
     disable_fg(f);              // the swapchain stays: it must stop generating with the context before it goes
     destroy_fg_context(f);
     ffxCreateBackendVKDesc be = {};

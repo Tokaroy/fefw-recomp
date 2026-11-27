@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "nxrt/config.h"
+#include "nxrt/diag.h"
 #include "nxrt/frame_limiter.h"
 #include "nxrt/gauge.h"
 #include "nxrt/gfx.h"
@@ -347,6 +348,7 @@ void set_mode(State& s, bool on) {
     o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     o.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
     o.onErrorCallback = &on_api_error;
+    const WatchdogLongOp long_op(on && !s.on);
     const sl::Result r = s.f.fg_set(sl::ViewportHandle(0u), o);
     if (r != sl::Result::eOk) {
         NXLOG_E(kTag, "slDLSSGSetOptions failed (%d): frame generation off", static_cast<int>(r));

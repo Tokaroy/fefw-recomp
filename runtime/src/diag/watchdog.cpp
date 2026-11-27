@@ -39,6 +39,7 @@ using Clock = std::chrono::steady_clock;
 
 std::atomic<uint64_t> g_frames{0};
 std::atomic<uint64_t> g_progress{0};   // heartbeats that are not frames (diag_progress)
+std::atomic<int> g_long_ops{0};        // active synchronous long operations (WatchdogLongOp)
 std::atomic<uint32_t> g_fires{0};
 std::atomic<bool> g_running{false};
 
@@ -369,8 +370,9 @@ void run_loop(Control* c) {
         }
         const double idle_s = std::chrono::duration<double>(now - last_change).count();
         // Before the first frame the start-up itself (the RomFS scan, the code mods' edits, the first shader and texture loads) can take
-        // longer than the threshold without anything being stuck. Until the first tick the longer start-up threshold applies.
-        const double limit = frames == 0 ? c->boot_threshold_s : c->threshold_s;
+        // longer than the threshold without anything being stuck. The same extended threshold applies during synchronous first-run driver/SDK
+        // compilation (WatchdogLongOp, e.g. FSR 3 / DLSS / XeSS pipeline or PTX JIT).
+        const double limit = (frames == 0 || g_long_ops.load(std::memory_order_relaxed) > 0) ? c->boot_threshold_s : c->threshold_s;
         if (!fired && idle_s >= limit) {
             fired = true;
             std::string header;
@@ -442,6 +444,11 @@ std::atomic<void (*)()> g_frame_listener{nullptr};
 }
 void diag_set_frame_listener(void (*fn)()) { g_frame_listener.store(fn); }
 void diag_progress() { g_progress.fetch_add(1, std::memory_order_relaxed); }
+void diag_long_op_begin() { g_long_ops.fetch_add(1, std::memory_order_relaxed); }
+void diag_long_op_end() {
+    g_long_ops.fetch_sub(1, std::memory_order_relaxed);
+    diag_progress();
+}
 void diag_frame_tick_nolisten() { g_frames.fetch_add(1, std::memory_order_relaxed); }
 void diag_frame_tick() {
     g_frames.fetch_add(1, std::memory_order_relaxed);
