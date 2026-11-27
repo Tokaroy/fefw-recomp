@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Tests of analyze_reports.py on made-up reports: python3 tools/analyze_reports_test.py"""
+"""Tests of analyze_reports.py (and what it reads from fetch_reports.py) on made-up reports:
 
+python3 tools/analyze_reports_test.py
+"""
+
+import argparse
 import contextlib
 import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import analyze_reports as a
+import fetch_reports as f
 
 
 def summary(end: float, fps: float, low: float = 50.0) -> str:
@@ -47,6 +53,40 @@ class FpsTest(unittest.TestCase):
 
     def test_no_clock_line_no_judgement(self):
         self.assertEqual(a.fps_windows(summary(120.0, 60.0)), [])
+
+
+class ExcerptTest(unittest.TestCase):
+    def test_exception_report_keeps_its_host_stack(self):
+        report = "\n".join(
+            ["HOST EXCEPTION 0xC0000005 at host address 0x1 on thread main (tid 1)", *["  memory"] * 40,
+             "guest registers:", "  x0 0", "guest frame chain (x29): lr=0x1", "host call stack (innermost first):",
+             *[f"  fefw_rt.dll+0x{i:x}" for i in range(32)], "guest call stack (innermost first): f_1", "threads:",
+             "  main tid=1", "last files opened (oldest first):"])
+        kept = a.crash_excerpt(report)
+        self.assertEqual(sum("fefw_rt.dll+0x" in x for x in kept), 32)
+        self.assertEqual(sum(x == "  memory" for x in kept), 29)   # 30 header lines with the title
+        self.assertEqual(kept[-1], "guest call stack (innermost first): f_1")
+        self.assertNotIn("  x0 0", kept)
+
+    def test_thread_report_keeps_the_first_stacks(self):
+        threads = [x for name in "abc" for x in (f"thread {name}", f"  #0 {name}.dll+0x1")]
+        kept = a.crash_excerpt("\n".join(["FREEZE: no frame tick", *threads]))
+        self.assertEqual(kept, ["FREEZE: no frame tick", *threads[:4]])
+
+
+class SyncTest(unittest.TestCase):
+    def test_a_damaged_upload_date_is_repaired(self):
+        row = {"id": "aaaa", "created_at": "2026-11-26T00:00:00Z"}
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "aaaa"
+            dest.mkdir()
+            (dest / "report.json").write_text("{}", encoding="utf-8")
+            (dest / "server.json").write_text('{"id": "aa', encoding="utf-8")
+            args = argparse.Namespace(out=tmp, offset=0, limit=None)
+            with mock.patch.object(f, "_list_page", return_value=[row]), contextlib.redirect_stdout(io.StringIO()):
+                f._sync("unused", "unused", args)
+            self.assertEqual(json.loads((dest / "server.json").read_text(encoding="utf-8")), row)
+            self.assertEqual(sorted(p.name for p in dest.iterdir()), ["report.json", "server.json"])
 
 
 class ReportTest(unittest.TestCase):

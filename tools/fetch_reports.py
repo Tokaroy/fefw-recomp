@@ -185,6 +185,13 @@ def _decompress_zstd(data: bytes, max_bytes: int = MAX_EXPANDED_BYTES) -> bytes:
     raise RuntimeError("install python 'zstandard' or the 'zstd' CLI to decompress reports")
 
 
+def _write_whole(path: Path, data: bytes) -> None:
+    """Write a file so that an interruption or a full disk never leaves a partial one under its name."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
 def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
     bundle = json.loads(_decompress_zstd(raw_zst).decode("utf-8", errors="replace"))
     if not isinstance(bundle, dict):
@@ -200,9 +207,7 @@ def _save_bundle(report_id: str, raw_zst: bytes, out_dir: Path) -> Path:
             if safe and isinstance(text, str) and text:
                 (dest / safe).write_text(text, encoding="utf-8")
     # sync treats report.json as "already downloaded", so it appears last and all at once.
-    tmp = dest / "report.json.tmp"
-    tmp.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
-    tmp.replace(dest / "report.json")
+    _write_whole(dest / "report.json", json.dumps(bundle, indent=2).encode("utf-8"))
     return dest
 
 
@@ -275,8 +280,11 @@ def _sync(base: str, token: str, args: argparse.Namespace) -> None:
                     if downloaded % 50 == 0:
                         print(f"downloaded {downloaded} so far...", file=sys.stderr)
                 # The index row has the upload time, which the report itself lacks (analyze_reports.py --since).
-                if not (dest / "server.json").is_file():
-                    (dest / "server.json").write_text(json.dumps(r, indent=2), encoding="utf-8")
+                meta = dest / "server.json"
+                row = json.dumps(r, indent=2).encode("utf-8")
+                # compared by content, so a damaged copy is replaced
+                if not meta.is_file() or meta.read_bytes() != row:
+                    _write_whole(meta, row)
             except Exception as e:
                 failed += 1
                 print(f"warning: skipping report {rid}: {e}", file=sys.stderr)

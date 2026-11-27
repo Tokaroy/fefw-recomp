@@ -346,22 +346,34 @@ def cmd_search(reports: list[Report], args: argparse.Namespace) -> None:
         print(f"\n... {len(matched) - args.limit} more reports (--limit)")
 
 
-def crash_excerpt(text: str, header: int = 30, threads: int = 2, frames: int = 30) -> list[str]:
-    """The top of a crash or freeze report and the stacks of its first threads (the one that failed comes first)."""
+def crash_excerpt(text: str, header: int = 30, threads: int = 2, frames: int = 32) -> list[str]:
+    """The top of a crash or freeze report and the stacks that matter.
+
+    An exception report has one "host call stack" section after the registers; device lost, freeze and fatal reports have
+    "thread" blocks, the one that failed first.
+    """
     out: list[str] = []
-    seen = in_thread = 0
+    section = "header"
+    kept = seen = 0
     for line in text.splitlines():
         if line.startswith("thread "):
             seen += 1
             if seen > threads:
                 break
-            in_thread = 0
+            section, kept = "thread", 0
             out.append(line)
-        elif seen == 0:
-            if len(out) < header:
-                out.append(line)
-        elif in_thread < frames:
-            in_thread += 1
+        elif line.startswith("host call stack"):
+            section, kept = "host", 0
+            out.append(line)
+        elif line.startswith("guest call stack"):
+            section = "skip"
+            out.append(line)
+        elif line.startswith("guest registers"):
+            section = "skip"
+        elif section == "host" and not line.startswith(" "):
+            section = "skip"
+        elif section != "skip" and kept < (header if section == "header" else frames):
+            kept += 1
             out.append(line)
     return out
 
