@@ -218,14 +218,17 @@ bool retired_retry(uint64_t addr, ULONG_PTR kind) {
     return kind == 0 && (p == PAGE_READONLY || p == PAGE_EXECUTE_READ);
 }
 
-// A final rejection must not sample a replacement arm halfway through its
-// protection change (its generation is published before releasing this lock).
+// A final rejection must not sample a replacement arm or an ImportFreeze halfway through its
+// protection change (transitions hold g_transitions exclusive; ImportFreeze sets g_frz before
+// acquiring it and clears g_frz after releasing it).
+bool heap_write_landed_late(uint64_t addr);
 int final_retry(uint64_t addr, ULONG_PTR kind, uint64_t generation) {
     AcquireSRWLockShared(&g_transitions);
-    const bool accessible = retired_retry(addr, kind);
+    const bool frozen = kind == 1 && freeze_overlaps(addr, addr + 1);
+    const bool accessible = !frozen && (retired_retry(addr, kind) || (kind == 1 && heap_write_landed_late(addr)));
     const bool changed = g_generation.load(std::memory_order_seq_cst) != generation;
     ReleaseSRWLockShared(&g_transitions);
-    return accessible ? 1 : changed ? -1 : 0;
+    return frozen ? 2 : accessible ? 1 : changed ? -1 : 0;
 }
 
 // A write fault on a heap page that is read-write by the time this handler looks, with no region claiming it: the page was read-only
@@ -501,15 +504,19 @@ retry:
     }
     if (!ours) {
         const int decision = final_retry(addr, kind, generation);
+        if (decision == 2) {   // an ImportFreeze started after the initial check above: wait for it and retry the write
+            g_busy.fetch_sub(1, std::memory_order_seq_cst);
+            for (int i = 0; freeze_overlaps(addr, addr + 1); ++i) {
+                if (i < 64) YieldProcessor();
+                else Sleep(i < 1000 ? 0 : 1);
+            }
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
         ours = decision == 1;
         if (decision == -1) {
             g_busy.fetch_sub(1, std::memory_order_seq_cst);
             goto retry; // a replacement region may now own the protection
         }
-    }
-    if (!ours && heap_write_landed_late(addr)) {   // an import freeze ended between the fault and freeze_overlaps: run the write again
-        g_busy.fetch_sub(1, std::memory_order_seq_cst);
-        return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (!ours) {   // a write fault in a tracked region that no region claims: what each one holds for the page (the crash report follows)
         const DWORD pr = page_protect(addr);
