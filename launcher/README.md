@@ -11,6 +11,11 @@ own setup steps on your PC (see docs/BUILDING.md), writes `fefw.ini` in a run fo
 - The icon is drawn by `icon/make_icon.py` (no outside artwork); `npx tauri icon icon/icon.png -o src-tauri/icons` makes the sizes.
   `icon/make_steam_art.py` draws the Steam library art from it into `src-tauri/steam-art/`, which **Add to Steam** puts beside the
   shortcut, leaving any picture the account already has for it.
+- README screenshots: `npm run screenshots` (once first: `npx playwright install chromium`) runs the frontend in headless
+  Chromium with `screenshots/mock.js` in place of the Rust side, and writes `docs/screenshots/`. The shots are listed in
+  `screenshots/capture.mjs`. A command a shot calls that has no reply in `mock.js` fails the run. The window frame is drawn by
+  the script and the pictures use bundled fonts, so they differ a little from the window on Windows. `.github/workflows/screenshots.yml` retakes them when the frontend changes
+  on master, and opens a pull request.
 
 On a Linux handheld without the Decky plugin (a session with Steam's Game Mode in `/usr/share/wayland-sessions`, or Decky Loader
 installed), the release package's **Play** page offers it: a link to the latest release's installer (`installer/`), until the plugin
