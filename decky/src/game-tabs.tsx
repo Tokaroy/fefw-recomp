@@ -17,9 +17,12 @@ import { groupedSettings } from "./settings";
 import type { SleepStatus } from "./sleep";
 import {
   applySetting,
+  busyText,
   cancelJob,
   chooseInstallFolder,
   clock,
+  jobStepTitle,
+  needsRebuild,
   NOT_ASKED,
   requestPluginUpdate,
   retainPolling,
@@ -32,6 +35,23 @@ import {
   type State,
 } from "./store";
 
+// Shared setting-pick helper (used by both the QAM panel and SettingsTab) so upscaler download consent stays in one place.
+export function pickSettingChoice(state: State, setting: string, choice: string, needs: string | null) {
+  if (needs) {
+    // nothing of a vendor's is downloaded before the player has seen whose it is and on what terms, and accepted
+    showModal(
+      <ConfirmModal
+        strTitle="Download the files?"
+        strDescription={state.settings?.consent[needs]}
+        strOKButtonText="I accept the licence, download"
+        onOK={() => void startDownload(needs, setting, choice)}
+      />,
+    );
+    return;
+  }
+  void applySetting(setting, choice);
+}
+
 // Ref-counted so switching between Setup / Settings / About keeps `overflow-x: clip` active across tab mounts
 // and only restores the original inline style when leaving the game page completely.
 const clippedTargets = new WeakMap<HTMLElement, { count: number; prev: string }>();
@@ -39,17 +59,17 @@ const clippedTargets = new WeakMap<HTMLElement, { count: number; prev: string }>
 // Steam's game-page scroll container has `overflow-x: hidden; overflow-y: scroll`, while its direct child holds a
 // blurred hero `<canvas>` wider than the viewport (`scrollWidth > clientWidth`). Chromium's focus `scrollIntoView`
 // can therefore still shift `scrollLeft > 0` when focusing a right-aligned button after switching tabs.
-// Clipping horizontal overflow on the scroller's direct child makes `scrollWidth === clientWidth` so `scrollLeft`
-// stays 0 without fighting Steam's scroll animations.
+// Clipping horizontal overflow on the game-page scroller's direct child makes `scrollWidth === clientWidth` so
+// `scrollLeft` stays 0. We stop at the first `overflow-y: scroll` ancestor (the game page's own scroller) so outer
+// Steam containers are never restyled.
 function clipHorizontalOverflow(el: HTMLElement | null): () => void {
   const view = el?.ownerDocument?.defaultView;
   if (!el || !view) return () => {};
-  const retained: HTMLElement[] = [];
   let child: HTMLElement | null = el;
   let parent: HTMLElement | null = el.parentElement;
   while (parent) {
     const cs = view.getComputedStyle(parent);
-    if (cs.overflowY === "scroll" || cs.overflowY === "auto") {
+    if (cs.overflowY === "scroll") {
       const target = child;
       const entry = clippedTargets.get(target);
       if (entry) {
@@ -59,28 +79,26 @@ function clipHorizontalOverflow(el: HTMLElement | null): () => void {
         target.style.overflowX = "clip";
       }
       if (parent.scrollLeft !== 0) parent.scrollLeft = 0;
-      retained.push(target);
+      return () => {
+        const cur = clippedTargets.get(target);
+        if (!cur) return;
+        cur.count -= 1;
+        if (cur.count <= 0) {
+          target.style.overflowX = cur.prev;
+          clippedTargets.delete(target);
+        }
+      };
     }
     child = parent;
     parent = parent.parentElement;
   }
-  return () => {
-    for (const target of retained) {
-      const entry = clippedTargets.get(target);
-      if (!entry) continue;
-      entry.count -= 1;
-      if (entry.count <= 0) {
-        target.style.overflowX = entry.prev;
-        clippedTargets.delete(target);
-      }
-    }
-  };
+  return () => {};
 }
 
 function TabContainer({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => retainPolling(false), []);
+  useEffect(() => retainPolling("page"), []);
   useEffect(() => clipHorizontalOverflow(ref.current), []);
 
   return (
@@ -95,12 +113,11 @@ function TabContainer({ children }: { children: ReactNode }) {
 function JobProgress({ state, sleep }: { state: State; sleep: () => SleepStatus }) {
   const job = state.job;
   if (!job) return null;
-  const title = job.step === "update" ? "Updating" : job.step === "download" ? "Downloading" : "Building the game";
-  const pct = job.fraction !== null ? Math.round(job.fraction * 100) : null;
+  const pct = job.fraction !== null ? Math.max(0, Math.min(100, Math.round(job.fraction * 100))) : null;
 
   return (
     <DialogControlsSection>
-      <DialogControlsSectionHeader>{title}</DialogControlsSectionHeader>
+      <DialogControlsSectionHeader>{jobStepTitle(job.step)}</DialogControlsSectionHeader>
       <Field
         label={job.cancelling ? "Cancelling" : job.message}
         description={`Time elapsed: ${clock(job.elapsed)}${job.step === "rebuild" ? " · Some steps take several minutes without moving." : ""}`}
@@ -122,10 +139,7 @@ function JobProgress({ state, sleep }: { state: State; sleep: () => SleepStatus 
         onChange={(on: boolean) => void toggleKeepAwake(on)}
         bottomSeparator="standard"
       />
-      <Field
-        label="Do not start the game until this has finished"
-        bottomSeparator="none"
-      >
+      <Field label="Do not start the game until this has finished" bottomSeparator="none">
         <DialogButton onClick={() => void cancelJob()} disabled={job.cancelling}>
           Cancel
         </DialogButton>
@@ -148,15 +162,19 @@ export function SetupTab({ sleep }: { sleep: () => SleepStatus }) {
   }
 
   const { status, update, job, result, error, plugin_update: plugin } = state;
-  const busy = status?.busy === "game" ? "Close the game first." : status?.busy === "job" ? "The launcher is already working on this install." : null;
-  const needsRebuild = !!(status && !status.problem && (status.rebuild === true || !status.setup_complete));
+  const busy = busyText(status);
+  const rebuildNeeded = needsRebuild(status);
   const statusSummary = status?.problem
     ? `${status.problem} Open the launcher in Desktop Mode.`
-    : needsRebuild
+    : rebuildNeeded
       ? `The game needs building${status?.rebuild_reason && status.rebuild ? `: ${status.rebuild_reason}` : "."}`
       : status?.setup_complete
         ? "Ready to play."
-        : "Choose the game's folder to check setup status.";
+        : !state.install_dir
+          ? "Choose the game's folder to check setup status."
+          : error && !checking
+            ? "Could not read setup status."
+            : "Checking setup status…";
 
   return (
     <TabContainer>
@@ -166,7 +184,7 @@ export function SetupTab({ sleep }: { sleep: () => SleepStatus }) {
         <DialogControlsSection>
           <DialogControlsSectionHeader>Setup</DialogControlsSectionHeader>
           <Field label="Status" description={statusSummary} bottomSeparator="standard">
-            {needsRebuild && (
+            {rebuildNeeded && (
               <DialogButton onClick={() => void startJob("rebuild")} disabled={!!busy || checking}>
                 Build the game
               </DialogButton>
@@ -235,21 +253,13 @@ export function SettingsTab({ sleep }: { sleep: () => SleepStatus }) {
   const { status, job, error } = state;
   const groups = state.settings ? groupedSettings(state.settings) : [];
 
-  const pick = (setting: string, choice: string, needs: string | null) => {
-    if (needs) {
-      // nothing of a vendor's is downloaded before the player has seen whose it is and on what terms, and accepted
-      showModal(
-        <ConfirmModal
-          strTitle="Download the files?"
-          strDescription={state.settings?.consent[needs]}
-          strOKButtonText="I accept the licence, download"
-          onOK={() => void startDownload(needs, setting, choice)}
-        />,
-      );
-      return;
-    }
-    void applySetting(setting, choice);
-  };
+  const unavailableDescription = !state.install_dir
+    ? "Choose the game's folder in Setup first."
+    : checking
+      ? "Loading settings…"
+      : error && !status
+        ? "Could not load settings."
+        : "Run Setup first so fefw.ini exists, or update the launcher to a release that supports --settings.";
 
   return (
     <TabContainer>
@@ -280,7 +290,7 @@ export function SettingsTab({ sleep }: { sleep: () => SleepStatus }) {
                     const chosen = setting.options.find((o) => o.choice === option.data);
                     // picking the one in force again still offers its files when they are missing
                     if (chosen && (chosen.choice !== setting.current || chosen.download)) {
-                      pick(setting.id, chosen.choice, chosen.download);
+                      pickSettingChoice(state, setting.id, chosen.choice, chosen.download);
                     }
                   }}
                 />
@@ -295,12 +305,8 @@ export function SettingsTab({ sleep }: { sleep: () => SleepStatus }) {
         <DialogControlsSection>
           <DialogControlsSectionHeader>Settings</DialogControlsSectionHeader>
           <Field
-            label="Settings unavailable"
-            description={
-              state.install_dir
-                ? "Run Setup first so fefw.ini exists, or update the launcher to a release that supports --settings."
-                : "Choose the game's folder in Setup first."
-            }
+            label={checking ? "Loading settings" : "Settings unavailable"}
+            description={unavailableDescription}
             bottomSeparator="none"
           />
         </DialogControlsSection>
@@ -323,7 +329,7 @@ export function AboutTab({ sleep }: { sleep: () => SleepStatus }) {
   }
 
   const { status, update, job, result, error, plugin_update: plugin } = state;
-  const busy = status?.busy === "game" ? "Close the game first." : status?.busy === "job" ? "The launcher is already working on this install." : null;
+  const busy = busyText(status);
 
   return (
     <TabContainer>
@@ -341,7 +347,7 @@ export function AboutTab({ sleep }: { sleep: () => SleepStatus }) {
               description={update.latest?.notes ? update.latest.notes.slice(0, 320) : "A newer release is available."}
               bottomSeparator="standard"
             >
-              <DialogButton onClick={() => void startJob("update")} disabled={!!busy || checking}>
+              <DialogButton onClick={() => void startJob("update")} disabled={!!busy || !!job || checking}>
                 {`Update to ${update.latest?.version ?? ""}`}
               </DialogButton>
             </Field>
@@ -351,14 +357,14 @@ export function AboutTab({ sleep }: { sleep: () => SleepStatus }) {
               description={update ? "You have the latest version." : "Check GitHub for a newer release."}
               bottomSeparator="standard"
             >
-              <DialogButton onClick={() => void runCheck()} disabled={checking || !state.install_dir}>
+              <DialogButton onClick={() => void runCheck()} disabled={checking || !!job || !state.install_dir}>
                 {checking ? "Checking..." : "Check for updates"}
               </DialogButton>
             </Field>
           )}
           {update?.newer && (
             <Field label="Refresh" bottomSeparator="standard">
-              <DialogButton onClick={() => void runCheck()} disabled={checking || !state.install_dir}>
+              <DialogButton onClick={() => void runCheck()} disabled={checking || !!job || !state.install_dir}>
                 {checking ? "Checking..." : "Check for updates"}
               </DialogButton>
             </Field>

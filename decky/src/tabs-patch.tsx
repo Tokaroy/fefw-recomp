@@ -8,7 +8,7 @@
 //
 // Under the tabs component, the component holding `fnOnCancelFromTabHeader` builds the tab list and renders the tab strip
 // (`tabs: [{ id, title, content }]`); for the fefw-recomp shortcut, `tabs` is replaced with Setup, Settings, and About.
-import { createReactTreePatcher, findInReactTree } from "@decky/ui";
+import { ConfirmModal, createReactTreePatcher, findInReactTree, showModal } from "@decky/ui";
 import { cloneElement, useContext, type ComponentType, type Context, type ReactElement, type ReactNode } from "react";
 import { FaHammer, FaTimes } from "react-icons/fa";
 import { AboutTab, SettingsTab, SetupTab } from "./game-tabs";
@@ -18,6 +18,7 @@ import {
   cancelJob,
   getPlayButtonState,
   hasUpdateAvailable,
+  setTabsPatchActive,
   startJob,
   useHasUpdateAvailable,
   useIsFefwShortcut,
@@ -70,10 +71,14 @@ function findTabsContext(): Context<TabsComponent> | null {
     let req: WebpackRequire | undefined;
     chunks.push([[Symbol("fefw-recomp")], {}, (r: WebpackRequire) => (req = r)]);
     for (const id of Object.keys(req?.m ?? {})) {
-      const src = `${req?.m?.[id]}`;
-      if (!src.includes("createContext(") || !src.includes("concise") || !src.includes("setSections")) continue;
-      const found = Object.values(req?.(id) ?? {}).find(isTabsContext);
-      if (found) return (tabsContext = found);
+      try {
+        const src = `${req?.m?.[id]}`;
+        if (!src.includes("createContext(") || !src.includes("concise") || !src.includes("setSections")) continue;
+        const found = Object.values(req?.(id) ?? {}).find(isTabsContext);
+        if (found) return (tabsContext = found);
+      } catch {
+        // Ignore a candidate module that throws or has uninitialized circular exports.
+      }
     }
   } catch (err) {
     warnOnce("Searching for the game page tabs context failed; game-page tabs disabled.", err);
@@ -108,6 +113,7 @@ function createTabsPatcher(sleep: () => SleepStatus) {
         if (next.activeTab !== undefined && "activeTab" in strip.props) {
           strip.props.activeTab = next.activeTab;
         }
+        setTabsPatchActive(true);
       } catch (err) {
         warnOnce("Failed to patch the game page tabs:", err);
       }
@@ -201,10 +207,22 @@ function FefwPlayButton({ orig }: { orig: ReactElement<Record<string, unknown>> 
 
   const pct = playState.fraction !== null ? Math.max(0, Math.min(100, Math.round(playState.fraction * 100))) : null;
 
+  const confirmCancel = () => {
+    showModal(
+      <ConfirmModal
+        strTitle={`Cancel ${playState.statusTitle.toLowerCase()}?`}
+        strDescription="The current job will stop. You can start it again from Setup."
+        strOKButtonText="Cancel job"
+        strCancelButtonText="Keep running"
+        onOK={() => void cancelJob()}
+      />,
+    );
+  };
+
   return cloneElement(orig, {
     onMouseUp: undefined,
     onActivate: undefined,
-    onClick: playState.cancelling ? undefined : () => void cancelJob(),
+    onClick: playState.cancelling ? undefined : confirmCancel,
     style: {
       ...baseStyle,
       position: "relative",
@@ -269,11 +287,13 @@ function createPlayButtonPatcher() {
         }
         const c = parent.props.children;
         if (Array.isArray(c)) {
-          parent.props.children = c.map((child: unknown) =>
-            isPlayFocusable(child as { props?: Record<string, unknown> })
-              ? <FefwPlayButton key="fefw-play" orig={child as ReactElement<Record<string, unknown>>} />
-              : child,
-          );
+          // Replace only the first clickable child (the Play button itself), leaving sibling controls like streaming arrows intact.
+          const idx = c.findIndex((child: unknown) => isPlayFocusable(child as { props?: Record<string, unknown> }));
+          if (idx >= 0) {
+            parent.props.children = c.map((child: unknown, i: number) =>
+              i === idx ? <FefwPlayButton key="fefw-play" orig={child as ReactElement<Record<string, unknown>>} /> : child,
+            );
+          }
         } else {
           parent.props.children = <FefwPlayButton orig={c as ReactElement<Record<string, unknown>>} />;
         }

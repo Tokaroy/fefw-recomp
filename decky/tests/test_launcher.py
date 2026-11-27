@@ -506,6 +506,31 @@ class Watching(Case):
         self.assertEqual((self.controller.status["busy"], self.controller.update["newer"]), (None, True))
 
 
+class Reread(Case):
+    def arguments(self):
+        return [r["argument"] for r in self.runs()]
+
+    async def test_status_and_settings_are_read_again_without_the_network(self):
+        self.write_plan()
+        self.controller.set_install(str(self.install))
+        await self.controller.reread()
+        self.assertEqual(self.arguments(), ["--status", "--settings"])
+        self.assertIsNotNone(self.controller.status)
+        self.assertIsNotNone(self.controller.settings)
+        self.assertIsNone(self.controller.update)
+
+    async def test_a_failed_read_keeps_what_was_read_and_shows_no_error(self):
+        await self.ready()
+        before = self.controller.status
+        self.write_plan(status=[["die", "unmounted"]])
+        await self.controller.reread()
+        self.assertEqual((self.controller.status, self.controller.error), (before, None))
+
+    async def test_nothing_is_read_without_a_folder(self):
+        await self.controller.reread()
+        self.assertFalse((self.install / "runs.jsonl").exists())
+
+
 class Settings(Case):
     def sent(self, argument):
         return [r["extra"] for r in self.runs() if r["argument"] == argument]

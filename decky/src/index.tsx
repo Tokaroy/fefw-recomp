@@ -4,7 +4,6 @@
 import {
   afterPatch,
   ButtonItem,
-  ConfirmModal,
   createReactTreePatcher,
   DropdownItem,
   Field,
@@ -12,35 +11,38 @@ import {
   Navigation,
   PanelSection,
   PanelSectionRow,
-  showModal,
   staticClasses,
   ToggleField,
 } from "@decky/ui";
 import { addEventListener, definePlugin, removeEventListener, routerHook, toaster } from "@decky/api";
 import { useEffect, useState, type ReactElement } from "react";
 import { FaDownload } from "react-icons/fa";
+import { pickSettingChoice } from "./game-tabs";
 import { AppStore, SteamApps, startGame } from "./play";
 import { askToUpdate } from "./self_update";
 import { shownSettings } from "./settings";
 import { SleepKeeper, SleepStatus, SteamSettings } from "./sleep";
 import {
-  applySetting,
   bootstrapStore,
+  busyText,
   cancelJob,
   chooseInstallFolder,
   clock,
   decky,
   getState,
   holdSleep,
+  jobStepTitle,
+  needsRebuild,
   NOT_ASKED,
   note,
   releaseSleep,
+  isGameRunning,
+  rereadState,
   requestPluginUpdate,
   retainPolling,
   runCheck,
   setStateSnapshot,
   SLEEP_TEXT,
-  startDownload,
   startJob,
   stopStore,
   toggleKeepAwake,
@@ -49,7 +51,11 @@ import {
 } from "./store";
 import { createGamePageTabsWrapper } from "./tabs-patch";
 
-declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps } | undefined;
+interface GameSessions {
+  RegisterForAppLifetimeNotifications?(cb: (n: { unAppID: number; bRunning: boolean }) => void): { unregister(): void };
+}
+
+declare const SteamClient: { Settings?: SteamSettings; Apps?: SteamApps; GameSessions?: GameSessions } | undefined;
 declare const appStore: AppStore | undefined;
 
 const Note = ({ text }: { text: string }) => (
@@ -85,19 +91,19 @@ const Button = (props: { label: string; onClick: () => void; disabled?: boolean 
 );
 
 function Content({ sleep }: { sleep: () => SleepStatus }) {
-  const { state, checking, saving, pluginFailed } = useStore();
+  const { state, checking, saving, pluginFailed, tabsPatchActive } = useStore();
   const [playFailed, setPlayFailed] = useState(false);
 
-  useEffect(() => retainPolling(true), []);
+  useEffect(() => retainPolling("qam"), []);
 
   if (!state) return <PanelSection><Note text="Loading" /></PanelSection>;
   const { status, update, job, result, error, plugin_update: plugin } = state;
 
-  const busy = status?.busy === "game" ? "Close the game first." : status?.busy === "job" ? "The launcher is already working on this install." : null;
-  const needsRebuild = status && !status.problem && (status.rebuild === true || !status.setup_complete);
+  const busy = busyText(status);
+  const rebuildNeeded = needsRebuild(status);
 
   // only a game that is built for the installed release, with nothing at work on it
-  const playable = status && status.setup_complete && !needsRebuild && !job && !status.busy;
+  const playable = status && status.setup_complete && !rebuildNeeded && !job && !status.busy;
   const play = () => {
     const started = startGame(
       typeof SteamClient === "undefined" ? undefined : SteamClient.Apps,
@@ -108,24 +114,8 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
     if (started) Navigation.CloseSideMenus();
   };
 
-  const pick = (setting: string, choice: string, needs: string | null) => {
-    if (needs) {
-      // nothing of a vendor's is downloaded before the player has seen whose it is and on what terms, and accepted
-      showModal(
-        <ConfirmModal
-          strTitle="Download the files?"
-          strDescription={state.settings?.consent[needs]}
-          strOKButtonText="I accept the licence, download"
-          onOK={() => void startDownload(needs, setting, choice)}
-        />,
-      );
-      return;
-    }
-    void applySetting(setting, choice);
-  };
-
   // what the panel was most likely opened for goes first: a job and how it ended, an update, or what stands in the way
-  const attention = !!(job || result || error || busy || status?.problem || plugin || pluginFailed || update?.newer || needsRebuild);
+  const attention = !!(job || result || error || busy || status?.problem || plugin || pluginFailed || update?.newer || rebuildNeeded);
 
   return (
     <>
@@ -134,7 +124,7 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
           {job ? (
             <>
               <Progress
-                title={job.step === "update" ? "Updating" : job.step === "download" ? "Downloading" : "Building the game"}
+                title={jobStepTitle(job.step)}
                 message={job.cancelling ? "Cancelling" : job.message}
                 fraction={job.fraction}
               />
@@ -168,9 +158,9 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
               {update?.newer && (
                 <Button label={`Update to ${update.latest?.version}`} onClick={() => void startJob("update")} disabled={!!busy || checking} />
               )}
-              {needsRebuild && (
+              {rebuildNeeded && (
                 <>
-                  <Note text={`The game needs building${status.rebuild_reason && status.rebuild ? `: ${status.rebuild_reason}` : "."}`} />
+                  <Note text={`The game needs building${status?.rebuild_reason && status.rebuild ? `: ${status.rebuild_reason}` : "."}`} />
                   <Button label="Build the game" onClick={() => void startJob("rebuild")} disabled={!!busy || checking} />
                 </>
               )}
@@ -205,7 +195,9 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
                 onChange={(option) => {
                   const chosen = setting.options.find((o) => o.choice === option.data);
                   // picking the one in force again still offers its files when they are missing
-                  if (chosen && (chosen.choice !== setting.current || chosen.download)) pick(setting.id, chosen.choice, chosen.download);
+                  if (chosen && (chosen.choice !== setting.current || chosen.download)) {
+                    pickSettingChoice(state, setting.id, chosen.choice, chosen.download);
+                  }
                 }}
               />
             </PanelSectionRow>
@@ -214,9 +206,9 @@ function Content({ sleep }: { sleep: () => SleepStatus }) {
         </PanelSection>
       )}
       <PanelSection>
-        {!job && update && !update.newer && !needsRebuild && <Note text="You have the latest version." />}
+        {!job && update && !update.newer && !rebuildNeeded && <Note text="You have the latest version." />}
         {!job && <Button label={checking ? "Checking" : "Check for updates"} onClick={() => void runCheck()} disabled={checking || !state.install_dir} />}
-        {!!status?.steam_shortcuts?.length && (
+        {tabsPatchActive && !!status?.steam_shortcuts?.length && (
           <Note text="All settings and updates are also on the game's Steam page under Setup, Settings, and About." />
         )}
       </PanelSection>
@@ -250,6 +242,15 @@ export default definePlugin(() => {
   const timer = setInterval(() => void follow(), 2000);
   void bootstrapStore();
 
+  // Refresh status once when a game exits so the game page updates without polling during gameplay.
+  const lifetimeSub =
+    typeof SteamClient !== "undefined"
+      ? SteamClient.GameSessions?.RegisterForAppLifetimeNotifications?.((n) => {
+          // only this game's end matters, and the status saw it running; polling is held back while it runs
+          if (!n.bRunning && isGameRunning()) void rereadState();
+        })
+      : undefined;
+
   // Patch the Steam game-detail page to replace the default tabs with Setup, Settings, and About on the fefw-recomp shortcut.
   const wrapGamePageTabs = createGamePageTabsWrapper(() => keeper.status);
   const patchHandler = createReactTreePatcher(
@@ -280,6 +281,7 @@ export default definePlugin(() => {
     onDismount() {
       removeEventListener("fefw_job_done", done);
       clearInterval(timer);
+      lifetimeSub?.unregister();
       stopStore();
       renderPatch?.unpatch();
       routerHook.removePatch("/library/app/:appid", appPagePatch);

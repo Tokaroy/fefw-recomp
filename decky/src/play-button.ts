@@ -30,11 +30,15 @@ export type PlayButtonState =
       fraction: number | null;
     };
 
+// The game has to be built first: not set up yet, or built for another release. An install the launcher cannot read is not.
+export const needsRebuild = (s: PlayButtonInput["status"] | undefined): boolean =>
+  !!(s && !s.problem && (s.rebuild === true || !s.setup_complete));
+
 export function resolvePlayButton(input: PlayButtonInput | null): PlayButtonState {
   if (!input) return { kind: "play" };
   if (input.job) {
     const { step, fraction, cancelling, message } = input.job;
-    const pct = fraction !== null ? Math.round(fraction * 100) : null;
+    const pct = fraction !== null ? Math.max(0, Math.min(100, Math.round(fraction * 100))) : null;
     const statusTitle = cancelling
       ? "Cancelling"
       : step === "update"
@@ -53,7 +57,7 @@ export function resolvePlayButton(input: PlayButtonInput | null): PlayButtonStat
     };
   }
   const s = input.status;
-  if (s && !s.problem && (s.rebuild === true || !s.setup_complete)) {
+  if (s && needsRebuild(s)) {
     return { kind: "setup", label: "Set up", disabled: !!s.busy || input.checking };
   }
   return { kind: "play" };

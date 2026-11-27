@@ -12,6 +12,7 @@ export interface SettingItem {
   id: string;
   label: string;
   help?: string;
+  group?: string; // the launcher's Settings heading; not told by a launcher from before it
   current: string | null;
   choices: Choice[];
 }
@@ -42,20 +43,6 @@ export interface SettingGroup {
 
 export const SHOWN = ["preset", "fps_target", "output", "upscaler"];
 
-// Matches the launcher's Settings page section headings (launcher/src/pages/settings.js & locales/en.js).
-// Any setting returned by a newer launcher that isn't listed here is appended under "Other".
-export const GROUPS: ReadonlyArray<{ title: string; ids: readonly string[] }> = [
-  { title: "Preset", ids: ["preset"] },
-  { title: "Resolution", ids: ["output", "ultrawide"] },
-  { title: "Frame rate", ids: ["fps_target", "smooth_step"] },
-  { title: "Upscaling and frame generation", ids: ["upscaler", "render_ratio", "frame_gen"] },
-  {
-    title: "Detail",
-    ids: ["quality", "shadow_size", "reflections", "ambient_occlusion", "crowd_detail", "scenery_detail", "texture_detail", "astc_bc"],
-  },
-  { title: "Mouse", ids: ["jc2_mouse"] },
-];
-
 // The manifest says what an upscaler needs ("(needs AMD's files)"); here the choice itself says whether they are still to come.
 const plain = (label: string) => label.replace(/\s*\(needs [^)]*\)$/, "");
 
@@ -73,28 +60,18 @@ const formatSetting = (s: SettingItem): FormattedSetting => ({
 export const shownSettings = (list: SettingsList): FormattedSetting[] =>
   SHOWN.flatMap((id) => list.settings.filter((s) => s.id === id)).map(formatSetting);
 
+// A setting left with one choice here (frame generation on a Steam Deck, where only Off is supported) has nothing to pick.
 export const allSettings = (list: SettingsList): FormattedSetting[] =>
-  list.settings.filter((s) => s.choices.length > 0).map(formatSetting);
+  list.settings.map(formatSetting).filter((s) => s.options.length > 1);
 
+// Under the launcher's Settings headings, in the manifest's order; a launcher from before `group` puts them all under Settings.
 export const groupedSettings = (list: SettingsList): SettingGroup[] => {
-  const formatted = allSettings(list);
-  const byId = new Map(formatted.map((s) => [s.id, s]));
-  const placed = new Set<string>();
-  const groups: SettingGroup[] = [];
-
-  for (const def of GROUPS) {
-    const items: FormattedSetting[] = [];
-    for (const id of def.ids) {
-      const s = byId.get(id);
-      if (s) {
-        items.push(s);
-        placed.add(id);
-      }
-    }
-    if (items.length > 0) groups.push({ title: def.title, settings: items });
+  const groups = new Map<string, FormattedSetting[]>();
+  for (const item of list.settings) {
+    const s = formatSetting(item);
+    if (s.options.length < 2) continue;
+    const title = item.group || "Settings";
+    groups.set(title, [...(groups.get(title) ?? []), s]);
   }
-
-  const remaining = formatted.filter((s) => !placed.has(s.id));
-  if (remaining.length > 0) groups.push({ title: "Other", settings: remaining });
-  return groups;
+  return [...groups].map(([title, settings]) => ({ title, settings }));
 };

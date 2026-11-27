@@ -390,6 +390,19 @@ class Controller:
             self._look_for_plugin()
             await self._look()
 
+    async def reread(self):
+        """Reads the status and settings again, which stay on this device: no update check over the network. A look nobody
+        asked for (the plugin starting, the game page opened, a game closed), so a failure leaves what was read before. Not
+        during a job."""
+        if self.job or not self.install_dir or self._looking:
+            return
+        self._looking += 1
+        try:
+            if await self._read_status(quietly=True):
+                await self._read_settings()
+        finally:
+            self._looking -= 1
+
     def _look_for_plugin(self):
         """Needs no answer from the launcher: a newer release's may be one only its newer plugin understands."""
         ready = self.data_dir and self.install_dir and is_install(self.install_dir)

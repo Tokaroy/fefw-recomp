@@ -43,6 +43,10 @@ class Plugin:
         await self.controller.refresh()
         return self._answer()
 
+    async def reread(self):
+        await self.controller.reread()
+        return self._answer()
+
     async def start(self, kind: str):
         return self._answer(lambda: self.controller.start(kind))
 
