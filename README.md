@@ -160,7 +160,7 @@ you trust. See [docs/MODS.md](docs/MODS.md).
 
 ### Launcher and menu language
 
-The launcher and the F1 menu come in English and Simplified Chinese and start in your system's language. To change it, use the
+The launcher and the F1 menu come in English, Simplified Chinese and Brazilian Portuguese and start in your system's language. To change it, use the
 language button at the foot of the launcher's sidebar; the choice covers both.
 
 **Translations are welcome.** The launcher and the F1 menu each take their own file: start from
